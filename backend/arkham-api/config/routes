@@ -62,6 +62,9 @@
         /decks ApiV1ArkhamArkhamDBDecksR GET
         /decks/import ApiV1ArkhamArkhamDBDeckImportR POST
         /decks/#ArkhamDeckId/sync ApiV1ArkhamArkhamDBDeckSyncR POST
+        /decks/#ArkhamDeckId/write-back ApiV1ArkhamArkhamDBWriteBackR PUT
+        /decks/#ArkhamDeckId/write-back/retry ApiV1ArkhamArkhamDBWriteBackRetryR POST
+        /decks/#ArkhamDeckId/resolve-conflict ApiV1ArkhamArkhamDBResolveConflictR POST
       /decks ApiV1ArkhamDecksP:
         / ApiV1ArkhamDecksR GET POST
         !/fetch ApiV1ArkhamDecksFetchR POST

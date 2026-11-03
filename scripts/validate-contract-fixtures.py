@@ -199,13 +199,13 @@ require(
 )
 arkhamdb_response = load_governed_json(ARKHAMDB_CAPABILITIES_FIXTURE)
 require(
-    ARKHAMDB_CAPABILITY in arkhamdb_response.get("capabilities", []),
+    all(capability in arkhamdb_response.get("capabilities", []) for capability in [ARKHAMDB_CAPABILITY, "arkhamdb.write-back.v1"]),
     "ArkhamDB-enabled fixture must advertise its optional capability",
 )
 normalized_arkhamdb_response = dict(arkhamdb_response)
 normalized_arkhamdb_response["capabilities"] = [
     capability for capability in arkhamdb_response["capabilities"]
-    if capability != ARKHAMDB_CAPABILITY
+    if capability not in {ARKHAMDB_CAPABILITY, "arkhamdb.write-back.v1"}
 ]
 require(
     normalized_arkhamdb_response == load_governed_json("contracts/fixtures/capabilities.json"),

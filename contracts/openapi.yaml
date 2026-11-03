@@ -499,7 +499,7 @@ paths:
   /arkham/arkhamdb/status:
     get:
       operationId: getArkhamDBLinkStatus
-      summary: Inspect the current user's ArkhamDB account link without exposing tokens
+      summary: Inspect the current user's ArkhamDB account and per-deck write-back states without exposing tokens
       responses:
         "200":
           description: Linked or unlinked status
@@ -559,6 +559,17 @@ paths:
     post:
       operationId: importArkhamDBDeck
       summary: Import a private deck through the linked account's OAuth authorization
+      description: |
+        Repeat import syncs the existing linked deck. First adoption of a pushed
+        campaign snapshot consumes only the unchanged overlay captured for its
+        latest deck materialization, never an overlay added or replaced later.
+        Direct deck-list upgrades record that no saved overlay was applied, so a
+        retained saved overlay survives. A legacy or raw-replacement push with no
+        captured provenance and a local overlay returns validationFailed without
+        changing the saved deck, rather than lose edits or apply an overlay twice.
+        validationFailed is HTTP 400, not an upstream availability error.
+        Adoption uses the locked current saved row after remote I/O, just as
+        linked sync does; concurrent overlay edits are not replaced by a stale snapshot.
       requestBody:
         required: true
         content:
@@ -573,7 +584,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Deck"
         "400":
-          description: Invalid input or unimplemented cards
+          description: Invalid input, unimplemented cards, or ambiguous legacy overlay adoption
         "401":
           description: App authentication required
         "409":
@@ -592,11 +603,22 @@ paths:
       summary: Sync an owned deck through OAuth when mapped, otherwise its public URL
       description: |
         OAuth reads replace the list, name and investigator name after card
-        validation, preserve the overlay, and update date_update/version sync
+        validation, preserve unexported overlays, and update date_update/version sync
         markers. Unmapped decks use the existing public-URL sync semantics.
         If a preserved mapping is inaccessible (remote 403/404), it is removed
         and the public URL is used. Persistence requires the same account generation.
         Both paths return the same saved Deck entity shape. No write-back runs.
+        Linked adoption re-reads and locks the current saved row after remote
+        I/O. Overlay adoption, play-list validation and deck/link writes share
+        that transaction. The response is the actual persisted row. A changed
+        mapping target or newer sync markers reject the stale result rather than being overwritten.
+        First adoption consumes an unchanged overlay only with provenance from
+        the latest deck materialization. Direct deck-list upgrades do not apply
+        saved overlays; those overlays survive, as do added/replaced overlays.
+        Legacy or raw-replacement pushes without
+        provenance refuse ambiguous adoption with validationFailed if a local
+        overlay exists; the saved deck is unchanged.
+        Ambiguous overlay adoption returns HTTP 400.
       parameters:
         - $ref: "#/components/parameters/DeckId"
       responses:
@@ -607,7 +629,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Deck"
         "400":
-          description: Unimplemented cards or public URL sync failed
+          description: Unimplemented cards, ambiguous legacy overlay adoption, or public URL sync failed
         "401":
           description: App authentication required
         "409":
@@ -620,6 +642,97 @@ paths:
           $ref: "#/components/responses/ArkhamDBDisabled"
         "502":
           $ref: "#/components/responses/ArkhamDBRemoteUnavailable"
+  /arkham/arkhamdb/decks/{deckId}/write-back:
+    put:
+      operationId: setArkhamDBWriteBack
+      summary: Opt in or out of campaign write-back for an owned linked deck
+      description: |
+        Requires arkhamdb.write-back.v1. Enabling applies at future scenario-end and campaign-upgrade boundaries, not to each mutation. Enqueue takes a nonblocking shared link lock through insertion so opt-out cannot miss an older boundary intent. Disabling cancels unstarted queued work and prevents further requests; a remote request already in flight may finish. Created or uncertain creation intents remain failed/writeBackDisabled with their XP accounting intact. After re-enabling, reconcile them by retry, keepRemote or saveAsNew before later snapshots can run; overwrite remains refused. Exceptions are conflict/boundaryUndone and conflict/accountChanged. The latter preserves uncertain remote accounting after credential generation deletion/replacement without retaining credentials or claiming XP acknowledgment. Both survive toggles and undo and block later snapshots; retry and all existing resolutions refuse to retire them. No reconciliation API is currently available.
+      parameters:
+        - $ref: "#/components/parameters/DeckId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/arkhamdb.schema.json#/$defs/toggleRequest"
+      responses:
+        "200":
+          description: Current owned deck link states; asynchronous work may still be pending
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/arkhamdb.schema.json#/$defs/writeBackStatusList"
+        "400":
+          description: Invalid toggle request
+        "401":
+          description: App authentication required
+        "404":
+          description: Deck not found, not linked, or not owned by the caller
+        "501":
+          $ref: "#/components/responses/ArkhamDBDisabled"
+  /arkham/arkhamdb/decks/{deckId}/write-back/retry:
+    post:
+      operationId: retryArkhamDBWriteBack
+      summary: Asynchronously retry the oldest pending or failed campaign push
+      description: |
+        Requires arkhamdb.write-back.v1. Returns immediately. Resumes the durable stage, never blindly repeats an uncertain upgrade or creation. Poll status.deckLinks for completion. A running job can be reclaimed only after its sixty-second lease. Conflicts require explicit resolution, except boundaryUndone and accountChanged: retry is a no-op and all current resolutions are refused; no reconciliation API exists to retire these durable fences. Admission is coalesced, with a minimum thirty-second per-user interval and failure backoff up to five minutes; a throttled retry is a no-op.
+      parameters:
+        - $ref: "#/components/parameters/DeckId"
+      responses:
+        "200":
+          description: Current owned deck link states; asynchronous work may still be pending
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/arkhamdb.schema.json#/$defs/writeBackStatusList"
+        "401":
+          description: App authentication required
+        "404":
+          description: Deck not found, not linked, or not owned by the caller
+        "409":
+          description: Write-back is disabled
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/arkhamdb.schema.json#/$defs/error"
+        "501":
+          $ref: "#/components/responses/ArkhamDBDisabled"
+  /arkham/arkhamdb/decks/{deckId}/resolve-conflict:
+    post:
+      operationId: resolveArkhamDBWriteBackConflict
+      summary: Resolve a campaign deck conflict explicitly
+      description: |
+        Requires arkhamdb.write-back.v1. keepRemote re-syncs the saved local deck only, never the live campaign; the next boundary uses campaign state again. overwrite and saveAsNew require confirmed=true. saveAsNew creates an independent ArkhamDB deck; for a second campaign it also clones the local saved deck and moves only that campaign association. Creation-bearing predecessors remain outstanding until independent adoption; a disabled or undone unstarted replacement cannot discard their accounting. A derived independent replacement cannot switch back to overwrite of the original lineage, even before creation. Poll status.deckLinks, including resultingLocalDeckId. Overwrite is rejected for campaignChanged or an already created target. An uncertain creation cannot be overwritten blindly; retry recovery or explicitly save as new. Failed keepRemote reads retain the creation checkpoint and overwrite fence until successful adoption. Completion records targetAlreadyLinked rather than changing a target already mapped to another local deck; use saveAsNew or remove the other mapping before retrying. All resolutions, including keepRemote and saveAsNew, are rejected with HTTP 409 for boundaryUndone and accountChanged. These non-runnable accounting fences block later snapshots, never export their retained payloads, and currently have no reconciliation API.
+      parameters:
+        - $ref: "#/components/parameters/DeckId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/arkhamdb.schema.json#/$defs/resolveRequest"
+      responses:
+        "200":
+          description: Current owned deck link states; asynchronous work may still be pending
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/arkhamdb.schema.json#/$defs/writeBackStatusList"
+        "400":
+          description: Invalid request or missing explicit confirmation
+        "401":
+          description: App authentication required
+        "404":
+          description: Deck not found, not linked, or not owned by the caller
+        "409":
+          description: Write-back is disabled, no resolvable push, or creation outcome is uncertain
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/arkhamdb.schema.json#/$defs/error"
+        "501":
+          $ref: "#/components/responses/ArkhamDBDisabled"
   /arkham/decks:
     get:
       operationId: listDecks
@@ -759,6 +872,12 @@ paths:
           description: Deck is absent for this account
         "401":
           description: Token is absent or invalid
+        "409":
+          description: Deck has campaign accounting or unresolved write-back; deletion requires reconciliation and leaves the saved deck unchanged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeckOperationError"
   /arkham/decks/{deckId}/sync:
     post:
       operationId: syncDeck

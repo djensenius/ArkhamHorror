@@ -9,7 +9,7 @@ module Base.Api.Types.Capabilities (
 ) where
 
 import Base.Api.Types.CampaignCatalog (CampaignCatalog, campaignCatalogCapability, campaignCatalogMetadata)
-import Arkham.ArkhamDB (arkhamDBAccountLinkingCapability)
+import Arkham.ArkhamDB (arkhamDBAccountLinkingCapability, arkhamDBWriteBackCapability)
 import Base.Api.Types.LocaleCatalog (LocaleCatalog, localeCatalogCapability)
 import Data.Aeson
 import Data.List qualified as List
@@ -75,7 +75,7 @@ update-required even for deployments that omit the catalog fields.
 serverCapabilities :: Maybe LocaleCatalog -> Bool -> ServerCapabilities
 serverCapabilities localeCatalog arkhamDBEnabled =
   ServerCapabilities
-    { schemaRevision = "0.1.54"
+    { schemaRevision = "0.1.55"
     , status = "baseline-incomplete"
     , apiBasePath = "/api/v1"
     , nativeClientMinimumRevision = "0.1.53"
@@ -93,4 +93,4 @@ serverCapabilities localeCatalog arkhamDBEnabled =
     , "websockets.spectator-read-only"
     ]
   catalogCapabilities = [localeCatalogCapability | isJust localeCatalog]
-  arkhamDBCapabilities = [arkhamDBAccountLinkingCapability | arkhamDBEnabled]
+  arkhamDBCapabilities = [capability | arkhamDBEnabled, capability <- [arkhamDBAccountLinkingCapability, arkhamDBWriteBackCapability]]

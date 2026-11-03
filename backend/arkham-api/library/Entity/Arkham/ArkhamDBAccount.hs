@@ -26,6 +26,8 @@ ArkhamDBAccount sql=arkhamdb_accounts
   expiresAt UTCTime Maybe
   createdAt UTCTime
   updatedAt UTCTime
+  lastWriteBackAttemptAt UTCTime Maybe
+  writeBackFailures Int default=0
   UniqueArkhamDBAccountUser userId
   deriving Generic Show
 ArkhamDBLinkState sql=arkhamdb_link_states
@@ -48,9 +50,42 @@ ArkhamDBDeckLink sql=arkhamdb_deck_links
   lastSyncedVersion Text Maybe
   writeBack Bool default=False
   lastError Text Maybe
+  campaignKey Text Maybe
   createdAt UTCTime
   updatedAt UTCTime
   UniqueArkhamDBDeckLinkDeck deckId
   UniqueArkhamDBDeckLinkUserRemote userId remoteDeckId
+  deriving Generic Show
+ArkhamDBPush sql=arkhamdb_pushes
+  Id UUID default=uuid_generate_v4()
+  deckId ArkhamDeckId OnDeleteCascade
+  userId UserId OnDeleteCascade
+  generation ArkhamDBAccountId noreference
+  eventKey Text
+  campaignKey Text
+  payload Text
+  totalXp Int
+  status Text
+  stage Text
+  sourceId Text Maybe
+  targetId Text Maybe
+  expectedDateUpdate Text Maybe
+  expectedVersion Text Maybe
+  remoteDateUpdate Text Maybe
+  remoteVersion Text Maybe
+  error Text Maybe
+  mode Text
+  createdAt UTCTime
+  updatedAt UTCTime
+  boundary Text
+  UniqueArkhamDBPushEvent deckId eventKey
+  deriving Generic Show
+ArkhamDBCampaignDeck sql=arkhamdb_campaign_decks
+  Id UUID default=uuid_generate_v4()
+  campaignKey Text
+  deckId ArkhamDeckId OnDeleteCascade
+  userId UserId OnDeleteCascade
+  lastPushedXp Int default=0
+  UniqueArkhamDBCampaignDeck campaignKey
   deriving Generic Show
 |]

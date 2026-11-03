@@ -30,6 +30,7 @@ import Data.IntMap.Strict qualified as IntMap
 import UnliftIO.Exception qualified as UnliftIO
 
 import Arkham.ArkhamDB (ArkhamDBClient)
+import Arkham.ArkhamDB.WriteBack (ArkhamDBExecutor)
 import Arkham.Card.CardCode
 import Arkham.Log.Entry (LogRow)
 import Auth.ApiKey qualified as ApiKey
@@ -200,6 +201,7 @@ data App = App
   , appMessageBroker :: MessageBroker
   , appPubSubSupervisorThread :: !(Maybe ThreadId)
   , appRoomHeartbeatThread :: !(Maybe ThreadId)
+  , appArkhamDBWriteBackExecutor :: ArkhamDBExecutor
   , appArkhamDBClient :: Maybe (ArkhamDBClient IO)
   , appHttpManager :: Manager
   , appLogger :: Logger

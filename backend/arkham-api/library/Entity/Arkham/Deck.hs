@@ -38,6 +38,7 @@ ArkhamDeck sql=arkham_decks
   investigatorName Text
   list ArkhamDBDecklist
   overlay DeckOverlay Maybe
+  overlayAttachmentId UUID Maybe
   lastUsedAt UTCTime Maybe
   deriving Generic Show
 |]
@@ -47,10 +48,16 @@ without having to reimplement 'applyOverlay'.
 -}
 instance ToJSON ArkhamDeck where
   toJSON deck = case genericToJSON (aesonOptions $ Just "arkhamDeck") deck of
-    Object o -> Object $ KeyMap.insert "playList" (toJSON $ arkhamDeckPlayList deck) o
+    Object o -> Object $ KeyMap.insert "playList" (toJSON $ arkhamDeckPlayList deck) $
+      KeyMap.delete "overlayAttachmentId" o
     v -> v
 
 -- | The deck as it should be played: the stored list with its overlay applied.
 arkhamDeckPlayList :: ArkhamDeck -> ArkhamDBDecklist
 arkhamDeckPlayList deck =
   maybe id applyOverlay (arkhamDeckOverlay deck) (arkhamDeckList deck)
+
+-- A PUT is a new attachment even when its JSON equals an earlier attachment.
+attachDeckOverlay :: UUID -> DeckOverlay -> ArkhamDeck -> ArkhamDeck
+attachDeckOverlay attachment overlay deck =
+  deck {arkhamDeckOverlay = Just overlay, arkhamDeckOverlayAttachmentId = Just attachment}

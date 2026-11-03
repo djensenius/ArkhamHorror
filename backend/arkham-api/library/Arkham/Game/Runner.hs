@@ -3,6 +3,7 @@
 module Arkham.Game.Runner where
 
 import Arkham.Ability
+import Arkham.ArkhamDB.Overlay (recordCampaignDeckOverlay)
 import Arkham.Act
 import Arkham.Act.Types (Field (..))
 import Arkham.Action qualified as Action
@@ -498,10 +499,12 @@ runGameMessage msg g = case msg of
               }
     let iid = toId investigator
     when (notNull sideDeck) $ push $ LoadSideDeck iid sideDeck
-    push
-      $ if iid /= oldIid
-        then InitDeck $ InitDeckAttrs iid dl.url (Just decklist) (Deck deck)
-        else UpgradeDeck iid dl.url (Deck deck)
+    pushAll
+      [ if iid /= oldIid
+          then InitDeck $ InitDeckAttrs iid dl.url (Just decklist) (Deck deck)
+          else UpgradeDeck iid dl.url (Deck deck)
+      , recordCampaignDeckOverlay iid Nothing
+      ]
     let activeInvestigatorF =
           if gameActiveInvestigatorId g == oldIid then set activeInvestigatorIdL iid else id
         turnPlayerInvestigatorF =
@@ -563,7 +566,10 @@ runGameMessage msg g = case msg of
               }
     let iid = toId investigator
     when (notNull sideDeck) $ push $ LoadSideDeck iid sideDeck
-    push $ InitDeck $ InitDeckAttrs iid dl.url (Just decklist) (Deck deck)
+    pushAll
+      [ InitDeck $ InitDeckAttrs iid dl.url (Just decklist) (Deck deck)
+      , recordCampaignDeckOverlay iid Nothing
+      ]
     let activeInvestigatorF =
           if gameActiveInvestigatorId g `elem` replaceIds then set activeInvestigatorIdL iid else id
         turnPlayerInvestigatorF =
@@ -608,7 +614,12 @@ runGameMessage msg g = case msg of
             )
             investigator
     when (notNull sideDeck) $ push $ LoadSideDeck investigatorId sideDeck
-    push $ UpgradeDeck investigatorId decklist.url (Deck cards)
+    -- This path loads the submitted list directly; it does not apply the
+    -- saved deck's overlay, even if the saved row still carries one.
+    pushAll
+      [ UpgradeDeck investigatorId decklist.url (Deck cards)
+      , recordCampaignDeckOverlay investigatorId Nothing
+      ]
 
     pure
       $ g

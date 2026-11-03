@@ -30,6 +30,8 @@ import Api.Arkham.Helpers (
   pubSubSupervisor,
   roomHeartbeat,
  )
+import Api.Arkham.ArkhamDBWriteBack (startCampaignWriteBack)
+import Arkham.ArkhamDB.WriteBack (newArkhamDBExecutor, stopArkhamDBExecutor)
 import Arkham.Metrics qualified as Metrics
 import Config
 import Control.Concurrent (forkIO, killThread)
@@ -141,6 +143,7 @@ makeFoundation :: AppSettings -> IO App
 makeFoundation appSettings = do
   -- Some basic initializations: HTTP connection manager, logger, and static
   -- subsite.
+  appArkhamDBWriteBackExecutor <- newArkhamDBExecutor
   appHttpManager <- getGlobalManager
   let appArkhamDBClient = fmap (\settings -> httpArkhamDBClient appHttpManager settings.arkhamDBBaseUrl settings.arkhamDBClientId settings.arkhamDBClientSecret) (appArkhamDB appSettings)
   appLogger <- newStdoutLoggerSet defaultBufSize >>= makeYesodLogger
@@ -202,7 +205,9 @@ makeFoundation appSettings = do
     WebSocketBroker -> pure Nothing
     RedisBroker {} -> Just <$> forkIO (roomHeartbeat appMessageBroker appGameRooms)
 
-  pure $ mkFoundation pool appRoomHeartbeatThread
+  let foundation = mkFoundation pool appRoomHeartbeatThread
+  startCampaignWriteBack foundation
+  pure foundation
 
 {- | Convert our foundation to a WAI Application by calling @toWaiAppPlain@ and
  applying some additional middlewares.
@@ -398,6 +403,7 @@ getApplicationRepl = do
 
 shutdownApp :: App -> IO ()
 shutdownApp app = do
+  stopArkhamDBExecutor $ appArkhamDBWriteBackExecutor app
   for_ (appRoomHeartbeatThread app) killThread
   for_ (appPubSubSupervisorThread app) killThread
   case appMessageBroker app of
