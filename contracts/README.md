@@ -1171,7 +1171,7 @@ sessions and observe real PostgreSQL lock waits rather than timing sleeps. The
 unit `spec` suite still uses the in-memory transactional store and
 HTTP-connection stubs; callback response tests dispatch the production callback
 body through Yesod/WAI. The logging probe covers both the production request
-logger's `Detailed True` and Apache modes, including encoded-separator and
+logger's `Detailed True` and Apache modes, including encoded-separator, empty-segment and
 case-variant ArkhamDB paths. The cleanup worker's retry, timeout and shutdown
 lifecycle is unit-tested. The refresh lock-deadline (`remoteUnavailable`) and
 refresh-failure paths are not yet covered against PostgreSQL; that is tracked
