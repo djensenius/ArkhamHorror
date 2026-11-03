@@ -1119,18 +1119,27 @@ Expired pending token rows cannot be finalized, but are only purged when a
 subsequent link-start request runs expired-state cleanup. Periodic cleanup of
 abandoned pending credentials is deferred to a follow-up.
 
-The committed test suite and `.github/workflows/haskell.yml` do not provision a
-PostgreSQL test database. ArkhamDB specs therefore use the production service
-with an in-memory transactional store and HTTP-connection stubs. Callback
-response tests dispatch the production callback body through Yesod/WAI with
-injected persistence/transport; the logging probe captures the production
-request logger in `Detailed True` mode. They do not
-execute `persistentStore` SQL or prove PostgreSQL concurrency behavior. The
-claim/finalize, refresh compare-and-update, generation locks and unique mapping
-constraint need database-backed integration coverage when a test DB harness is
-available; this is a known test-coverage gap, not a claim of SQL integration coverage.
-Real-PostgreSQL small-pool concurrency coverage (refresh failures, lock deadlines,
-unlink/finalization ordering and connection reuse) is tracked in Backlog task-2.46.
+Haskell CI (`.github/workflows/haskell.yml`) installs PostgreSQL server tools,
+runs the launcher's own safety and lifecycle checks, and runs `stack test` under
+`backend/arkham-api/postgres-tests/with-arkhamdb-postgres.py`. The launcher
+creates an owned, disposable cluster listening only on a private Unix socket (no
+TCP listener; never port 5432), applies every `migrations/deploy` file in
+`sqitch.plan` order, refuses ambient `PG*`/`DATABASE_URL` targets, and removes
+the cluster afterwards. The `arkhamdb-postgres` suite runs the production
+`persistentStoreWith` store and service functions against that database, with
+only the ArkhamDB HTTP transport stubbed. It covers nonce claim/finalize exactly
+once and competing claims, rollback of nonce consumption with account creation,
+refresh compare-and-update, the refresh lock held against a concurrent unlink,
+callbacks during and after unlink, an import racing unlink/relink to a new
+generation, and competing imports converging on one deck and user/remote
+mapping. Concurrent cases use separate sessions and observe real PostgreSQL lock
+waits rather than timing sleeps. The unit `spec` suite still uses the in-memory
+transactional store and HTTP-connection stubs; callback response tests dispatch
+the production callback body through Yesod/WAI, and the logging probe captures
+the production request logger in `Detailed True` mode. Lock-deadline
+(`remoteUnavailable`) and refresh-failure paths, expiry cleanup and write-back
+SQL are not yet covered against PostgreSQL; that remains tracked in Backlog
+task-2.46.
 
 List, import and sync use the linked account's OAuth API, so private decks do
 not require public sharing. Expired tokens (including a 60-second safety window)
@@ -1493,6 +1502,14 @@ are never pruned.
 Clients consuming write-back must update Apple `ContractPin.swift`, and Linux
 `src/ContractPin.cpp`, `contracts/contract-pin.json` and vendored fixtures, to the
 merged backend commit and schemaRevision `0.1.55`.
+
+#### PostgreSQL integration harness (revision 0.1.56)
+
+Revision `0.1.56` changes no public JSON shape, route or capability. It is
+required because `.github/workflows/haskell.yml`, a governed locale-catalog
+generator input, now runs the disposable PostgreSQL integration suite, which
+changes the synthetic catalog fixture digests. The native minimum remains
+`0.1.53`; clients pinned to `0.1.55` are unaffected and need not repin.
 
 ### Locale catalog discovery
 
