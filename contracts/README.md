@@ -1132,8 +1132,8 @@ once and competing claims, rollback of nonce consumption with account creation,
 refresh compare-and-update, the refresh lock held against a concurrent unlink,
 callbacks during and after unlink, an import racing unlink/relink to a new
 generation, and competing imports converging on one deck and user/remote
-mapping. Concurrent cases use separate sessions and observe real PostgreSQL lock
-waits rather than timing sleeps. The unit `spec` suite still uses the in-memory
+mapping. Lock-contention cases use separate sessions and observe real
+PostgreSQL lock waits rather than timing sleeps. The unit `spec` suite still uses the in-memory
 transactional store and HTTP-connection stubs; callback response tests dispatch
 the production callback body through Yesod/WAI, and the logging probe captures
 the production request logger in `Detailed True` mode. Lock-deadline
