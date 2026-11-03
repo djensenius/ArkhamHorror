@@ -108,7 +108,7 @@ writeBackStoreWith database = ArkhamDBWriteBackStore
                 [ArkhamDBPushDeckId P.=. copyId]
               pure copyId
             else do
-              lockArkhamDBDeckLink deckId
+              lockArkhamDBDeckLink (arkhamDBPushUserId job) deckId
               replace linkId link
                 { arkhamDBDeckLinkRemoteDeckId = remote.remoteDeckId
                 , arkhamDBDeckLinkLastSyncedDateUpdate = remote.dateUpdate
@@ -135,7 +135,7 @@ writeBackStoreWith database = ArkhamDBWriteBackStore
         let job = entityVal previous
             deckId = arkhamDBPushDeckId job
         P.update deckId $ keepRemoteDeckUpdates remote
-        lockArkhamDBDeckLink deckId
+        lockArkhamDBDeckLink (arkhamDBPushUserId job) deckId
         updateWhere [ArkhamDBDeckLinkDeckId P.==. deckId]
           [ ArkhamDBDeckLinkRemoteDeckId P.=. remote.remoteDeckId
           , ArkhamDBDeckLinkLastSyncedDateUpdate P.=. remote.dateUpdate
@@ -177,7 +177,7 @@ writeBackStoreWith database = ArkhamDBWriteBackStore
         _ -> pure False
   , toggleWriteBack = \now uid deckId enabled -> database do
       lockArkhamDBUser uid
-      lockArkhamDBDeckLink deckId
+      lockArkhamDBDeckLink uid deckId
       affected <- updateWhereCount [ArkhamDBDeckLinkDeckId P.==. deckId, ArkhamDBDeckLinkUserId P.==. uid]
         [ArkhamDBDeckLinkWriteBack P.=. enabled, ArkhamDBDeckLinkUpdatedAt P.=. now]
       unless enabled do

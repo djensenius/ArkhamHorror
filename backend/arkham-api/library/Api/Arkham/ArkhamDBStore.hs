@@ -210,13 +210,15 @@ writeBackCampaignIdentities known deckId own = do
 lockArkhamDBUser :: forall m. MonadIO m => UserId -> ReaderT SqlBackend m ()
 lockArkhamDBUser userId = void (rawSql "SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE" [toPersistValue userId] :: ReaderT SqlBackend m [Single Int64])
 
--- Opt-out, keep-remote and push adoption take this after the user (and any
--- deck) lock, before writing the link or cancelling its pushes. FOR UPDATE
--- conflicts with enqueue's link FOR KEY SHARE SKIP LOCKED (so a held opt-out
--- is skipped and an in-flight enqueue is waited for); linked sync's plain
--- non-key UPDATE deliberately does not.
-lockArkhamDBDeckLink :: forall m. MonadIO m => ArkhamDeckId -> ReaderT SqlBackend m ()
-lockArkhamDBDeckLink deckId = void (rawSql "SELECT id FROM arkhamdb_deck_links WHERE deck_id = ? FOR UPDATE" [toPersistValue deckId] :: ReaderT SqlBackend m [Single ArkhamDBDeckLinkId])
+-- Opt-out, keep-remote and same-deck push adoption take this after the user
+-- (and any deck) lock, before writing the link or cancelling its pushes. The
+-- cross-campaign adoption branch inserts a new link instead and is fenced by
+-- the association lock. FOR UPDATE conflicts with enqueue's link FOR KEY SHARE
+-- SKIP LOCKED (so a held opt-out is skipped and an in-flight enqueue is waited
+-- for); linked sync's plain non-key UPDATE deliberately does not. Only the
+-- given owner's row is locked: a toggle names an arbitrary deck id.
+lockArkhamDBDeckLink :: forall m. MonadIO m => UserId -> ArkhamDeckId -> ReaderT SqlBackend m ()
+lockArkhamDBDeckLink userId deckId = void (rawSql "SELECT id FROM arkhamdb_deck_links WHERE deck_id = ? AND user_id = ? FOR UPDATE" [toPersistValue deckId, toPersistValue userId] :: ReaderT SqlBackend m [Single ArkhamDBDeckLinkId])
 
 sameAccountGeneration :: MonadIO m => UserId -> ArkhamDBAccountId -> ReaderT SqlBackend m Bool
 sameAccountGeneration userId generation = do
