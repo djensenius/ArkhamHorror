@@ -8,7 +8,7 @@ import Data.Aeson (decodeStrict')
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Database.Persist qualified as P
-import Database.Persist.Sql (Single (..), SqlBackend, rawExecute, rawSql, updateWhereCount)
+import Database.Persist.Sql (Single (..), SqlBackend, deleteWhereCount, rawExecute, rawSql, updateWhereCount)
 import Import hiding (state)
 
 -- | Each runDB action is a transaction, including nonce consumption and the
@@ -99,7 +99,7 @@ persistentStoreWith validate database = ArkhamDBStore
   , findDeck = \deckId -> database do
       P.get deckId >>= \case
         Just deck -> do
-          link <- fmap entityVal <$> getBy (UniqueArkhamDBDeckLinkDeck deckId)
+          link <- getBy (UniqueArkhamDBDeckLinkDeck deckId)
           pure $ Just (deck, link)
         _ -> pure Nothing
   , saveImportedDeck = \generation deck remote now -> database do
@@ -112,7 +112,7 @@ persistentStoreWith validate database = ArkhamDBStore
             entity@(Entity deckId _) <- insertEntity deck
             insert_ $ ArkhamDBDeckLink deckId (arkhamDeckUserId deck) remote.remoteDeckId remote.dateUpdate remote.deckVersion False Nothing Nothing now now
             pure $ Just entity
-  , saveSyncedDeck = \generation deckId expected remote now adopt -> database do
+  , saveSyncedDeck = \generation deckId (Entity expectedId expected) remote now adopt -> database do
       let userId = arkhamDBDeckLinkUserId expected
       active <- sameAccountGeneration userId generation
       -- Overlay PUT/DELETE only lock this row, not the account. No pre-I/O
@@ -121,9 +121,10 @@ persistentStoreWith validate database = ArkhamDBStore
         [toPersistValue deckId] :: ReaderT SqlBackend Handler [Entity ArkhamDeck]
       mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
       case (active, viaNonEmpty head rows, mapping) of
-        (True, Just (Entity _ current), Just (Entity _ link))
+        (True, Just (Entity _ current), Just (Entity linkId link))
           | arkhamDeckUserId current == userId
           , arkhamDBDeckLinkUserId link == userId
+          , linkId == expectedId
           , sameSyncedDeckLink expected link
           , arkhamDBDeckLinkRemoteDeckId link == remote.remoteDeckId -> do
               prepared <- lift $ adopt current
@@ -141,10 +142,17 @@ persistentStoreWith validate database = ArkhamDBStore
                   -- callback's projection (which may contain unwritten fields).
                   Right . Entity deckId <$> getJust deckId
         _ -> pure $ Left linkChanged
-  , dropDeckLink = \generation userId deckId -> database do
+  , dropDeckLink = \generation userId deckId (Entity expectedId expected) -> database do
       active <- sameAccountGeneration userId generation
-      when active $ deleteBy $ UniqueArkhamDBDeckLinkDeck deckId
-      pure active
+      if not active || arkhamDBDeckLinkUserId expected /= userId then pure False else do
+        affected <- deleteWhereCount
+          [ ArkhamDBDeckLinkId P.==. expectedId, ArkhamDBDeckLinkDeckId P.==. deckId
+          , ArkhamDBDeckLinkUserId P.==. userId
+          , ArkhamDBDeckLinkRemoteDeckId P.==. arkhamDBDeckLinkRemoteDeckId expected
+          , ArkhamDBDeckLinkLastSyncedDateUpdate P.==. arkhamDBDeckLinkLastSyncedDateUpdate expected
+          , ArkhamDBDeckLinkLastSyncedVersion P.==. arkhamDBDeckLinkLastSyncedVersion expected
+          ]
+        pure $ affected == 1
   , validateDeck = validate
   }
 

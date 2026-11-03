@@ -609,7 +609,7 @@ runWriteBackWithClock clock store writes client settings now retry userId deckId
           unless (generation == arkhamDBPushGeneration job) $ throwError linkChanged
           (deck, mapping) <- lift (currentStore.findDeck deckId) >>= maybe (throwError linkChanged) pure
           unless (arkhamDeckUserId deck == userId) $ throwError linkChanged
-          link <- maybe (throwError linkChanged) pure mapping
+          link <- maybe (throwError linkChanged) (pure . entityVal) mapping
           unless (arkhamDBDeckLinkWriteBack link) $ throwError $ ArkhamDBError "writeBackDisabled" "Deck write-back is disabled"
           pure link
         ensureGeneration = ensureGenerationUsing store

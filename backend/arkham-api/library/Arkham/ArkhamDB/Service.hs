@@ -41,13 +41,13 @@ data ArkhamDBStore m = ArkhamDBStore
   , updateAccount :: ArkhamDBAccount -> ArkhamDBAccount -> m Bool
   , unlinkAccount :: UserId -> m ()
   , findDeckLinks :: UserId -> m [(ArkhamDeckId, ArkhamDBDeckLink)]
-  , findDeck :: ArkhamDeckId -> m (Maybe (ArkhamDeck, Maybe ArkhamDBDeckLink))
+  , findDeck :: ArkhamDeckId -> m (Maybe (ArkhamDeck, Maybe (Entity ArkhamDBDeckLink)))
   , saveImportedDeck :: ArkhamDBAccountId -> ArkhamDeck -> ArkhamDBRemoteDeck -> UTCTime -> m (Maybe (Entity ArkhamDeck))
   -- The writer locks/re-reads the current row, invokes adoption/validation
   -- inside that transaction, and returns the actual persisted entity.
-  , saveSyncedDeck :: ArkhamDBAccountId -> ArkhamDeckId -> ArkhamDBDeckLink -> ArkhamDBRemoteDeck -> UTCTime
+  , saveSyncedDeck :: ArkhamDBAccountId -> ArkhamDeckId -> Entity ArkhamDBDeckLink -> ArkhamDBRemoteDeck -> UTCTime
       -> (ArkhamDeck -> m (Either ArkhamDBError ArkhamDeck)) -> m (Either ArkhamDBError (Entity ArkhamDeck))
-  , dropDeckLink :: ArkhamDBAccountId -> UserId -> ArkhamDeckId -> m Bool
+  , dropDeckLink :: ArkhamDBAccountId -> UserId -> ArkhamDeckId -> Entity ArkhamDBDeckLink -> m Bool
   , validateDeck :: ArkhamDBDecklist -> ArkhamDBAction m ()
   }
 
@@ -227,17 +227,17 @@ syncRemoteDeck store client settings now userId deckId publicSync = do
   unless (arkhamDeckUserId deck == userId) $ throwError $ ArkhamDBError "notFound" "Deck not found"
   case link of
     Nothing -> lift $ publicSync deckId
-    Just mapping -> do
+    Just expected@(Entity _ mapping) -> do
       generation <- accountGeneration store userId
       loaded <- (Right <$> withAccessToken store client settings now userId (\token -> client.loadDeck token (arkhamDBDeckLinkRemoteDeckId mapping))) `catchError` (pure . Left)
       case loaded of
         Left err | arkhamDBErrorCode err == "notFound" -> do
-          dropped <- lift $ store.dropDeckLink generation userId deckId
+          dropped <- lift $ store.dropDeckLink generation userId deckId expected
           unless dropped $ throwError linkChanged
           lift $ publicSync deckId
         Left err -> throwError err
         Right remote ->
-          ExceptT $ store.saveSyncedDeck generation deckId mapping remote now \current -> runExceptT do
+          ExceptT $ store.saveSyncedDeck generation deckId expected remote now \current -> runExceptT do
             adopted <- either throwError pure $ adoptDecklist current $ remoteDecklist settings remote
             let updated = adopted
                   { arkhamDeckUrl = (arkhamDeckList adopted).url

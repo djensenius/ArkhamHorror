@@ -8,21 +8,35 @@ module Main where
 
 import Arkham.ArkhamDB
 import Api.Arkham.ArkhamDBCleanup (cleanupBatchSize, purgeExpiredLinks)
+import Api.Arkham.ArkhamDBWriteBack (writeBackStore)
+import Api.Handler.Arkham.Decks
+  ( deleteApiV1ArkhamDeckOverlayR, putApiV1ArkhamDeckOverlayR, saveDeckOverlay, savePublicSyncedDeck
+  , validatePlayableDecklist )
+import Arkham.ArkhamDB.WriteBack
 import Arkham.ArkhamDB.Service
+import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Decklist (ArkhamDBDecklist (..))
+import Control.Concurrent.MVar qualified as MVar
 import Control.Exception (throwIO)
+import Data.Aeson (encode, toJSON)
+import Data.Map.Strict qualified as Map
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
+import Data.UUID qualified as UUID
 import Database.Persist (Entity (..), entityKey, toPersistValue)
 import Database.Persist qualified as P
 import Database.Persist.Sql (Single (..), SqlBackend, rawExecute, rawSql, runSqlConn, toSqlKey)
 import Database.Persist.Types (PersistValue (..))
 import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
+import Entity.Arkham.Game
 import Entity.User (UserId)
 import Foundation (App, unsafeHandler, userIdToToken)
+import Network.HTTP.Types (Status, status400)
+import Network.Wai (defaultRequest, requestHeaders, requestMethod, setRequestBodyChunks)
 import Postgres.Harness
 import Postgres.HarnessSpec qualified as Harness
 import Postgres.Production
+import Postgres.WriteBackSpec qualified as WriteBackSQL
 import Relude hiding (first, second)
 import Settings (ArkhamDBSettings (..))
 import System.Timeout (timeout)
@@ -258,6 +272,274 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
             fmap entityKey firstResult `shouldBe` fmap entityKey secondResult
       deckCounts observer uid `shouldReturn` (1, 1)
 
+  for_ [False, True] \markers ->
+    it ("removes an unchanged 404 mapping and falls back exactly once with " <> if markers then "non-null markers" else "null markers") $
+      withConnection harness \connection -> do
+        now <- getCurrentTime
+        let label = if markers then "404-current-markers" else "404-current-null"
+            original = if markers then remote else remote {dateUpdate = Nothing, deckVersion = Nothing}
+            initialClient = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right original}
+            missingClient = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Left ArkhamDBNotFound}
+        uid <- seedUser connection label
+        encrypted <- encryptedAccount settings now uid $ tokens now
+        void $ seedAccount app connection now uid label encrypted
+        Entity deckId _ <- either (fail . show) pure =<< runStoreActions app connection
+          (\store -> runExceptT $ importRemoteDeck store initialClient settings now uid "123" forbiddenPublic)
+        calls <- MVar.newMVar (0 :: Int)
+        let public key = do
+              liftIO $ MVar.modifyMVar_ calls $ pure . (+ 1)
+              result <- runSqlConn (savePublicSyncedDeck uid key remote.deck) connection
+              either (liftIO . fail . show) pure result
+        result <- runStoreActions app connection \store ->
+          runExceptT $ syncRemoteDeck store missingClient settings now uid deckId public
+        fmap entityKey result `shouldBe` Right deckId
+        MVar.readMVar calls `shouldReturn` 1
+        transaction connection (isNothing <$> P.getBy (UniqueArkhamDBDeckLinkDeck deckId)) `shouldReturn` True
+
+  for_ [False, True] \missing ->
+    for_ ["retarget", "markers", "identity"] \change ->
+      it ("fences a delayed " <> (if missing then "404" else "sync") <> " after mapping " <> toString change) $
+        withConnection harness \loading -> withConnection harness \writing -> do
+          now <- getCurrentTime
+          let label = "stale-" <> change <> if missing then "-404" else "-sync"
+          uid <- seedUser loading label
+          encrypted <- encryptedAccount settings now uid $ tokens now
+          generation <- seedAccount app loading now uid label encrypted
+          let initialClient = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right remote}
+          Entity deckId _ <- either (fail . show) pure =<< runStoreActions app loading
+            (\store -> runExceptT $ importRemoteDeck store initialClient settings now uid "123" forbiddenPublic)
+          mapping <- transaction writing (P.getBy $ UniqueArkhamDBDeckLinkDeck deckId)
+            >>= maybe (fail "Expected imported mapping") pure
+          barrier <- newBarrier
+          let delayedClient = hoistArkhamDBClient liftIO $ transport
+                { loadDeck = \_ _ -> do
+                    pauseAt barrier
+                    pure $ if missing then Left ArkhamDBNotFound else Right remote
+                }
+          withAsync
+            (runStoreActions app loading \store -> runExceptT $
+              syncRemoteDeck store delayedClient settings now uid deckId forbiddenPublic)
+            \syncing -> do
+              link syncing
+              awaitBarrier barrier
+              if change == "identity" then transaction writing do
+                -- Fixture-only identity replacement with identical values:
+                -- specifically isolate the mapping-id fence from generation,
+                -- remote-id and marker checks.
+                P.delete $ entityKey mapping
+                P.insert_ $ P.entityVal mapping
+              else do
+                gameId <- WriteBackSQL.seedCampaignGame writing label now
+                let campaign = UUID.toText (coerce gameId) <> "/01001"
+                transaction writing do
+                  P.update (entityKey mapping) [ArkhamDBDeckLinkWriteBack P.=. True]
+                  P.insert_ $ ArkhamDBCampaignDeck campaign deckId uid 0
+                  P.insert_ $ ArkhamDBPush deckId uid generation (label <> "/1/01001") campaign
+                    (encodePushDeck remote.deck) 5 "pending" "ready" Nothing Nothing
+                    remote.dateUpdate remote.deckVersion Nothing Nothing Nothing "normal" now now "scenarioEnd"
+                claimed <- unsafeHandler app (writeBackStore.claimPush now False uid deckId)
+                  >>= maybe (fail "Expected production claim") pure
+                let committed = remote
+                      { remoteDeckId = if change == "retarget" then "456" else "123"
+                      , dateUpdate = Just "2026-10-28T22:00:00Z", deckVersion = Just "2.0"
+                      }
+                unsafeHandler app (writeBackStore.finishPush claimed committed) `shouldReturn` Just deckId
+              expected <- transaction writing $ P.getBy $ UniqueArkhamDBDeckLinkDeck deckId
+              releaseBarrier barrier
+              result <- within "stale remote completion" $ wait syncing
+              fmap (const ()) result `shouldBe` Left linkChanged
+              (fmap (show :: Entity ArkhamDBDeckLink -> String) <$> transaction writing (P.getBy $ UniqueArkhamDBDeckLinkDeck deckId))
+                `shouldReturn` fmap show expected
+
+  for_ [False, True] \public ->
+    for_ [False, True] \syncFirst ->
+      for_ ["add", "replace", "remove", "invalid"] \change ->
+        it ("serializes " <> (if public then "public" else "linked") <> " sync "
+          <> (if syncFirst then "before" else "after") <> " overlay " <> toString change) $
+          withConnection harness \first -> withConnection harness \second -> withConnection harness \observer -> do
+            now <- getCurrentTime
+            let label = "overlay-" <> (if public then "public" else "linked")
+                  <> (if syncFirst then "-first-" else "-last-") <> change
+                old = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
+                initial = if change `elem` ["add", "invalid"] then Nothing else Just old
+                -- A real private identity accompanies every seeded attachment.
+                seeded = UUID.fromWords 0 0 0 2 <$ initial
+                edited = case change of
+                  "remove" -> Nothing
+                  "invalid" -> Just $ DeckOverlay Nothing (Map.singleton "01016" "unimplemented-card") mempty mempty
+                  _ -> Just $ DeckOverlay Nothing mempty (Map.singleton "01008" 1) mempty
+                incoming = remote {deck = remote.deck {slots = Map.singleton "01016" 1}}
+                initialClient = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right remote}
+                syncingClient = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right incoming}
+            uid <- seedUser first label
+            encrypted <- encryptedAccount settings now uid $ tokens now
+            void $ seedAccount app first now uid label encrypted
+            Entity deckId _ <- either (fail . show) pure =<< runStoreActionsWith validatePlayableDecklist app first
+              (\store -> runExceptT $ importRemoteDeck store initialClient settings now uid "123" forbiddenPublic)
+            transaction first $ P.update deckId
+              [ArkhamDeckOverlay P.=. initial, ArkhamDeckOverlayAttachmentId P.=. seeded]
+            let writer connection hold sync
+                  | not sync = runHandlerResponse app $ runSqlConn
+                      (do
+                        saved <- saveDeckOverlay uid deckId edited
+                        liftIO hold
+                        pure saved)
+                      connection
+                  | public = runHandlerResponse app $ runSqlConn
+                      (do
+                        result <- savePublicSyncedDeck uid deckId incoming.deck
+                        saved <- either (liftIO . fail . show) pure result
+                        liftIO hold
+                        pure saved)
+                      connection
+                  | otherwise = runHandlerResponse app $ storeTransaction validatePlayableDecklist connection \store -> do
+                      result <- runExceptT $ syncRemoteDeck store syncingClient settings now uid deckId forbiddenPublic
+                      saved <- either (liftIO . fail . show) pure result
+                      liftIO hold
+                      pure saved
+            barrier <- newBarrier
+            firstPid <- backendPid first
+            secondPid <- backendPid second
+            withAsync (writer first (pauseAt barrier) syncFirst) \leading -> do
+              link leading
+              awaitBarrier barrier
+              withAsync (writer second (pure ()) (not syncFirst)) \following -> do
+                link following
+                awaitBlockedBy observer firstPid secondPid
+                releaseBarrier barrier
+                firstResult <- within "first overlay/sync writer" $ wait leading
+                firstSaved <- either (fail . show) pure firstResult
+                secondResult <- within "serialized overlay/sync writer" $ wait following
+                persisted <- transaction observer (P.getJust deckId)
+                -- ToJSON omits the private attachment id; compare it directly.
+                let attachmentOf = arkhamDeckOverlayAttachmentId . P.entityVal
+                    freshlyAssigned fresh = do
+                      fresh `shouldSatisfy` isJust
+                      fresh `shouldNotBe` seeded
+                if change == "invalid" then do
+                  -- The swap is dormant on the old empty base, but invalid on
+                  -- the fetched base. Whichever writes second must revalidate
+                  -- the actual locked composition and leave the first intact.
+                  either Just (const Nothing) secondResult `shouldBe` Just status400
+                  toJSON persisted `shouldBe` toJSON (P.entityVal firstSaved)
+                  arkhamDeckOverlayAttachmentId persisted `shouldBe` attachmentOf firstSaved
+                  if syncFirst
+                    then attachmentOf firstSaved `shouldBe` seeded
+                    else freshlyAssigned $ attachmentOf firstSaved
+                else do
+                  saved <- either (fail . show) pure secondResult
+                  toJSON persisted `shouldBe` toJSON (P.entityVal saved)
+                  arkhamDeckOverlay persisted `shouldBe` edited
+                  toJSON (arkhamDeckList persisted) `shouldBe`
+                    toJSON (if public then incoming.deck else remoteDecklist settings incoming)
+                  let (overlaySaved, syncSaved) = if syncFirst then (saved, firstSaved) else (firstSaved, saved)
+                      assigned = attachmentOf overlaySaved
+                  -- The overlay write owns the final identity: a fresh id for
+                  -- an attachment, none for removal. A provenance-free sync
+                  -- keeps whichever identity it found under the deck lock.
+                  arkhamDeckOverlayAttachmentId persisted `shouldBe` assigned
+                  attachmentOf syncSaved `shouldBe` if syncFirst then seeded else assigned
+                  if isNothing edited then assigned `shouldBe` Nothing else freshlyAssigned assigned
+
+  it "assigns a fresh private attachment id on every actual overlay PUT, even byte-identical, and clears it on DELETE" $
+    withConnection harness \connection -> do
+      uid <- seedUser connection "overlay-attachment-identity"
+      let overlay = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
+          body = toStrict $ encode overlay
+          deck = ArkhamDeck uid Nothing "Roland Banks" "Overlay attachment identity" remote.deck Nothing Nothing Nothing
+          persistedAttachment deckId = do
+            persisted <- transaction connection (P.getJust deckId)
+            arkhamDeckOverlay persisted `shouldBe` Just overlay
+            maybe (fail "Expected a persisted overlay attachment id") (pure . (,) persisted) $
+              arkhamDeckOverlayAttachmentId persisted
+      deckId <- transaction connection $ P.insert deck
+      firstSaved <- either (fail . show) pure =<< overlayRoute app uid deckId (Just body)
+      (firstPersisted, firstId) <- persistedAttachment deckId
+      arkhamDeckOverlayAttachmentId (P.entityVal firstSaved) `shouldBe` Just firstId
+      -- A second PUT of the same bytes is a NEW attachment, not a no-op.
+      secondSaved <- either (fail . show) pure =<< overlayRoute app uid deckId (Just body)
+      (secondPersisted, secondId) <- persistedAttachment deckId
+      secondId `shouldNotBe` firstId
+      arkhamDeckOverlayAttachmentId (P.entityVal secondSaved) `shouldBe` Just secondId
+      toJSON secondPersisted `shouldBe` toJSON firstPersisted
+      removed <- either (fail . show) pure =<< overlayRoute app uid deckId Nothing
+      persisted <- transaction connection (P.getJust deckId)
+      arkhamDeckOverlay persisted `shouldBe` Nothing
+      arkhamDeckOverlayAttachmentId persisted `shouldBe` Nothing
+      arkhamDeckOverlayAttachmentId (P.entityVal removed) `shouldBe` Nothing
+      toJSON persisted `shouldBe` toJSON deck
+
+  for_ [False, True] \public ->
+    it ("keeps an actual overlay PUT's attachment id through a later provenance-free "
+      <> (if public then "public" else "linked") <> " sync") $
+      withConnection harness \connection -> do
+        now <- getCurrentTime
+        let label = if public then "public-attachment-kept" else "linked-attachment-kept"
+            overlay = DeckOverlay Nothing mempty (Map.singleton "01008" 1) mempty
+            incoming = remote {deck = remote.deck {slots = Map.singleton "01016" 1}}
+            initialClient = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right remote}
+            syncingClient = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right incoming}
+        uid <- seedUser connection label
+        encrypted <- encryptedAccount settings now uid $ tokens now
+        void $ seedAccount app connection now uid label encrypted
+        Entity deckId _ <- either (fail . show) pure =<< runStoreActionsWith validatePlayableDecklist app connection
+          (\store -> runExceptT $ importRemoteDeck store initialClient settings now uid "123" forbiddenPublic)
+        attached <- either (fail . show) pure =<< overlayRoute app uid deckId (Just $ toStrict $ encode overlay)
+        attachment <- maybe (fail "Expected the PUT to assign an attachment id") pure $
+          arkhamDeckOverlayAttachmentId (P.entityVal attached)
+        result <- if public
+          then unsafeHandler app $ runSqlConn (savePublicSyncedDeck uid deckId incoming.deck) connection
+          else runStoreActionsWith validatePlayableDecklist app connection \store ->
+            runExceptT $ syncRemoteDeck store syncingClient settings now uid deckId forbiddenPublic
+        synced <- either (fail . show) pure result
+        persisted <- transaction connection (P.getJust deckId)
+        toJSON (arkhamDeckList persisted) `shouldBe`
+          toJSON (if public then incoming.deck else remoteDecklist settings incoming)
+        arkhamDeckOverlay persisted `shouldBe` Just overlay
+        arkhamDeckOverlayAttachmentId persisted `shouldBe` Just attachment
+        arkhamDeckOverlayAttachmentId (P.entityVal synced) `shouldBe` Just attachment
+
+  for_ [False, True] \public ->
+    it ("consumes incorporated overlay provenance through actual " <> (if public then "public" else "linked") <> " sync") $
+      withConnection harness \connection -> do
+        now <- getCurrentTime
+        let label = if public then "public-provenance" else "linked-provenance"
+            overlay = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
+            attachment = UUID.fromWords 0 0 0 1
+            incoming = remote {deck = withExportedAttachment (Just attachment) (Just overlay) $
+              remote.deck {slots = Map.singleton "01007" 1, meta = Just "{\"ahn_push\":\"fixture-push\"}"}}
+            initialClient = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right remote}
+            syncingClient = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right incoming}
+        uid <- seedUser connection label
+        encrypted <- encryptedAccount settings now uid $ tokens now
+        void $ seedAccount app connection now uid label encrypted
+        Entity deckId _ <- either (fail . show) pure =<< runStoreActionsWith validatePlayableDecklist app connection
+          (\store -> runExceptT $ importRemoteDeck store initialClient settings now uid "123" forbiddenPublic)
+        transaction connection $ P.update deckId
+          [ArkhamDeckOverlay P.=. Just overlay, ArkhamDeckOverlayAttachmentId P.=. Just attachment]
+        result <- if public
+          then unsafeHandler app $ runSqlConn (savePublicSyncedDeck uid deckId incoming.deck) connection
+          else runStoreActionsWith validatePlayableDecklist app connection \store ->
+            runExceptT $ syncRemoteDeck store syncingClient settings now uid deckId forbiddenPublic
+        saved <- either (fail . show) pure result
+        persisted <- transaction connection (P.getJust deckId)
+        arkhamDeckOverlay persisted `shouldBe` Nothing
+        arkhamDeckOverlayAttachmentId persisted `shouldBe` Nothing
+        slots (arkhamDeckPlayList persisted) `shouldBe` Map.singleton "01007" 1
+        toJSON persisted `shouldBe` toJSON (P.entityVal saved)
+
+  it "rejects overlay removal that would expose unsupported base cards without changing the saved deck" $
+    withConnection harness \connection -> do
+      uid <- seedUser connection "invalid-overlay-removal"
+      let hidden = DeckOverlay Nothing mempty mempty $ Map.singleton "unimplemented-card" 1
+          deck = ArkhamDeck uid Nothing "Roland Banks" "Hidden unsupported card"
+            (remote.deck {slots = Map.singleton "unimplemented-card" 1}) (Just hidden) Nothing Nothing
+      deckId <- transaction connection $ P.insert deck
+      result <- runHandlerResponse app $ runSqlConn (saveDeckOverlay uid deckId Nothing) connection
+      either Just (const Nothing) result `shouldBe` Just status400
+      persisted <- transaction connection (P.getJust deckId)
+      toJSON persisted `shouldBe` toJSON deck
+
   it "purges expired nonces and staged credentials in bounded batches without changing the account" $
     withConnection harness \connection -> do
       now <- getCurrentTime
@@ -408,3 +690,21 @@ transport = ArkhamDBClient
 
 forbiddenPublic :: MonadIO m => ArkhamDeckId -> m (Entity ArkhamDeck)
 forbiddenPublic _ = liftIO $ fail "Unexpected public fallback"
+
+-- The actual JWT-authenticated overlay PUT (with a JSON body) or DELETE handler,
+-- not saveDeckOverlay alone. Every call builds a fresh request whose body
+-- yields exactly the given bytes once, as WAI does for a real client request.
+overlayRoute :: App -> UserId -> ArkhamDeckId -> Maybe ByteString -> IO (Either Status (Entity ArkhamDeck))
+overlayRoute app uid deckId body = do
+  token <- unsafeHandler app $ userIdToToken uid
+  chunks <- newIORef $ maybeToList body
+  let nextChunk = atomicModifyIORef' chunks \case
+        chunk : rest -> (rest, chunk)
+        [] -> ([], "")
+      request = setRequestBodyChunks nextChunk defaultRequest
+        { requestMethod = maybe "DELETE" (const "PUT") body
+        , requestHeaders = ("Authorization", "Token " <> encodeUtf8 token)
+            : [("Content-Type", "application/json") | isJust body]
+        }
+  runHandlerResponse app $ withRequest request $
+    maybe deleteApiV1ArkhamDeckOverlayR (const putApiV1ArkhamDeckOverlayR) body deckId

@@ -18,7 +18,7 @@ import Api.Arkham.ArkhamDBStore qualified as Store
 import Api.Arkham.ArkhamDBWriteBack (writeBackStore, dispatchCampaignWriteBack)
 import Arkham.ArkhamDB.WriteBack
 import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
-import Api.Handler.Arkham.Decks (postApiV1ArkhamSyncDeckR, toDeckErrors)
+import Api.Handler.Arkham.Decks (postApiV1ArkhamSyncDeckR, validatePlayableDecklist)
 import Arkham.ArkhamDB
 import Arkham.ArkhamDB.Service
 import Crypto.Random (getRandomBytes)
@@ -47,9 +47,7 @@ configuredClient = getsYesod appArkhamDBClient >>= maybe
   (pure . hoistArkhamDBClient liftIO)
 
 persistentStore :: ArkhamDBStore Handler
-persistentStore = Store.persistentStore \decklist -> case toDeckErrors decklist of
-  [] -> pure ()
-  errors -> lift $ sendStatusJSON Status.status400 errors
+persistentStore = Store.persistentStore $ lift . validatePlayableDecklist
 
 postApiV1ArkhamArkhamDBLinkStartR :: Handler ArkhamDBLinkStartResponse
 postApiV1ArkhamArkhamDBLinkStartR = do
@@ -175,6 +173,6 @@ ownedWriteBackDeck :: UserId -> ArkhamDeckId -> Handler ()
 ownedWriteBackDeck userId deckId = do
   found <- persistentStore.findDeck deckId
   case found of
-    Just (deck, Just link) | arkhamDeckUserId deck == userId ->
+    Just (deck, Just (Entity _ link)) | arkhamDeckUserId deck == userId ->
       unless (arkhamDBDeckLinkWriteBack link) $ sendStatusJSON Status.status409 $ ArkhamDBError "writeBackDisabled" "Deck write-back is disabled"
     _ -> notFound

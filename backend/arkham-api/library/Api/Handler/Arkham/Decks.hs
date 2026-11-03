@@ -5,6 +5,7 @@ module Api.Handler.Arkham.Decks (
   postApiV1ArkhamDecksFetchR,
   postApiV1ArkhamDecksValidateR,
   deleteApiV1ArkhamDeckR,
+  deleteOwnedSavedDeck,
   deleteSavedDeckResponse,
   putApiV1ArkhamGameDecksR,
   postApiV1ArkhamSyncDeckR,
@@ -16,6 +17,9 @@ module Api.Handler.Arkham.Decks (
   toDeckErrors,
   putApiV1ArkhamDeckOverlayR,
   deleteApiV1ArkhamDeckOverlayR,
+  savePublicSyncedDeck,
+  saveDeckOverlay,
+  validatePlayableDecklist,
 ) where
 
 import Import hiding (delete, on, update, (=.), (==.))
@@ -486,17 +490,20 @@ getApiV1ArkhamDeckR deckId = do
 deleteApiV1ArkhamDeckR :: ArkhamDeckId -> Handler ()
 deleteApiV1ArkhamDeckR deckId = do
   userId <- getRequestUserId
-  deleteSavedDeckResponse $ runDB do
-    -- Excludes enqueue's key-share fence until the usage check and DELETE
-    -- commit together. A foreign/missing id remains a non-disclosing no-op.
-    locked <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? AND user_id = ? FOR UPDATE"
-      [toPersistValue deckId, toPersistValue userId] :: DB [Entity ArkhamDeck]
-    if null locked then pure True else do
-      campaigns <- Persist.count [ArkhamDBCampaignDeckDeckId P.==. deckId]
-      outstanding <- Persist.count [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]]
-      if campaigns > 0 || outstanding > 0 then pure False else do
-        Persist.delete deckId
-        pure True
+  deleteSavedDeckResponse $ runDB $ deleteOwnedSavedDeck userId deckId
+
+deleteOwnedSavedDeck :: UserId -> ArkhamDeckId -> DB Bool
+deleteOwnedSavedDeck userId deckId = do
+  -- Excludes enqueue's key-share fence until the usage check and DELETE
+  -- commit together. A foreign/missing id remains a non-disclosing no-op.
+  locked <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? AND user_id = ? FOR UPDATE"
+    [toPersistValue deckId, toPersistValue userId] :: DB [Entity ArkhamDeck]
+  if null locked then pure True else do
+    campaigns <- Persist.count [ArkhamDBCampaignDeckDeckId P.==. deckId]
+    outstanding <- Persist.count [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]]
+    if campaigns > 0 || outstanding > 0 then pure False else do
+      Persist.delete deckId
+      pure True
 
 -- Shared actual HTTP response boundary; SQL ownership/usage checks above stay
 -- in the locked transaction, not in a client-side or pre-I/O projection.
@@ -513,6 +520,7 @@ newtype JSONError = JSONError {errorMsg :: Text}
 postApiV1ArkhamSyncDeckR :: ArkhamDeckId -> Handler (Entity ArkhamDeck)
 postApiV1ArkhamSyncDeckR deckId = do
   userId <- getRequestUserId
+  registerUserCustomCards userId
   deck <- runDB $ get404 deckId
   unless (arkhamDeckUserId deck == userId) do
     sendStatusJSON
@@ -521,21 +529,7 @@ postApiV1ArkhamSyncDeckR deckId = do
   edecklist <- maybe (pure $ Left "no deck url") getDeckList (arkhamDeckUrl deck)
   case edecklist of
     Right decklist -> do
-      result <- runDB do
-        locked <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? FOR UPDATE"
-          [toPersistValue deckId] :: DB [Entity ArkhamDeck]
-        let adoption = case viaNonEmpty head locked of
-              Nothing -> Left $ ArkhamDBError "notFound" "Saved deck no longer exists"
-              Just (Entity _ current) -> adoptDecklist current decklist
-        case adoption of
-          Left err -> pure $ Left err
-          Right adopted -> do
-            P.update deckId
-              [ ArkhamDeckList P.=. arkhamDeckList adopted
-              , ArkhamDeckOverlay P.=. arkhamDeckOverlay adopted
-              , ArkhamDeckOverlayAttachmentId P.=. arkhamDeckOverlayAttachmentId adopted
-              ]
-            pure $ Right $ Entity deckId adopted
+      result <- runDB $ savePublicSyncedDeck userId deckId decklist
       either (\err -> sendStatusJSON (arkhamDBErrorStatus err) $ JSONError $ arkhamDBErrorMessage err) pure result
     Left _ -> sendStatusJSON Status.status400 (JSONError "Could not sync deck")
 
@@ -547,6 +541,62 @@ ownedDeck deckId = do
     $ sendStatusJSON Status.status400 (JSONError "Deck does not belong to this user")
   pure deck
 
+-- These writers share linked sync's deck-row lock. Validation must use the
+-- locked current base/overlay, not a projection prepared before waiting.
+lockedOwnedDeck :: UserId -> ArkhamDeckId -> ReaderT SqlBackend Handler ArkhamDeck
+lockedOwnedDeck userId deckId = lockDeck deckId >>= \case
+  Nothing -> lift notFound
+  Just deck -> do
+    requireDeckOwner userId deck
+    pure deck
+
+lockDeck :: ArkhamDeckId -> DB (Maybe ArkhamDeck)
+lockDeck deckId = do
+  rows <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? FOR UPDATE"
+    [toPersistValue deckId] :: DB [Entity ArkhamDeck]
+  pure $ entityVal <$> viaNonEmpty head rows
+
+requireDeckOwner :: UserId -> ArkhamDeck -> ReaderT SqlBackend Handler ()
+requireDeckOwner userId deck =
+  unless (arkhamDeckUserId deck == userId)
+    $ lift $ sendStatusJSON Status.status400 (JSONError "Deck does not belong to this user")
+
+validatePlayableDecklist :: ArkhamDBDecklist -> Handler ()
+validatePlayableDecklist decklist = case toDeckErrors decklist of
+  [] -> pure ()
+  errors -> sendStatusJSON Status.status400 errors
+
+savePublicSyncedDeck :: UserId -> ArkhamDeckId -> ArkhamDBDecklist -> ReaderT SqlBackend Handler (Either ArkhamDBError (Entity ArkhamDeck))
+savePublicSyncedDeck userId deckId decklist = lockDeck deckId >>= \case
+  Nothing -> pure $ Left $ ArkhamDBError "notFound" "Saved deck no longer exists"
+  Just current -> do
+    requireDeckOwner userId current
+    case adoptDecklist current decklist of
+      Left err -> pure $ Left err
+      Right adopted -> do
+        lift $ validatePlayableDecklist $ arkhamDeckPlayList adopted
+        P.update deckId
+          [ ArkhamDeckList P.=. arkhamDeckList adopted
+          , ArkhamDeckOverlay P.=. arkhamDeckOverlay adopted
+          , ArkhamDeckOverlayAttachmentId P.=. arkhamDeckOverlayAttachmentId adopted
+          ]
+        Right . Entity deckId <$> getJust deckId
+
+saveDeckOverlay :: UserId -> ArkhamDeckId -> Maybe DeckOverlay -> ReaderT SqlBackend Handler (Entity ArkhamDeck)
+saveDeckOverlay userId deckId overlay = do
+  current <- lockedOwnedDeck userId deckId
+  -- A PUT is a new attachment even when its JSON equals an earlier one;
+  -- removing the overlay also removes its attachment identity.
+  updated <- case overlay of
+    Nothing -> pure current {arkhamDeckOverlay = Nothing, arkhamDeckOverlayAttachmentId = Nothing}
+    Just value -> liftIO UUID.nextRandom <&> \attachment -> attachDeckOverlay attachment value current
+  lift $ validatePlayableDecklist $ arkhamDeckPlayList updated
+  P.update deckId
+    [ ArkhamDeckOverlay P.=. arkhamDeckOverlay updated
+    , ArkhamDeckOverlayAttachmentId P.=. arkhamDeckOverlayAttachmentId updated
+    ]
+  Entity deckId <$> getJust deckId
+
 {- | Lay an overlay over a deck, or take it off again.
 
 The deck's own list is untouched either way, so removing the overlay leaves the
@@ -557,17 +607,10 @@ putApiV1ArkhamDeckOverlayR deckId = do
   deck <- ownedDeck deckId
   overlay <- requireCheckJsonBody
   registerUserCustomCards (arkhamDeckUserId deck)
-  attachment <- liftIO UUID.nextRandom
-  let overlaid = attachDeckOverlay attachment overlay deck
-  case toDeckErrors (arkhamDeckPlayList overlaid) of
-    [] -> do
-      runDB $ P.update deckId
-        [ArkhamDeckOverlay P.=. Just overlay, ArkhamDeckOverlayAttachmentId P.=. Just attachment]
-      pure $ Entity deckId overlaid
-    err -> sendStatusJSON Status.status400 err
+  runDB $ saveDeckOverlay (arkhamDeckUserId deck) deckId $ Just overlay
 
 deleteApiV1ArkhamDeckOverlayR :: ArkhamDeckId -> Handler (Entity ArkhamDeck)
 deleteApiV1ArkhamDeckOverlayR deckId = do
   deck <- ownedDeck deckId
-  runDB $ P.update deckId [ArkhamDeckOverlay P.=. Nothing, ArkhamDeckOverlayAttachmentId P.=. Nothing]
-  pure $ Entity deckId $ deck {arkhamDeckOverlay = Nothing, arkhamDeckOverlayAttachmentId = Nothing}
+  registerUserCustomCards (arkhamDeckUserId deck)
+  runDB $ saveDeckOverlay (arkhamDeckUserId deck) deckId Nothing
