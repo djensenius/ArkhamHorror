@@ -1012,10 +1012,10 @@ spec = describe "ArkhamDB campaign write-back" do
         ("full Dream-Eaters", dreamIdentityGame Dream.FullMode $ Just Dream.TheDreamQuest, FullDreamEatersGame Dream.TheDreamQuest),
         ("unknown Dream-Eaters part", dreamIdentityGame Dream.FullMode Nothing, MalformedCampaignGame)] \(label, game, expected) ->
     it ("reuses the in-memory " <> label <> " undo identity without a database game read") do
-      let identity = campaignGameIdentityFromGameJSON $ toJSON game
-          known = Map.singleton identityGameId identity
+      let heldIdentity = campaignGameIdentityFromGameJSON $ toJSON game
+          known = Map.singleton identityGameId heldIdentity
           keys = [legacyIdentityKey, UUID.toText UUID.nil <> "/01002", legacyIdentityKey <> "/webOfDreams"]
-      identity `shouldBe` expected
+      heldIdentity `shouldBe` expected
       games <- loadCampaignIdentitiesWith (const $ fail "Undo re-read a game it already holds") known keys
       games `shouldBe` known
 
