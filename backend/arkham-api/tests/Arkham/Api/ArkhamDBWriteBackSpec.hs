@@ -456,6 +456,71 @@ applyDeckUpdates updates deck = entityVal $ foldl' apply (Entity Linking.deckId 
 
 spec :: Spec
 spec = describe "ArkhamDB campaign write-back" do
+  it "preserves the double-overlay materialized seat through Homunculus movement and save-as-new" do
+    h <- newHarness
+    (gameRef, pid, drain) <- newCampaignMessages
+    let overlay = DeckOverlay (Just "01002") mempty mempty mempty
+        perGame = DeckOverlay (Just "01003") mempty mempty mempty
+        base = Linking.remote.deck
+          {Decklist.slots = Map.fromList [("01016", 1), ("11068a", 1)], Decklist.meta = Nothing}
+        saved = attachDeckOverlay UUID.nil overlay $
+          ArkhamDeck Linking.userId base.url "Deck" "Roland" base Nothing Nothing Nothing
+        chosen = applyOverlay perGame $ arkhamDeckPlayList saved
+        capture game liveIid = do
+          (deckIid, stableIid) <- maybe (fail "Missing transformed double-overlay identity") pure $
+            campaignWriteBackSeatIdentity game liveIid
+          (deckIid, stableIid) `shouldBe` ("11068b", "01003")
+          let attrs = maybe (error "Missing campaign") toAttrs $ modeCampaign game.gameMode
+              cards = maybe [] unDeck $ Map.lookup deckIid $ campaignDecks attrs
+              snapshot = campaignWriteBackSnapshot (campaignStore attrs) deckIid stableIid base cards [] [] Nothing Nothing
+          case exportedOverlay snapshot of
+            Just (Object proof) -> do
+              KM.lookup "materializedInvestigator" proof `shouldBe` Just (toJSON stableIid)
+              KM.lookup "attachmentId" proof `shouldBe` Just (toJSON UUID.nil)
+              KM.lookup "overlay" proof `shouldBe` Just (toJSON overlay)
+            _ -> expectationFailure "Missing moved attachment proof"
+          snapshot.investigator_code `shouldBe` stableIid
+          capturedPushInvestigatorConsistent snapshot `shouldBe` True
+          key <- maybe (fail "Missing transformed campaign key") pure $
+            campaignWriteBackKey identityGameId game liveIid
+          key `shouldBe` UUID.toText UUID.nil <> "/01003"
+          campaignKeyContradictsPushInvestigator key snapshot `shouldBe` False
+          campaignAdmissionAllowed (Map.singleton identityGameId OrdinaryCampaignGame) [] key `shouldBe` True
+          pure (key, snapshot)
+    (arkhamDeckPlayList saved).investigator `shouldBe` "01002"
+    chosen.investigator `shouldBe` "01003"
+    initial <- readIORef gameRef
+    drain $ deckChosenWithAttachment initial pid (Just UUID.nil) (Just overlay) chosen
+    seated <- readIORef gameRef
+    Map.keys (gameInvestigators seated) `shouldBe` ["01003"]
+    let seatedStore = campaignStore . toAttrs <$> modeCampaign seated.gameMode
+        seatedProof = seatedStore >>= Map.lookup (campaignDeckOverlayKey "01003")
+    -- The real campaign runner moves both the stable identity and the whole
+    -- attachment proof, while the live investigator keeps its old id until reset.
+    drain [ReloadDecks, BecomeHomunculus "01003"]
+    transformed <- readIORef gameRef
+    let movedStore = campaignStore . toAttrs <$> modeCampaign transformed.gameMode
+    (movedStore >>= Map.lookup (campaignDeckOverlayKey "01003")) `shouldBe` Nothing
+    (movedStore >>= Map.lookup (campaignDeckOverlayKey "11068b")) `shouldBe` seatedProof
+    (movedStore >>= Map.lookup (campaignDeckIdentityKey "11068b")) `shouldBe` Just (toJSON ("01003" :: InvestigatorId))
+    (beforeKey, _) <- capture transformed "01003"
+    drain [ResetGame, ForTarget GameTarget ResetGame]
+    promoted <- readIORef gameRef
+    Map.keys (gameInvestigators promoted) `shouldBe` ["11068b"]
+    (key, snapshot) <- capture promoted "11068b"
+    key `shouldBe` beforeKey
+    modifyIORef' h.job \job -> job
+      {arkhamDBPushCampaignKey = key, arkhamDBPushPayload = encodePushDeck snapshot, arkhamDBPushMode = "new"}
+    h.run False
+    assertState h "succeeded"
+    arkhamDBPushError <$> readIORef h.job `shouldReturn` Nothing
+    filter (== "new") <$> readIORef h.calls `shouldReturn` ["new"]
+    filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` []
+    target <- Map.lookup "125" <$> readIORef h.remotes >>= maybe (fail "Missing independent target") pure
+    target.deck.investigator `shouldBe` "01003"
+    target.deck.slots `shouldBe` snapshot.slots
+    fmap (.deck.investigator) . Map.lookup "123" <$> readIORef h.remotes `shouldReturn` Just "01001"
+
   for_ ["sync", "import", "upgrade" :: Text] \adoption ->
     for_ ["same", "replace", "delete-reattach" :: Text] \edit ->
       for_ [False, True] \changedBase ->
