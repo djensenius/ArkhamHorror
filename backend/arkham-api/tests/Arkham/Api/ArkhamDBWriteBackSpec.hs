@@ -1046,7 +1046,7 @@ spec = describe "ArkhamDB campaign write-back" do
     campaignAdmissionAllowed games [legacyIdentityKey] currentKey `shouldBe` False
     savedDeckUpgradeTargets (const $ pure $ Just saved) (const $ fail "Wrong URL fallback")
       Linking.userId (Just association) Nothing `shouldReturn` [Linking.deckId]
-    savedDeckUpgradeUpdates validateDeckUpgrade Linking.now saved currentDeck `shouldSatisfy` isRight
+    isRight (savedDeckUpgradeUpdates validateDeckUpgrade Linking.now saved currentDeck) `shouldBe` True
 
   it "refuses unknown or colliding transformed write-back identities without guessing a fresh lineage" do
     campaignWriteBackIdentity mempty ["11068b"] "11068b" True `shouldBe` Nothing
