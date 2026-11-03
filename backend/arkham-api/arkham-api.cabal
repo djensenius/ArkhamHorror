@@ -9312,9 +9312,14 @@ test-suite arkhamdb-postgres
   type: exitcode-stdio-1.0
   main-is: Main.hs
   other-modules:
+      Postgres.ConcurrencySpec
+      Postgres.DeleteSpec
+      Postgres.DispatchSpec
       Postgres.Harness
       Postgres.HarnessSpec
+      Postgres.PayloadSpec
       Postgres.Production
+      Postgres.Remote
       Postgres.WriteBackSpec
       Paths_arkham_api
   hs-source-dirs:

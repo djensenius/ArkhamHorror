@@ -438,7 +438,12 @@ updateGame :: Map CardCode CustomCard -> Answer -> ArkhamGameId -> Maybe Room ->
 updateGame customCards response gameId mRoom = void $ updateGameWithAnswerRejection customCards response gameId mRoom
 
 updateGameWithAnswerRejection :: Map CardCode CustomCard -> Answer -> ArkhamGameId -> Maybe Room -> Handler (Maybe Text)
-updateGameWithAnswerRejection customCards response gameId mRoom = do
+updateGameWithAnswerRejection = updateGameWithAnswerRejectionWith runDB
+
+-- Keep the complete answer/queue transaction intact while allowing integration
+-- tests to observe or abort its real database runner before commit.
+updateGameWithAnswerRejectionWith :: (forall a. SqlPersistT Handler a -> Handler a) -> Map CardCode CustomCard -> Answer -> ArkhamGameId -> Maybe Room -> Handler (Maybe Text)
+updateGameWithAnswerRejectionWith database customCards response gameId mRoom = do
   let broadcast :: Broadcast
       broadcast = case mRoom of
         Nothing -> \_ -> pure ()
@@ -454,7 +459,7 @@ updateGameWithAnswerRejection customCards response gameId mRoom = do
     , mPhaseChanged
     , mAnswerRejection
     , writeBackRequested
-    ) <- rejectOrganizerGate $ runDB $ atomicallyWithGame gameId \g@ArkhamGame {..} -> do
+    ) <- rejectOrganizerGate $ database $ atomicallyWithGame gameId \g@ArkhamGame {..} -> do
     -- Read the prior log from the per-room cache when it's in sync with
     -- the just-locked game's step; otherwise fall back to the DB. Avoids
     -- the 217-row-avg log read on every action in the common case, and the

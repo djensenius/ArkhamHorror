@@ -35,6 +35,10 @@ import Network.HTTP.Types (Status, status400)
 import Network.Wai (defaultRequest, requestHeaders, requestMethod, setRequestBodyChunks)
 import Postgres.Harness
 import Postgres.HarnessSpec qualified as Harness
+import Postgres.DispatchSpec qualified as DispatchSQL
+import Postgres.PayloadSpec qualified as PayloadSQL
+import Postgres.ConcurrencySpec qualified as ConcurrencySQL
+import Postgres.DeleteSpec qualified as DeleteSQL
 import Postgres.Production
 import Postgres.WriteBackSpec qualified as WriteBackSQL
 import Relude hiding (first, second)
@@ -51,6 +55,29 @@ main = withHarness \harness -> withProductionApp harness \app ->
   hspec do
     Harness.spec harness
     spec harness app
+    WriteBackSQL.spec harness app remote (writeBackSeed app)
+      (\connection uid label -> do
+        now <- getCurrentTime
+        encrypted <- encryptedAccount settings now uid $ tokens now
+        void $ seedAccount app connection now uid label encrypted
+        let client = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right remote}
+        fmap entityKey $ either (fail . show) pure =<< runStoreActions app connection
+          (\store -> runExceptT $ importRemoteDeck store client settings now uid "123" forbiddenPublic))
+    DispatchSQL.spec harness app settings transport remote (writeBackSeed app)
+    PayloadSQL.spec harness app settings transport remote (writeBackSeed app)
+    ConcurrencySQL.spec harness app settings transport remote (writeBackSeed app)
+    DeleteSQL.spec harness app settings transport remote (writeBackSeed app)
+
+writeBackSeed :: App -> WriteBackSQL.Seed
+writeBackSeed app connection label = do
+  now <- getCurrentTime
+  uid <- seedUser connection label
+  encrypted <- encryptedAccount settings now uid $ tokens now
+  generation <- seedAccount app connection now uid label encrypted
+  let client = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right remote}
+  Entity deckId _ <- either (fail . show) pure =<< runStoreActions app connection
+    (\store -> runExceptT $ importRemoteDeck store client settings now uid "123" forbiddenPublic)
+  pure (uid, generation, deckId)
 
 spec :: Harness -> App -> Spec
 spec harness app = describe "ArkhamDB production PostgreSQL stores" do
@@ -539,6 +566,96 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
       either Just (const Nothing) result `shouldBe` Just status400
       persisted <- transaction connection (P.getJust deckId)
       toJSON persisted `shouldBe` toJSON deck
+
+  for_ [False, True] \unlink ->
+    for_ ["unstarted", "uncertain-ready", "creating", "created", "acknowledged"] \checkpoint ->
+      it ("retains production " <> toString checkpoint <> " accounting across "
+        <> if unlink then "unlink/relink" else "callback generation replacement") $
+        withConnection harness \connection -> do
+          now <- getCurrentTime
+          let label = "accounting-" <> checkpoint <> if unlink then "-unlink" else "-replace"
+              client = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right remote}
+          uid <- seedUser connection label
+          encrypted <- encryptedAccount settings now uid $ tokens now
+          generation <- seedAccount app connection now uid label encrypted
+          Entity deckId _ <- either (fail . show) pure =<< runStoreActions app connection
+            (\store -> runExceptT $ importRemoteDeck store client settings now uid "123" forbiddenPublic)
+          unsafeHandler app (writeBackStore.toggleWriteBack now uid deckId True) `shouldReturn` True
+          gameKey <- WriteBackSQL.seedCampaignGame connection label now
+          let gameId = UUID.toText $ coerce gameKey
+              campaign = gameId <> "/01001"
+              event = gameId <> "/5/01001/" <> gameId
+          pushId <- transaction connection do
+            P.insert_ $ ArkhamDBCampaignDeck campaign deckId uid 0
+            P.insert $ ArkhamDBPush deckId uid generation event campaign (encodePushDeck remote.deck) 5
+              "pending" "ready" Nothing Nothing remote.dateUpdate remote.deckVersion
+              Nothing Nothing Nothing "normal" now now "scenarioEnd"
+          previous <- if checkpoint == "unstarted" then transaction connection $ P.getJustEntity pushId else do
+            claimed <- unsafeHandler app (writeBackStore.claimPush now False uid deckId)
+              >>= maybe (fail "Expected real write-back claim") pure
+            let advance old stage target status = do
+                  let updated = (P.entityVal old)
+                        { arkhamDBPushStage = stage, arkhamDBPushTargetId = target
+                        , arkhamDBPushStatus = status
+                        , arkhamDBPushError = if status == "failed" then Just "remoteUnavailable" else Nothing
+                        }
+                  unsafeHandler app (writeBackStore.checkpointPush old updated) `shouldReturn` True
+                  pure $ Entity pushId updated
+            case checkpoint of
+              "uncertain-ready" -> pure claimed
+              "creating" -> advance claimed "creating" Nothing "failed"
+              "created" -> do
+                creating <- advance claimed "creating" Nothing "running"
+                advance creating "created" (Just "456") "failed"
+              "acknowledged" -> do
+                unsafeHandler app (writeBackStore.finishPush claimed remote) `shouldReturn` Just deckId
+                transaction connection $ P.getJustEntity pushId
+              _ -> fail "Unknown checkpoint fixture"
+          when unlink $ runStoreActions app connection \store ->
+            either (liftIO . fail . show) pure =<< runExceptT (unlinkLinkedAccount store uid)
+          let later = addUTCTime 120 now
+          fresh <- encryptedAccount settings later uid $ (tokens later) {accessToken = "fresh-generation-access"}
+          newGeneration <- seedAccount app connection later uid (label <> "-new") fresh
+          newGeneration `shouldNotBe` generation
+          transaction connection (isNothing <$> P.get generation) `shouldReturn` True
+          transaction connection (P.count [ArkhamDBLinkStateUserId P.==. uid]) `shouldReturn` 0
+          let fenced = checkpoint `elem` ["uncertain-ready", "creating", "created"]
+              expectedStatus = if fenced then "conflict" else if checkpoint == "unstarted" then "cancelled" else "succeeded"
+              baseline = if checkpoint == "acknowledged" then 5 else 0
+              assertAccounting = do
+                retained <- transaction connection $ P.getJust pushId
+                arkhamDBPushStatus retained `shouldBe` expectedStatus
+                arkhamDBPushError retained `shouldBe` if fenced then Just "accountChanged" else Nothing
+                arkhamDBPushGeneration retained `shouldBe` generation
+                arkhamDBPushTargetId retained `shouldBe` arkhamDBPushTargetId (P.entityVal previous)
+                unsafeHandler app (writeBackStore.campaignXpBaseline campaign) `shouldReturn` baseline
+          assertAccounting
+          when fenced do
+            -- A fresh generation's older-timestamped work in another campaign
+            -- must not hide the durable uncertainty or become runnable.
+            transaction connection $ P.insert_ $ ArkhamDBPush deckId uid newGeneration
+              (event <> "-other") (campaign <> "-other") (encodePushDeck remote.deck) 5
+              "pending" "ready" Nothing Nothing remote.dateUpdate remote.deckVersion
+              Nothing Nothing Nothing "normal" (addUTCTime (-1) now) later "scenarioEnd"
+            for_ [False, True] \retry ->
+              unsafeHandler app (isNothing <$> writeBackStore.claimPush later retry uid deckId) `shouldReturn` True
+            unsafeHandler app (writeBackStore.requestPushRetry later uid deckId)
+            for_ ["keep", "overwrite", "new"] \mode ->
+              unsafeHandler app (writeBackStore.resolvePush later uid deckId mode) `shouldReturn` False
+            unsafeHandler app (writeBackStore.keepRemoteDeck previous remote) `shouldReturn` False
+            unsafeHandler app (writeBackStore.finishPush previous remote) `shouldReturn` Nothing
+            unsafeHandler app (writeBackStore.checkpointPush previous $ P.entityVal previous) `shouldReturn` False
+            for_ [False, True] \enabled -> do
+              unsafeHandler app (writeBackStore.toggleWriteBack later uid deckId enabled) `shouldReturn` not unlink
+              assertAccounting
+            for_ [4, 0] \restoredStep -> do
+              transaction connection $ WriteBackSQL.undoCampaignWriteBack gameKey restoredStep
+              assertAccounting
+            unless unlink do
+              statuses <- unsafeHandler app $ writeBackStore.deckWriteBackStatus uid
+              statuses `shouldSatisfy` (not . null)
+              -- Exact production encoder, not a separately modelled status.
+              show (toJSON statuses) `shouldContain` "accountChanged"
 
   it "purges expired nonces and staged credentials in bounded batches without changing the account" $
     withConnection harness \connection -> do
