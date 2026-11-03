@@ -8,11 +8,12 @@ import Arkham.ArkhamDB.Campaign (CampaignGameIdentity, campaignAdmissionAllowed,
 import Arkham.ArkhamDB.Service
 import Arkham.Decklist (ArkhamDBDecklist)
 import Arkham.Decklist qualified as Decklist
+import Arkham.Custom.Overlay (DeckOverlay (..))
 import Control.Concurrent (ThreadId, myThreadId, modifyMVar, modifyMVar_, killThread)
 import System.Timeout (timeout)
 import Control.Monad.Except
 import Data.Aeson
-import Data.Aeson.Types (parseEither)
+import Data.Aeson.Types (parseEither, parseMaybe)
 import Data.Aeson.KeyMap qualified as KM
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
 import Data.Text qualified as T
@@ -511,6 +512,18 @@ unmarkedDeck deck = deck {Decklist.meta = case deck.meta >>= decodeStrict' . enc
 samePushInvestigator :: ArkhamDBDecklist -> ArkhamDBRemoteDeck -> Bool
 samePushInvestigator desired remote = desired.investigator_code == remote.deck.investigator
 
+-- Old payloads may still carry a base code contradicted by their captured
+-- overlay/front. Refuse that evidence of stale identity, never reinterpret it
+-- as permission to mutate another lineage (including via save-as-new).
+capturedPushInvestigatorConsistent :: ArkhamDBDecklist -> Bool
+capturedPushInvestigatorConsistent deck =
+  let overlay = case exportedOverlay deck of
+        Just (Object proof) -> parseMaybe parseJSON $ fromMaybe (Object proof) $ KM.lookup "overlay" proof
+        _ -> Nothing
+      effective = deck {Decklist.investigator_code =
+        fromMaybe deck.investigator_code $ overlay >>= overlayInvestigator}
+  in deck.investigator_code == effective.investigator
+
 samePushedDeck :: ArkhamDBDecklist -> ArkhamDBRemoteDeck -> Bool
 samePushedDeck desired remote =
   desired.slots == remote.deck.slots && desired.sideSlots == remote.deck.sideSlots
@@ -707,6 +720,8 @@ runWriteBackWithClock clock store writes client settings now retry userId deckId
         processDeck entity link = do
           let job = entityVal entity
           (prepared, unmarked, fields) <- either (const $ throwError $ ArkhamDBError "storageFailure" "Invalid pending deck") pure $ decodePushPreparation $ arkhamDBPushPayload job
+          unless (capturedPushInvestigatorConsistent unmarked) $
+            throwError $ ArkhamDBError "validationFailed" "Deck contains unsupported cards"
           desired <- either throwError pure $ markedDeck (entityKey entity) unmarked
           when (not prepared && (arkhamDBPushStage job /= "ready" || hasCreationIntent job)) $
             throwError $ ArkhamDBError "pushUncertain" "Legacy in-flight payload has no prepared remote-field provenance"

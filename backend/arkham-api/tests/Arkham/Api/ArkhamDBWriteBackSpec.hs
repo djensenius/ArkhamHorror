@@ -2213,6 +2213,21 @@ spec = describe "ArkhamDB campaign write-back" do
       target.deck.slots `shouldBe` snapshot.slots
       fmap (.deck.investigator_code) . Map.lookup "123" <$> readIORef h.remotes `shouldReturn` Just "01001"
 
+  for_ [False, True] \prepared ->
+    for_ ["normal", "new"] \mode ->
+      it ("fences an old payload whose overlay proves its base investigator is stale: " <> show (prepared, mode)) do
+        h <- newHarness
+        let overlay = DeckOverlay (Just "01002") mempty mempty mempty
+            stale = withExportedAttachment (Just UUID.nil) (Just overlay) currentDeck {Decklist.meta = Nothing}
+            payload = if prepared then encodePreparedPushDeck stale Nothing else encodePushDeck stale
+        modifyIORef' h.job \job -> job {arkhamDBPushPayload = payload, arkhamDBPushMode = mode}
+        h.run False
+        assertState h "failed"
+        arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "validationFailed"
+        arkhamDBPushPayload <$> readIORef h.job `shouldReturn` payload
+        readIORef h.calls `shouldReturn` []
+        readIORef h.baseline `shouldReturn` 0
+
   for_ [False, True] \lostReply ->
     it ("refuses to save into a created/recovered target with the wrong investigator, lostReply=" <> show lostReply) do
       h <- newHarness
