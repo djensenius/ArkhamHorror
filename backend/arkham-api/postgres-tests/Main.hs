@@ -199,8 +199,11 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
       stored <- runStore app observer (\store -> store.findAccount uid) >>= maybe (fail "Expected linked account") pure
       persisted <- linkedRows observer uid
       barrier <- newBarrier
+      calls <- newIORef (0 :: Int)
       let client = hoistArkhamDBClient liftIO $ transport
-            { refreshTokens = \_ -> fail "Refresh reached ArkhamDB without the refresh lock" }
+            { refreshTokens = \_ -> do
+                modifyIORef' calls (+ 1)
+                fail "Refresh reached ArkhamDB without the refresh lock" }
       holdingPid <- backendPid holding
       refreshingPid <- backendPid refreshing
       withAsync (runStore app holding \store -> withRefreshLock store uid \_ -> liftIO $ pauseAt barrier) \holder -> do
@@ -221,6 +224,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
             elapsed `shouldSatisfy` (>= 4.5)
         releaseBarrier barrier
         within "refresh lock holder commits" $ wait holder
+      readIORef calls `shouldReturn` 0
       linkedRows observer uid `shouldReturn` persisted
       runStore app observer (\store -> store.findAccountGeneration uid) `shouldReturn` Just generation
 
