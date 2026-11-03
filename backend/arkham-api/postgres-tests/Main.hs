@@ -8,7 +8,9 @@ module Main where
 
 import Arkham.ArkhamDB
 import Api.Arkham.ArkhamDBCleanup (cleanupBatchSize, purgeExpiredLinks)
+import Api.Arkham.ArkhamDBStore (persistentStoreWith)
 import Api.Arkham.ArkhamDBWriteBack (writeBackStore)
+import Api.Handler.Arkham.ArkhamDB (runArkhamDB)
 import Api.Handler.Arkham.Decks
   ( deleteApiV1ArkhamDeckOverlayR, putApiV1ArkhamDeckOverlayR, saveDeckOverlay, savePublicSyncedDeck
   , validatePlayableDecklist )
@@ -18,7 +20,7 @@ import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Control.Concurrent.MVar qualified as MVar
 import Control.Exception (throwIO)
-import Data.Aeson (encode, toJSON)
+import Data.Aeson (decode, encode, toJSON)
 import Data.Map.Strict qualified as Map
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
 import Data.UUID qualified as UUID
@@ -30,8 +32,9 @@ import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
 import Entity.Arkham.Game
 import Entity.User (UserId)
-import Foundation (App, unsafeHandler, userIdToToken)
-import Network.HTTP.Types (Status, status400)
+import Foundation (App, Handler, unsafeHandler, userIdToToken)
+import GHC.Clock (getMonotonicTime)
+import Network.HTTP.Types (Status, status400, status409, status502)
 import Network.Wai (defaultRequest, requestHeaders, requestMethod, setRequestBodyChunks)
 import Postgres.Harness
 import Postgres.HarnessSpec qualified as Harness
@@ -185,6 +188,52 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
       stored <- runStore app observer (\store -> store.findAccount uid)
       isNothing stored `shouldBe` True
       runStore app observer (\store -> store.updateAccount previous previous) `shouldReturn` False
+
+  it "turns production refresh lock contention into remoteUnavailable at the lock deadline" $
+    withConnection harness \holding -> withConnection harness \refreshing -> withConnection harness \observer -> do
+      now <- getCurrentTime
+      uid <- seedUser holding "refresh-deadline"
+      previous <- encryptedAccount settings now uid $
+        (tokens now) {tokenExpiresAt = Just $ addUTCTime (-60) now}
+      generation <- seedAccount app holding now uid "refresh-deadline" previous
+      stored <- runStore app observer (\store -> store.findAccount uid) >>= maybe (fail "Expected linked account") pure
+      persisted <- linkedRows observer uid
+      barrier <- newBarrier
+      let client = hoistArkhamDBClient liftIO $ transport
+            { refreshTokens = \_ -> fail "Refresh reached ArkhamDB without the refresh lock" }
+      holdingPid <- backendPid holding
+      refreshingPid <- backendPid refreshing
+      withAsync (runStore app holding \store -> withRefreshLock store uid \_ -> liftIO $ pauseAt barrier) \holder -> do
+        link holder
+        awaitBarrier barrier
+        started <- getMonotonicTime
+        withAsync
+          (within "refresh at lock deadline" do
+            result <- refreshResponse app refreshing client now stored
+            finished <- getMonotonicTime
+            pure (result, finished - started))
+          \refresh -> do
+            link refresh
+            awaitBlockedBy observer holdingPid refreshingPid
+            (result, elapsed) <- wait refresh
+            result `shouldBe` Left (status502, Just "remoteUnavailable")
+            -- The 3s server default would fail here: the 5s SET LOCAL deadline fired.
+            elapsed `shouldSatisfy` (>= 4.5)
+        releaseBarrier barrier
+        within "refresh lock holder commits" $ wait holder
+      linkedRows observer uid `shouldReturn` persisted
+      runStore app observer (\store -> store.findAccountGeneration uid) `shouldReturn` Just generation
+
+  it "keeps credentials, generation and mappings after a failed remote refresh" $
+    refreshFailureCase harness app "refresh-remote-error" (Just "fixture-refresh")
+      (Just $ ArkhamDBRemoteError "ArkhamDB is down") status502 "remoteUnavailable"
+
+  it "keeps credentials, generation and mappings after a rejected remote refresh" $
+    refreshFailureCase harness app "refresh-rejected" (Just "fixture-refresh")
+      (Just ArkhamDBUnauthorized) status409 "tokenExpired"
+
+  it "requires relinking without calling ArkhamDB when no refresh token is stored" $
+    refreshFailureCase harness app "refresh-missing-token" Nothing Nothing status409 "tokenExpired"
 
   it "does not stage callback credentials when unlink commits during OAuth exchange" $
     withConnection harness \callback -> withConnection harness \unlinking -> do
@@ -768,6 +817,48 @@ seedAccount app connection now uid nonce value = do
     liftIO $ finalized `shouldBe` True
   runStore app connection (\store -> store.findAccountGeneration uid)
     >>= maybe (fail "Expected linked account generation") pure
+
+-- The production handler boundary: each store action commits like runDB, and
+-- runArkhamDB maps failures (including the 55P03 lock timeout) to a JSON error.
+refreshResponse :: App -> SqlBackend -> ArkhamDBClient Handler -> UTCTime -> ArkhamDBAccount -> IO (Either (Status, Maybe Text) Text)
+refreshResponse app connection client now previous = do
+  result <- runHandlerResponseBody app $ runArkhamDB $
+    refreshAccount (persistentStoreWith (const $ pure ()) (`runSqlConn` connection)) client settings now previous
+  pure $ either (\(status, body) -> Left (status, Map.lookup "code" =<< (decode body :: Maybe (Map Text Text)))) Right result
+
+-- Exact persisted rows: credentials and generation id, and every deck mapping.
+linkedRows :: SqlBackend -> UserId -> IO ([Text], [Text])
+linkedRows connection uid = transaction connection do
+  accounts <- rawSql "SELECT row_to_json(a)::text FROM arkhamdb_accounts AS a WHERE a.user_id = ?" [toPersistValue uid]
+  mappings <- rawSql "SELECT row_to_json(l)::text FROM arkhamdb_deck_links AS l WHERE l.user_id = ? ORDER BY l.id" [toPersistValue uid]
+  pure (map unSingle accounts, map unSingle mappings)
+
+-- A locked refresh that fails after taking the lock (remote error, remote
+-- rejection, or no stored refresh token) must leave every persisted row intact.
+refreshFailureCase :: Harness -> App -> Text -> Maybe Text -> Maybe ArkhamDBClientError -> Status -> Text -> IO ()
+refreshFailureCase harness app label credential outcome status code =
+  withConnection harness \connection -> do
+    now <- getCurrentTime
+    uid <- seedUser connection label
+    previous <- encryptedAccount settings now uid (tokens now) {refreshToken = credential}
+    generation <- seedAccount app connection now uid label previous
+    let importer = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right remote}
+    void $ either (fail . show) pure =<< runStoreActions app connection
+      (\store -> runExceptT $ importRemoteDeck store importer settings now uid "123" forbiddenPublic)
+    stored <- runStore app connection (\store -> store.findAccount uid) >>= maybe (fail "Expected linked account") pure
+    persisted <- linkedRows connection uid
+    bimap length length persisted `shouldBe` (1, 1)
+    calls <- newIORef (0 :: Int)
+    let client = hoistArkhamDBClient liftIO $ transport
+          { refreshTokens = \sent -> do
+              sent `shouldBe` "fixture-refresh"
+              modifyIORef' calls (+ 1)
+              maybe (fail "A missing refresh token reached ArkhamDB") (pure . Left) outcome
+          }
+    within "failed refresh" (refreshResponse app connection client now stored) `shouldReturn` Left (status, Just code)
+    readIORef calls `shouldReturn` (if isJust outcome then 1 else 0)
+    linkedRows connection uid `shouldReturn` persisted
+    runStore app connection (\store -> store.findAccountGeneration uid) `shouldReturn` Just generation
 
 deckCounts :: SqlBackend -> UserId -> IO (Int64, Int64)
 deckCounts connection uid = transaction connection do
