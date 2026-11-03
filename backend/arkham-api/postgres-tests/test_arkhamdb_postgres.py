@@ -88,8 +88,10 @@ class RealClusterTests(unittest.TestCase):
         return owned
 
     def test_all_production_migrations_and_socket_only_isolation(self):
+        pg_bin = os.environ.get("ARKHAM_TEST_PG_BIN")
+        psql = str(Path(pg_bin) / "psql") if pg_bin else "psql"
         result = self.launch([
-            "psql", "-X", "-v", "ON_ERROR_STOP=1", "-Atc",
+            psql, "-X", "-v", "ON_ERROR_STOP=1", "-Atc",
             "SELECT current_database(), current_setting('listen_addresses'), "
             "to_regclass('arkhamdb_accounts'), to_regclass('arkhamdb_pushes'), "
             "to_regclass('idx_arkhamdb_pushes_game_outstanding');",
