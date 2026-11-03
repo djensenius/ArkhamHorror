@@ -84,6 +84,9 @@ spec harness app settings unexpected source seed = describe "Production SQL prep
         frozen <- preparedDeck $ arkhamDBPushPayload job
         final <- readRemote remote "124"
         samePushedDeck frozen final `shouldBe` True
+        when (mode == "new") $
+          filter (\call -> call == "create" || Text.isPrefixOf "save/" call) <$> MVar.readMVar remote.calls
+            `shouldReturn` ["create", "save/124"]
         unsafeHandler app (writeBackStore.campaignXpBaseline f.campaign) `shouldReturn` 5
 
   it "reclaims an interrupted running creation from committed SQL without a second XP creation" $

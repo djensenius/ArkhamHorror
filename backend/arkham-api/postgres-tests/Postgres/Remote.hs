@@ -52,7 +52,9 @@ newRemote unexpected source = do
             record $ "upgrade/" <> key <> "/" <> show xp
             original <- load key
             create original metadata
-        , createDeck = \_ deck -> record "create" >> create source {deck} deck.meta
+        -- The real /deck/new form carries no slots; only saveDeck stores them.
+        , createDeck = \_ deck -> record "create" >>
+            create source {deck = deck {Deck.slots = mempty, Deck.sideSlots = mempty}} deck.meta
         , saveDeck = \_ key proposed -> do
             record $ "save/" <> key
             MVar.modifyMVar_ decks $ pure . Map.insert key proposed {dateUpdate = Just "saved"}
