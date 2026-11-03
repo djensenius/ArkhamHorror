@@ -23,7 +23,7 @@ import Postgres.DispatchSpec (prepareAnswer, answer)
 import Postgres.Harness
 import Postgres.Production
 import Postgres.Remote
-import Postgres.WriteBackSpec (Fixture (..), Seed, fixture, queue)
+import Postgres.WriteBackSpec (Fixture (..), Seed, fixture, queue, runWrites)
 import Relude hiding (first, second)
 import Settings (ArkhamDBSettings)
 import Test.Hspec
@@ -133,6 +133,31 @@ spec harness app settings unexpected source seed = describe "Actual answer versu
       arkhamDBDeckLinkLastSyncedDateUpdate synced `shouldBe` Just "synced"
       P.Entity _ job <- storedJob observer f
       arkhamDBPushExpectedDateUpdate job `shouldBe` preSync
+
+  it "records the owner's real answer push while another user's toggle names the deck" $
+    withConnection harness \toggling -> withConnection harness \observer -> do
+      f <- fixture seed app observer "foreign-toggle-answer"
+      (stranger, _, _) <- seed observer "foreign-toggle-stranger"
+      transaction observer $ P.update f.gameId [ArkhamGameCurrentData P.=. prepareAnswer f]
+      barrier <- newBarrier
+      let pendingPushes = transaction observer $
+            P.count [ArkhamDBPushDeckId P.==. f.deckId, ArkhamDBPushStatus P.==. "pending"]
+      -- The deck id comes from the URL; a non-owner's toggle changes nothing
+      -- and must lock nothing on the owner's link while it stays open.
+      withAsync (runWrites app toggling \store -> do
+        changed <- store.toggleWriteBack f.now stranger f.deckId False
+        liftIO $ pauseAt barrier
+        pure changed) \strangerToggle -> do
+          link strangerToggle
+          awaitBarrier barrier
+          within "answer beside a non-owner toggle" $
+            unsafeHandler app (updateGameWithAnswerRejection mempty answer f.gameId Nothing) `shouldReturn` Nothing
+          pendingPushes `shouldReturn` 1
+          releaseBarrier barrier
+          within "non-owner toggle commit" (wait strangerToggle) `shouldReturn` False
+      pendingPushes `shouldReturn` 1
+      transaction observer (fmap (arkhamDBDeckLinkWriteBack . P.entityVal) <$> P.getBy (UniqueArkhamDBDeckLinkDeck f.deckId))
+        `shouldReturn` Just True
 
   it "renews a healthy running push's lease past 60 seconds so another dispatcher cannot steal it" $
     withConnection harness \observer -> do
