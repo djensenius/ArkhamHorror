@@ -335,7 +335,9 @@ skipArkhamDBLogging logWare app req sendResponse
   -- WAI has decoded each segment already. Treat encoded separators and case
   -- variants conservatively for privacy, without changing route dispatch or
   -- suppressing similarly named ordinary routes such as "arkhamdb-other".
-  credentialPath = concatMap (T.splitOn "/" . T.toCaseFold) (pathInfo req)
+  -- Drop empty segments so doubled or leading slashes, which are logged before
+  -- Yesod's clean-path redirect, still match.
+  credentialPath = filter (not . T.null) $ concatMap (T.splitOn "/" . T.toCaseFold) (pathInfo req)
 
 -- | Warp settings for the given foundation value.
 warpSettings :: App -> Settings

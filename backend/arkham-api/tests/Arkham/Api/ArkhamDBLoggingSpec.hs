@@ -20,7 +20,7 @@ spec = for_ [True, False] \detailed ->
       it ("excludes OAuth query and completion body at " <> toString (decodeUtf8 path :: Text)) do
         output <- captureLog detailed path
         output `shouldBe` ""
-    for_ ["/api/v1/arkham/arkhamdb-other", "/api/v1/arkham/arkhamdb2", "/api/v1/arkham/decks"] \path ->
+    for_ ordinaryPaths \path ->
       it ("continues logging ordinary route " <> toString (decodeUtf8 path :: Text)) do
         output <- captureLog detailed path
         output `shouldSatisfy` BS.isInfixOf path
@@ -40,6 +40,26 @@ protectedPaths =
   , "/api/v1/arkham/ArkhamDB/link/complete"
   , "/api/v1/arkham/arkhamdb%2Fcallback"
   , "/api/v1/arkham%2Farkhamdb/link/complete"
+  , "/api//v1/arkham/arkhamdb"
+  , "//api/v1/arkham/arkhamdb"
+  , "/api/v1/arkham/arkhamdb//callback"
+  , "//api/v1/arkham/arkhamdb/callback"
+  , "/api/v1/arkham/arkhamdb/link//complete"
+  , "//api/v1/arkham/arkhamdb/link/complete"
+  , "/api%2F%2Fv1/arkham/arkhamdb"
+  , "/api/v1/arkham/arkhamdb%2F%2Fcallback"
+  , "/api/v1/arkham/arkhamdb/link%2F%2Fcomplete"
+  ]
+
+-- Empty segments must not suppress logging of ordinary routes.
+ordinaryPaths :: [ByteString]
+ordinaryPaths =
+  [ "/api/v1/arkham/arkhamdb-other"
+  , "/api/v1/arkham/arkhamdb2"
+  , "/api/v1/arkham/decks"
+  , "/api//v1/arkham/decks"
+  , "//api/v1/arkham/decks"
+  , "/api/v1/arkham//arkhamdb-other"
   ]
 
 -- Use the production middleware, including its body-capture path, for both
