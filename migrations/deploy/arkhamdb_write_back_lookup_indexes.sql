@@ -10,4 +10,9 @@ CREATE INDEX IF NOT EXISTS idx_arkhamdb_deck_links_campaign
 CREATE INDEX IF NOT EXISTS idx_arkhamdb_pushes_campaign_outstanding
   ON arkhamdb_pushes (campaign_key)
   WHERE status NOT IN ('succeeded', 'cancelled');
+-- Cover pending work and running leases in one id-ordered dispatch scan.
+CREATE INDEX IF NOT EXISTS idx_arkhamdb_pushes_dispatch_active
+  ON arkhamdb_pushes (id)
+  WHERE status IN ('pending', 'running');
+DROP INDEX IF EXISTS idx_arkhamdb_pushes_dispatch;
 COMMIT;
