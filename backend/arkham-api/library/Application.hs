@@ -419,12 +419,20 @@ makeLogWare settings requestLogger =
       }
 
 -- OAuth query parameters and completion JSON are credentials. Detailed logging
--- captures both, so never pass these routes through the request logger.
+-- captures both, so never pass these routes through the request logger. That
+-- covers ArkhamDB linking and arkham.build: its login callback carries the
+-- authorization code and state in the query, and its authorize and verify
+-- bodies are logged in Detailed mode.
 skipArkhamDBLogging :: Middleware -> Middleware
 skipArkhamDBLogging logWare app req sendResponse
-  | ["api", "v1", "arkham", "arkhamdb"] `isPrefixOf` credentialPath = app req sendResponse
+  | any (`isPrefixOf` credentialPath) credentialRoutes = app req sendResponse
   | otherwise = logWare app req sendResponse
  where
+  credentialRoutes =
+    [ ["api", "v1", "arkham", "arkhamdb"]
+    , ["api", "auth", "arkham-build"]
+    , ["api", "v1", "arkham-build"]
+    ]
   -- WAI has decoded each segment already. Treat encoded separators and case
   -- variants conservatively for privacy, without changing route dispatch or
   -- suppressing similarly named ordinary routes such as "arkhamdb-other".
