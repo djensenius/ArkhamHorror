@@ -1,6 +1,7 @@
 <script lang="ts" setup>
 import { ComputedRef, computed, ref, watch } from 'vue'
 import { Dropdown } from 'floating-vue'
+import { LockClosedIcon } from '@heroicons/vue/20/solid'
 import { useCardStore } from '@/stores/cards'
 import { type Game } from '@/arkham/types/Game'
 import { type Card, cardImage, asCardCode, toCardContents } from '@/arkham/types/Card'
@@ -20,7 +21,7 @@ import { AbilityLabel, AbilityMessage, type Message } from '@/arkham/types/Messa
 import { MessageType } from '@/arkham/types/Message'
 import { keyToId } from '@/arkham/types/Key'
 import { cardImg, imgsrc } from '@/arkham/helpers'
-import { resolvedSideArt } from '@/arkham/cardImages'
+import { cardArt, resolvedSideArt, sourceCardCode } from '@/arkham/cardImages'
 import * as Arkham from '@/arkham/types/Act'
 import { useEventStore } from '@/arkham/stores/event'
 import { actContribution, actSpend } from '@/arkham/types/EpicEvent'
@@ -132,6 +133,35 @@ const hasObjective = computed(() =>
     ({ contents }) => 'ability' in contents && contents.ability.type.tag === 'Objective',
   ),
 )
+
+const viewingInvestigator = computed(
+  () => Object.values(props.game.investigators).find((i) => i.playerId === props.playerId) ?? null,
+)
+
+const cannotTriggerFastAbilities = computed(() => {
+  const modifiers = viewingInvestigator.value?.modifiers ?? []
+  return (
+    modifiers.find(
+      (m) => m.type.tag === 'OtherModifier' && m.type.contents === 'CannotTriggerFastAbilities',
+    ) ?? null
+  )
+})
+
+// Outside a player window there is no advance button to miss, so no lock either.
+const blockedObjective = computed(
+  () =>
+    !hasObjective.value
+    && props.act.advanceCost != null
+    && cannotTriggerFastAbilities.value !== null
+    && ArkhamGame.activeQuestionIsPlayerWindow(props.game, props.playerId),
+)
+
+const blockedObjectiveCardCode = computed<string | null>(() => {
+  const m = cannotTriggerFastAbilities.value
+  if (!m) return null
+  if (m.card) return cardArt(toCardContents(m.card).cardCode)
+  return sourceCardCode(m.source, props.game)
+})
 
 function revealFacedownCard(card: Card): Card {
   switch (card.tag) {
@@ -348,6 +378,12 @@ const nextToScarletKeys = computed(() =>
     .map((s) => s.id),
 )
 
+const nextToTreacheries = computed(() =>
+  Object.values(props.game.treacheries)
+    .filter((t) => t.placement.tag === 'NextToAct')
+    .map((t) => t.id),
+)
+
 // Enemies that spawn "next to the act deck, at no specific location" (Hound of
 // Tindalos). They belong to no location and no threat area, so this is the only
 // place they are drawn.
@@ -442,35 +478,78 @@ const chooseFromStoryCollection = (choice: number) => {
 
 <template>
   <div class="act-container">
-    <div class="act-row">
-      <div
-        class="card-container"
-        :class="{ 'act--objective': hasObjective, 'objective-ring': hasObjective }"
-      >
-        <img
-          :class="{
-            'act--can-progress': interactAction !== -1,
-            'act--can-interact': canInteract,
-            'card--sideways': !isVertical,
-            'card--flipping': flipping,
-            'card--flipping-diagonal': flippingDiagonally,
-          }"
-          class="card"
-          @click="clicked"
-          @load="updateOrientation"
-          :src="displayedImage"
-          ref="frame"
+    <div class="act-with-next-to">
+      <div class="act-row">
+        <div class="act-main">
+          <div
+            class="card-container"
+            :class="{
+              'act--objective': hasObjective,
+              'objective-ring': hasObjective,
+              'act--objective-blocked': blockedObjective,
+            }"
+          >
+            <span
+              v-if="blockedObjective"
+              class="objective-blocked-badge"
+              :data-image-id="blockedObjectiveCardCode"
+              v-tooltip="$t('objectiveBlockedByFast')"
+            >
+              <LockClosedIcon />
+            </span>
+            <img
+              :class="{
+                'act--can-progress': interactAction !== -1,
+                'act--can-interact': canInteract,
+                'card--sideways': !isVertical,
+                'card--flipping': flipping,
+                'card--flipping-diagonal': flippingDiagonally,
+              }"
+              class="card"
+              @click="clicked"
+              @load="updateOrientation"
+              :src="displayedImage"
+              ref="frame"
+            />
+          </div>
+
+          <div class="pool">
+            <PoolItem v-if="clues > 0" type="clue" :amount="clues" />
+            <span v-if="sharedContribution > 0" class="shared-clue-pool" :title="$t('event.sharedClues')">
+              <PoolItem type="clue" :amount="sharedContribution" />
+            </span>
+            <PoolItem v-if="resources > 0" type="resource" :amount="resources" />
+            <PoolItem v-if="breaches > 0" type="resource" :amount="breaches" />
+            <KeyToken
+              v-for="k in keys"
+              :key="keyToId(k)"
+              :keyToken="k"
+              :game="game"
+              :playerId="playerId"
+              @choose="$emit('choose', $event)"
+            />
+          </div>
+        </div>
+        <StackIndicator
+          label="Act"
+          :current="currentActPosition"
+          :total="totalActs"
+          :completedCards="completedStack"
+          :currentImage="displayedImage"
+          :remainingCards="futureStack"
+          :groups="groupedActStack"
         />
       </div>
-      <StackIndicator
-        label="Act"
-        :current="currentActPosition"
-        :total="totalActs"
-        :completedCards="completedStack"
-        :currentImage="displayedImage"
-        :remainingCards="futureStack"
-        :groups="groupedActStack"
-      />
+      <div v-if="nextToTreacheries.length > 0" class="next-to-act">
+        <Treachery
+          v-for="treacheryId in nextToTreacheries"
+          :key="treacheryId"
+          :treachery="game.treacheries[treacheryId]"
+          :game="game"
+          :playerId="playerId"
+          @choose="$emit('choose', $event)"
+        />
+      </div>
     </div>
     <AbilitiesMenu
       :frame="frame"
@@ -582,23 +661,6 @@ const chooseFromStoryCollection = (choice: number) => {
       :playerId="playerId"
       @choose="$emit('choose', $event)"
     />
-
-    <div class="pool">
-      <PoolItem v-if="clues > 0" type="clue" :amount="clues" />
-      <span v-if="sharedContribution > 0" class="shared-clue-pool" :title="$t('event.sharedClues')">
-        <PoolItem type="clue" :amount="sharedContribution" />
-      </span>
-      <PoolItem v-if="resources > 0" type="resource" :amount="resources" />
-      <PoolItem v-if="breaches > 0" type="resource" :amount="breaches" />
-      <KeyToken
-        v-for="k in keys"
-        :key="keyToId(k)"
-        :keyToken="k"
-        :game="game"
-        :playerId="playerId"
-        @choose="$emit('choose', $event)"
-      />
-    </div>
   </div>
 </template>
 
@@ -621,7 +683,69 @@ const chooseFromStoryCollection = (choice: number) => {
   --objective-ring-radius: 6px;
 }
 
+.act--objective-blocked {
+  position: relative;
+  isolation: isolate;
+}
+
+.act--objective-blocked::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border: 2px solid rgba(154, 164, 182, 0.9);
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: var(--z-index-1);
+}
+
+.act--objective-blocked::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(10, 12, 18, 0.42) 0 5px,
+    rgba(10, 12, 18, 0.14) 5px 10px
+  );
+  pointer-events: none;
+  z-index: var(--z-index-1);
+}
+
+.objective-blocked-badge {
+  --badge-size: clamp(13px, calc(var(--card-width) * 0.3), 18px);
+
+  position: absolute;
+  top: calc(var(--badge-size) / -2.5);
+  right: calc(var(--badge-size) / -2.5);
+  width: var(--badge-size);
+  height: var(--badge-size);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #1b1f27;
+  border: 1px solid rgba(198, 206, 220, 0.9);
+  color: #e4e9f1;
+  cursor: help;
+  z-index: var(--z-index-7);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+}
+
+/* Not nested: a nested :deep(svg) compiles to a descendant selector and never matches. */
+.objective-blocked-badge :deep(svg) {
+  display: block;
+  width: calc(var(--badge-size) * 0.55);
+  height: calc(var(--badge-size) * 0.55);
+}
+
 .act-container {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.act-main {
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -634,8 +758,23 @@ const chooseFromStoryCollection = (choice: number) => {
   gap: 6px;
 }
 
-.act-row :deep(.v-popper) {
-  align-self: center;
+.act-with-next-to {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.act-row > :deep(.v-popper) {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  height: var(--card-width);
+}
+
+.next-to-act {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
 }
 
 .act-container :deep(.card--sideways) {

@@ -53,6 +53,16 @@ protectedPaths =
   , "/api/v1%2F%2Farkham/arkhamdb/callback"
   , "/api/v1/arkham/arkhamdb/link%2F%2Fcomplete"
   , "/api/v1/arkham%2F%2Farkhamdb/link/complete"
+  -- arkham.build: the login callback (code and state ride in the query that
+  -- captureLog appends), then the authorize and verify bodies.
+  , "/api/auth/arkham-build/callback"
+  , "/api/auth/arkham-build/callback/"
+  , "/api/v1/arkham-build/authorize"
+  , "/api/v1/arkham-build/verify"
+  , "/API/Auth/Arkham-Build/callback"
+  , "/api/V1/ARKHAM-BUILD/verify"
+  , "/api/auth/%61rkham-build/callback"
+  , "/api/auth%2Farkham-build/callback"
   ]
 
 -- Empty segments must not suppress logging of ordinary routes.
@@ -64,6 +74,9 @@ ordinaryPaths =
   , "/api//v1/arkham/decks"
   , "//api/v1/arkham/decks"
   , "/api/v1/arkham//arkhamdb-other"
+  , "/api/auth/arkham-build-other/callback"
+  , "/api/v1/arkham-builder/verify"
+  , "/api/v1/site-settings"
   ]
 
 -- Use the production middleware, including its body-capture path, for both

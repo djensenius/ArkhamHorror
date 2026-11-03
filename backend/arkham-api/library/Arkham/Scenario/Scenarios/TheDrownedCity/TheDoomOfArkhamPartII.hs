@@ -88,7 +88,7 @@ instance RunMessage TheDoomOfArkhamPartII where
       pure s
     DoStep 2 PreScenarioSetup -> scope "intro" do
       flavor do
-        setTitle "title"
+        h "title"
         p "theDoomOfArkham2"
         ul do
           li "recordStoodTogether"
@@ -100,7 +100,7 @@ instance RunMessage TheDoomOfArkhamPartII where
       pure s
     DoStep 3 PreScenarioSetup -> scope "intro" do
       flavor do
-        setTitle "title"
+        h "title"
         p "theDoomOfArkham3"
         p "theDoomOfArkham3Continued"
         p "theDoomOfArkham3Ruby"
@@ -217,7 +217,8 @@ instance RunMessage TheDoomOfArkhamPartII where
         if stoodTogether
           then do
             leadChooseOrRunOneM do
-              questionLabeled "chooseAllyInvestigator"
+              nameVar ally $ questionLabeled "chooseAllyInvestigator"
+              questionLabeledCard ally
               targets investigators $ createAssetAt_ (toCard card) . InPlayArea
           else push $ SetAsideCards [toCard card]
       -- "Gather all earned artifacts that are not crossed out ... Put each of them
@@ -236,7 +237,8 @@ instance RunMessage TheDoomOfArkhamPartII where
           card <- fetchCard def
           lead <- getLead
           chooseOrRunOneM lead do
-            questionLabeled "chooseArtifactInvestigator"
+            nameVar def $ questionLabeled "chooseArtifactInvestigator"
+            questionLabeledCard def
             targets [iid | (iid, n) <- counts, n == fewest] (createAssetAt_ card . InPlayArea)
       pure s
     {- "When drawing cards from the Cthulhu deck, resolve each effect, one at a time,
@@ -319,7 +321,7 @@ instance RunMessage TheDoomOfArkhamPartII where
           resolution "noResolution"
           -- "The investigators, along with everyone else in Arkham, are killed."
           eachInvestigator (kill attrs)
-          gameOver
+          gameOverLost
         _ -> error $ "Unknown resolution: " <> show res
       -- Every ending but the total loss carries on to the campaign's epilogue.
       unless (res == NoResolution) $ endOfScenarioThen EpilogueStep

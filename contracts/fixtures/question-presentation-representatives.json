@@ -2038,6 +2038,77 @@
         "questionKind": "continueCampaign",
         "questionVersion": 336
       }
+    },
+    {
+      "name": "chooseFromCollection",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 2,
+        "choices": [
+          {
+            "entity": {
+              "id": "c01001",
+              "kind": "cardCode"
+            },
+            "kind": "chooseTarget",
+            "selectable": true,
+            "sourceIndex": 0
+          },
+          {
+            "entity": {
+              "id": "c01002",
+              "kind": "cardCode"
+            },
+            "kind": "chooseTarget",
+            "selectable": true,
+            "sourceIndex": 1
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "chooseFromCollection",
+        "questionSource": {
+          "raw": {
+            "tag": "GameSource"
+          }
+        },
+        "questionVersion": 337
+      }
+    },
+    {
+      "name": "questionLabel-many",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "cardCode": "c01001",
+        "choiceCount": 1,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$choice"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          }
+        ],
+        "labelCards": [
+          "c01001",
+          "c01002"
+        ],
+        "protocolVersion": 2,
+        "questionKind": "chooseOne",
+        "questionLabel": {
+          "kind": "embeddedI18n",
+          "text": "$wrapped.many"
+        },
+        "questionVersion": 338
+      }
     }
   ]
 }

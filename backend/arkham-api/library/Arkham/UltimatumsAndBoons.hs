@@ -45,6 +45,7 @@ import Arkham.Enemy.Helpers (cancelEnemyDefeat)
 import Arkham.Enemy.Types (Field (EnemyCard))
 import Arkham.Game.Base
 import Arkham.Game.Settings
+import Arkham.GameEnv (withCustomRandomWeaknessPool)
 import Arkham.Helpers (unDeck)
 import Arkham.Helpers.Campaign (stored)
 import Arkham.Helpers.ChaosToken (cancelChaosToken)
@@ -404,7 +405,10 @@ runUltimatumsAndBoonsMessage msg = case msg of
             <*> field InvestigatorTaboo iid
             <*> field InvestigatorCardPool iid
             <*> getIsStandalone
-        weakness <- genCard =<< sampleRandomBasicWeakness ctx
+            <*> pure []
+        pid <- getPlayer iid
+        ctxWithCustom <- withCustomRandomWeaknessPool pid ctx
+        weakness <- genCard =<< sampleRandomBasicWeakness ctxWithCustom
         push $ AddCampaignCardToDeck iid DoNotShuffleIn weakness
   -- Ultimatum of The Scream: a defeated unique non-story, non-weakness ally
   -- is removed from the game and banned for the rest of the campaign.
@@ -485,8 +489,8 @@ runUltimatumsAndBoonsMessage msg = case msg of
                , Msg.checkDefeated source' iid
                ]
         _ -> error "invalid match"
-  RevealChaosToken _ iid token | token.face == AutoFail -> do
-    whenM (hasBoon BoonOfAthena) do
+  RevealChaosToken _ iid token -> do
+    whenM (andM [token <=~> Matcher.ChaosTokenFaceIs AutoFail, hasBoon BoonOfAthena]) do
       mods <- getModifiers iid
       unless (boonOfAthenaExpiredMarker `elem` mods) do
         push
@@ -644,7 +648,7 @@ morriganWeaknessMessages iid drawWeakness = do
       Just remaining -> sample remaining
     pure $ CardLabel (toCardCode returned) False [AddCampaignCardToDeck iid ShuffleIn kept]
   pure
-    [Ask player $ QuestionLabel "$label.ultimatumsAndBoons.returnWeakness" Nothing $ ChooseOne choices]
+    [Ask player $ QuestionLabel "$label.ultimatumsAndBoons.returnWeakness" [] $ ChooseOne choices]
  where
   -- The basic weakness pool is far larger than 3; the fuel only guards
   -- against a pathological sampler.

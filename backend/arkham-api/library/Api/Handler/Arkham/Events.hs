@@ -765,7 +765,7 @@ buildGroupGame gameName scenarioId difficulty includeTarotReadings playWithBlobE
         $ setInitialScenarioMeta "blobThatAteEverythingElse" playWithBlobElse
         $ setInitialScenarioMeta "epicMultiplayer" True
         $ newScenario scenarioId newGameSeed seats difficulty includeTarotReadings
-   in ArkhamGame gameName game 0 WithFriends now now
+   in ArkhamGame gameName game 0 WithFriends now now False
 
 {- | Build every group's 'PendingGroupGame' up front, in ordinal order, via the
 supplied ordinal-aware seed action. Production calls this with

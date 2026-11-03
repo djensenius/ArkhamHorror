@@ -4,9 +4,9 @@ import Arkham.Ability
 import Arkham.Agenda.Import.Lifted
 import Arkham.Effect.Builder
 import Arkham.Effect.Window
+import Arkham.Helpers.Action (getUnrestrictedActions)
 import Arkham.Helpers.Modifiers (ModifierType (AdditionalActions))
 import Arkham.Homebrew.AgesUnwound.CardDefs.Agendas qualified as Cards
-import Arkham.Homebrew.AgesUnwound.Helpers (getStandardActions)
 import Arkham.Homebrew.AgesUnwound.Scenarios.AWorldTornDownAgain.Helpers
 import Arkham.I18n
 import Arkham.Matcher
@@ -32,28 +32,33 @@ difference is invisible: at 7 doom this agenda advances and defeats everyone
 anyway, and nothing between the two points changes the doom count.
 
 "4 or more doom in play" is total doom, not doom on this agenda.
+
+Ability 2's criterion counts /standard/ actions, which is what the card says;
+ability 1's loss does not, so it is 'loseActions' -- remaining actions go first,
+and an investigator left with only additional actions loses those, whatever
+their limitation (FAQ 1.10).
 -}
 instance HasAbilities RageAgainstTheEnd where
   getAbilities (RageAgainstTheEnd a) =
     [ restricted a 1 (DoomCountIs $ atLeast 4) $ forced $ MythosStep AfterCheckDoomThreshold
-    , forcedAbility a 2 $ TurnEnds #when You
+    , restricted a 2 (youExist $ InvestigatorWithUnrestrictedActionsRemaining (atLeast 1))
+        $ forced
+        $ TurnEnds #when You
     ]
 
 instance RunMessage RageAgainstTheEnd where
   runMessage msg a@(RageAgainstTheEnd attrs) = runQueueT $ scenarioI18n $ case msg of
     UseThisAbility _ (isSource attrs -> True) 1 -> do
-      eachInvestigator \iid -> loseStandardActions iid (attrs.ability 1) 1
+      eachInvestigator \iid -> loseActions iid (attrs.ability 1) 1
       pure a
     UseThisAbility iid (isSource attrs -> True) 2 -> do
-      standard <- getStandardActions iid
-      let gained = min 3 standard
-      when (gained > 0) do
-        -- Same shape as agenda 2a's: see
-        -- 'Arkham.Homebrew.AgesUnwound.Agendas.TimeRunningShort'.
-        effectWithSource (attrs.ability 2) iid do
-          removeOn $ EffectEndOfNextTurnWindow iid
-          apply
-            $ AdditionalActions (ikey' "rageAgainstTheEnd.additionalActions") (attrs.ability 2) gained
+      gained <- min 3 <$> getUnrestrictedActions iid
+      -- Same shape as agenda 2a's: see
+      -- 'Arkham.Homebrew.AgesUnwound.Agendas.TimeRunningShort'.
+      effectWithSource (attrs.ability 2) iid do
+        removeOn $ EffectEndOfNextTurnWindow iid
+        apply
+          $ AdditionalActions (ikey' "rageAgainstTheEnd.additionalActions") (attrs.ability 2) gained
       pure a
     AdvanceAgenda (isSide B attrs -> True) -> do
       -- "Each remaining investigator is defeated."

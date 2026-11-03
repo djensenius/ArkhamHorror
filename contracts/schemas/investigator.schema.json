@@ -18,10 +18,13 @@
     "assignedSanityHeal",
     "beganRoundAt",
     "bondedCards",
+    "cannotDiscoverClues",
+    "cannotSpendClues",
     "cardCode",
     "cardsUnderneath",
     "class",
     "combat",
+    "commitProhibitions",
     "connectedLocations",
     "deck",
     "deckBuildingAdjustments",
@@ -61,6 +64,7 @@
     "name",
     "physicalTrauma",
     "placement",
+    "playProhibitions",
     "playerId",
     "previousLocation",
     "remainingActions",
@@ -490,6 +494,76 @@
     "ignoredPerformedActions": {
       "description": "Performed actions intentionally ignored for “first/same action” bookkeeping. Broad, out of scope for this contract slice.",
       "type": "array"
+    },
+    "playProhibitions": {
+      "description": "Cards in hand this investigator is currently prohibited from playing, as [CardId, responsible LogRef[]] pairs. Only cards whose prohibition has at least one modifier are listed; the LogRef list may still be empty when the source cannot be named.",
+      "type": "array",
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "string",
+            "format": "uuid"
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "./public-game.schema.json#/$defs/logRef"
+            }
+          }
+        ],
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "commitProhibitions": {
+      "description": "Cards this investigator is currently prohibited from committing to skill tests, as [CardId, responsible LogRef[]] pairs. Same shape and semantics as playProhibitions.",
+      "type": "array",
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "string",
+            "format": "uuid"
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "./public-game.schema.json#/$defs/logRef"
+            }
+          }
+        ],
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "cannotDiscoverClues": {
+      "description": "null when the investigator can discover clues; otherwise the LogRefs naming what prevents it (possibly empty when the source cannot be named).",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "./public-game.schema.json#/$defs/logRef"
+          }
+        }
+      ]
+    },
+    "cannotSpendClues": {
+      "description": "null when the investigator can spend clues; otherwise the LogRefs naming what prevents it (possibly empty when the source cannot be named).",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "./public-game.schema.json#/$defs/logRef"
+          }
+        }
+      ]
     }
   }
 }

@@ -3,6 +3,8 @@ import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch, typ
 import { useI18n } from 'vue-i18n';
 import type { Game } from '@/arkham/types/Game';
 import * as ArkhamGame from '@/arkham/types/Game';
+import { pendingDraws } from '@/arkham/pendingDraws';
+import { isCollectionSearch } from '@/arkham/collectionSearch';
 import { choiceRequiresModal } from '@/arkham/types/Message';
 import { formatContent, imgsrc } from '@/arkham/helpers';
 import { cardImage } from '@/arkham/cardImages';
@@ -14,7 +16,7 @@ import Question from '@/arkham/components/Question.vue';
 import DrawSpotlight from '@/arkham/components/DrawSpotlight.vue';
 import { abilityNeedsGhostModal } from '@/arkham/ghostAbility';
 import { putBackInAnyOrderPicks } from '@/arkham/putBackInAnyOrder';
-import { storyCardRead as findStoryCardRead } from '@/arkham/storyCardRead';
+import { storyCardRead as findStoryCardRead, storyCardChoiceRead as findStoryCardChoiceRead } from '@/arkham/storyCardRead';
 
 export interface Props {
   game: Game
@@ -32,6 +34,7 @@ async function choose(idx: number) {
   emit('choose', idx)
 }
 
+const collectionSearch = computed(() => isCollectionSearch(props.game, props.playerId))
 const inSkillTest = computed(() => props.game.skillTest !== null)
 const choices = computed(() => ArkhamGame.choices(props.game, props.playerId))
 const cthulhuDeckCardCodes = new Set([
@@ -49,6 +52,33 @@ const cthulhuDeckCardCodes = new Set([
 ])
 const investigator = computed(() => Object.values(props.game.investigators).find(i => i.playerId === props.playerId))
 const storyCardRead = computed(() => findStoryCardRead(props.game, props.playerId))
+const storyCardChoiceRead = computed(() => findStoryCardChoiceRead(props.game, props.playerId))
+
+/* The card on screen, and the buttons under it: either the one-option dismissal
+ * that reading a story card is, or the story's own question. */
+const storySpotlight = computed(() => {
+  const read = storyCardRead.value
+  if (read)
+    return {
+      card: read.card,
+      index: read.index,
+      flip: read.flip,
+      backImage: read.backArt ? cardImage(read.backArt) : undefined,
+      choices: [] as { label: string; index: number }[],
+    }
+
+  const asking = storyCardChoiceRead.value
+  if (asking) {
+    return {
+      card: asking.card,
+      index: asking.choices[0].index,
+      flip: asking.flip,
+      choices: asking.choices.map((choice) => ({ label: label(choice.label), index: choice.index })),
+    }
+  }
+
+  return null
+})
 const searchedCards = computed(() => {
   const playerCards = Object.entries(investigator.value?.foundCards ?? [])
 
@@ -68,7 +98,11 @@ const focusedCards = computed(() => {
     return []
   }
 
-  return props.game.focusedCards
+  // A card still being drawn is shown in the player's play area, beside the
+  // threat area, so the board stays visible while you decide whether to cancel
+  // it. Leaving it out here is what keeps the modal from opening for it at all.
+  const drawn = new Set(pendingDraws(props.game, props.playerId).map(({ card }) => toCardContents(card).id))
+  return props.game.focusedCards.filter((card) => !drawn.has(toCardContents(card).id))
 })
 
 const cthulhuDeckChoice = computed(() => {
@@ -195,6 +229,7 @@ const requiresModal = computed(() => {
   if (question.value?.tag === QuestionType.READ) {
     return true
   }
+  if (collectionSearch.value) return true
   if (inSkillTest.value) {
     return false
   }
@@ -306,11 +341,14 @@ const title = computed(() => {
        `.scenario-body`, which is `position: relative; z-index: 1` -- a stacking
        context that caps the spotlight at 1 against the root, under the skill
        test panel's `#modal` draggable at 100. -->
-  <Teleport v-if="storyCardRead" to="body">
+  <Teleport v-if="storySpotlight" to="body">
   <DrawSpotlight
     :game="game"
     :playerId="playerId"
-    :cards="[storyCardRead.card]"
+    :cards="[storySpotlight.card]"
+    :choices="storySpotlight.choices"
+    :flip="storySpotlight.flip"
+    :back-image="storySpotlight.backImage"
     :aria-label="t('Story')"
     :style="{
       '--spotlight-card-width': 'min(420px, 88vw, 55vh)',
@@ -322,7 +360,8 @@ const title = computed(() => {
       '--story-button-color': '#4C5037',
       '--story-button-hover-color': '#393C29',
     }"
-    @dismiss="choose(storyCardRead.index)"
+    @dismiss="choose(storySpotlight.index)"
+    @choose="choose"
   />
   </Teleport>
   <div
@@ -366,11 +405,14 @@ const title = computed(() => {
   </div>
   <Draggable
     v-else-if="requiresModal"
+    :key="collectionSearch ? 'collection-search' : 'choice'"
+    :flush="collectionSearch"
+    :width="collectionSearch ? 'min(1100px, calc(100vw - 32px))' : undefined"
     center-in-selector=".scenario-body"
     avoid-selector=".location-cell--can-interact, .location-cell--can-interact .location-wrapper, .location-cell--can-interact .card-frame"
     click-through-chrome
   >
-    <template #handle><h1 v-html="label(title)"></h1></template>
+    <template #handle><h1 v-html="collectionSearch ? t('questionFilter.collectionTitle') : label(title)"></h1></template>
     <div class="choice-modal-wrapper" :class="{ 'choice-modal-wrapper--processing': isProcessing }">
       <p class="body" v-if="body" v-html="label(body)"></p>
       <Question v-if="question" :game="game" :playerId="playerId" @choose="choose" />

@@ -14,6 +14,7 @@ import Arkham.Classes hiding (matches)
 import Arkham.Classes.HasGame
 import Arkham.Deck qualified as Deck
 import Arkham.Game.Utils (maybeLocation)
+import Arkham.Helpers.Ability (getResolvableHauntedAbilities)
 import Arkham.Helpers.ChaosToken (getModifiedChaosTokenFaces)
 import Arkham.Helpers.Cost (getCanAffordCost)
 import Arkham.Helpers.Enemy (ignoredKeywordWindowsForEnemy)
@@ -315,23 +316,21 @@ instance RunMessage SkillTest where
                   t <- getRandom
                   pushAll
                     $ resolve (RevealChaosToken (toSource s) iid (ChaosToken t chaosTokenFace (Just iid) False False))
+        -- Scrying Mirror performed ST.3 back in the test's "after it begins" window, so
+        -- the tokens are already in hand. Resolve those instead of drawing again.
+        | RevealChaosTokensBeforeCommittingCards `elem` modifiers''
+        , notNull skillTestSetAsideChaosTokens -> do
+            hasRun <- fromQueue (elem (RunSkillTest iid))
+            pushAll $ RevealSkillTestChaosTokens iid : [RunSkillTest iid | not hasRun]
         | otherwise -> do
             revealStrategy <- getSkillTestRevealStrategy s
             hasRun <- fromQueue (elem (RunSkillTest iid))
-            lockCommits <-
-              if RevealChaosTokensBeforeCommittingCards `notElem` modifiers''
-                then for (concat $ Map.elems skillTestCommittedCards) \card ->
-                  skillTestModifier s.id (SkillTestSource s.id) card MustBeCommitted
-                else pure []
+            lockCommits <- for (concat $ Map.elems skillTestCommittedCards) \card ->
+              skillTestModifier s.id (SkillTestSource s.id) card MustBeCommitted
             pushAll
-              $ [ RequestChaosTokens (toSource s) (Just iid) revealStrategy SetAside
-                ]
-              <> ( guard (RevealChaosTokensBeforeCommittingCards `notElem` modifiers'')
-                     *> ( lockCommits
-                            <> [ DoStep 3 (CommitToSkillTest s.id (Label "$label.doneCommitting" [CheckAllAdditionalCommitCosts]))
-                               ]
-                        )
-                 )
+              $ [RequestChaosTokens (toSource s) (Just iid) revealStrategy SetAside]
+              <> lockCommits
+              <> [DoStep 3 (CommitToSkillTest s.id (Label "$label.doneCommitting" [CheckAllAdditionalCommitCosts]))]
               <> [RunSkillTest iid | not hasRun]
       pure s
     DrawAnotherChaosToken iid -> do
@@ -365,20 +364,17 @@ instance RunMessage SkillTest where
       pure s
     RequestedChaosTokens (SkillTestSource sid) (Just iid) chaosTokens -> do
       skillTestModifiers' <- getModifiers (SkillTestTarget sid)
-      windowMsg <- checkWindows [mkWhen Window.FastPlayerWindow]
+      -- Scrying Mirror's early ST.3: the tokens are revealed now, but they are not
+      -- resolved until cards have been committed, so leave that to TriggerSkillTest. The
+      -- step guard keeps a later DrawAnotherChaosToken on the normal path.
+      let
+        earlyReveal =
+          (RevealChaosTokensBeforeCommittingCards `elem` skillTestModifiers')
+            && (skillTestStep < CommitCardsFromHandToSkillTestStep)
       popMessageMatching_ $ \case
         RevealSkillTestChaosTokens _ -> True
         _ -> False
-      push
-        $ if RevealChaosTokensBeforeCommittingCards `elem` skillTestModifiers'
-          then
-            CommitToSkillTest
-              s.id
-              ( Label
-                  "$label.doneCommitting"
-                  [CheckAllAdditionalCommitCosts, windowMsg, RevealSkillTestChaosTokens iid]
-              )
-          else RevealSkillTestChaosTokens iid
+      unless earlyReveal $ push (RevealSkillTestChaosTokens iid)
       for_ chaosTokens $ \chaosToken -> do
         let revealMsg = RevealChaosToken (SkillTestSource sid) iid chaosToken
         if chaosToken.cancelled
@@ -995,6 +991,18 @@ instance RunMessage SkillTest where
         Unrun -> pure ()
 
       pure $ s & stepL .~ ApplySkillTestResultsStep
+    {- A second telling of the result, asked for by a card that resolves at ST.7
+    ("resolve its effects an additional time"). The result is read here rather
+    than where the ask was built: an option is captured before the result is
+    settled, so a message carrying it would carry @Unrun@. -}
+    NotifyResultAgain target -> do
+      result <- fromMaybe skillTestResult <$> getSkillTestResultWithResultModifiers
+      let tell f n = f skillTestInvestigator skillTestAction skillTestSource target skillTestType n
+      case result of
+        SucceededBy _ n -> push $ Priority $ tell PassedSkillTest n
+        FailedBy _ n -> push $ Priority $ tell FailedSkillTest n
+        Unrun -> pure ()
+      pure s
     SkillTestApplyResults -> do
       -- ST.6 Determine Success
       push SkillTestApplyResultsAfter
@@ -1060,7 +1068,7 @@ instance RunMessage SkillTest where
       targetMods <- getModifiers skillTestTarget
       let cancelled = CancelEffects `elem` modifiers' && EffectsCannotBeCanceled `notElem` targetMods
       unless cancelled do
-        hauntedAbilities <- select $ HauntedAbility <> AbilityOnLocation (LocationWithId lid)
+        hauntedAbilities <- getResolvableHauntedAbilities iid lid
         unless (null hauntedAbilities) do
           player <- getPlayer iid
           push $ chooseOneAtATime player [AbilityLabel iid ab [] [] [] | ab <- hauntedAbilities]

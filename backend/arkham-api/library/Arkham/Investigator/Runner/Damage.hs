@@ -31,6 +31,7 @@ import Arkham.Action qualified as Action
 import Arkham.Action.Additional
 import Arkham.Actions (actionsToList)
 import Arkham.Asset.Types (Asset, Field (..))
+import Arkham.Attack.Types (AttackTarget (..), EnemyAttackDetails (..))
 import Arkham.Campaign.Option
 import Arkham.CampaignLog
 import Arkham.Campaigns.EdgeOfTheEarth.Seal
@@ -235,9 +236,15 @@ handleInvestigatorIsDefeated a@InvestigatorAttrs {..} source iid = do
       Choose.labeled "sufferPhysicalTrauma" $ Lifted.sufferPhysicalTrauma iid 1
       Choose.labeled "sufferMentalTrauma" $ Lifted.sufferMentalTrauma iid 1
 
+  {- Only the choose-which branch above suffers its trauma as a message, so the
+  single-kind case raises the window here. Ahead of the elimination messages, so
+  anything watching for it still has this investigator's cards in play. -}
+  traumaWindow <- checkWindows [mkAfter $ Window.SufferedTrauma iid physicalTrauma mentalTrauma]
+
   pushAll
     $ CheckTrauma iid
-    : [ChooseLeadInvestigator | isLead]
+    : [traumaWindow | not chooseTrauma, physicalTrauma > 0 || mentalTrauma > 0]
+      <> [ChooseLeadInvestigator | isLead]
       <> [InvestigatorKilled (toSource a) iid | killed]
       <> [BecomeHomunculus iid | not killed && becomeHomunculus]
       <> [InvestigatorWhenEliminated (toSource a) iid Nothing]
@@ -278,9 +285,26 @@ handleInvestigatorEliminated a@InvestigatorAttrs {..} iid = do
     isNotEliminatedChoice = \case
       TargetLabel _ msgs -> none isAttackingThisInvestigator msgs && none isSelfDiscard msgs
       _ -> True
-  let removeEliminatedChoices = filter isNotEliminatedChoice
+    -- A massive attack still has work to do when one of its targets leaves.
+    -- Keep the attack (and its when-attacks abilities), removing only that
+    -- investigator from its targets instead of dropping the whole choice.
+    keepEliminatedChoice choice = case choice of
+      TargetLabel target [EnemyAttack details] -> case details.target of
+        MassiveAttackTargets targets -> do
+          let remaining = filter (not . isTarget iid) targets
+          guard $ notNull remaining
+          pure $ TargetLabel target [EnemyAttack details {attackTarget = MassiveAttackTargets remaining}]
+        _ -> guard (isNotEliminatedChoice choice) $> choice
+      _ -> guard (isNotEliminatedChoice choice) $> choice
+    removeEliminatedChoices = mapMaybe keepEliminatedChoice
+    isAttackChoice = \case
+      TargetLabel _ [EnemyAttack _] -> True
+      _ -> False
+  leadPlayer <- getLeadPlayer
   lift $ mapQueue \case
-    Ask who (ChooseOneAtATime choices) -> Ask who (ChooseOneAtATime $ removeEliminatedChoices choices)
+    Ask who (ChooseOneAtATime choices) ->
+      let owner = if who == investigatorPlayerId && any isAttackChoice choices then leadPlayer else who
+       in Ask owner (ChooseOneAtATime $ removeEliminatedChoices choices)
     Ask who (ChooseN n choices) -> Ask who (ChooseN n $ removeEliminatedChoices choices)
     other -> other
   pure
@@ -1050,7 +1074,7 @@ assignDamageDivided a@InvestigatorAttrs {..} iid source strategy matcher health 
   -- (yellow source-highlight), and with the totals label for the token counts.
   push
     $ questionWithSource source player
-    $ QuestionLabel (assignDamageTotalsLabel health sanity) Nothing
+    $ QuestionLabel (assignDamageTotalsLabel health sanity) []
     $ ChooseOne
     $ healthDamageMessages'
     <> sanityDamageMessages'
@@ -1358,7 +1382,12 @@ handleInvestigatorKilled a@InvestigatorAttrs {..} source iid = do
   pure $ a & defeatedL .~ True & endedTurnL .~ True & killedL .~ True
 
 handleSufferTrauma a@InvestigatorAttrs {..} iid physical mental = do
-  push $ CheckTrauma iid
+  {- The trauma window goes in front of 'CheckTrauma': the reaction belongs to the
+  trauma itself, and the check that follows may eliminate this investigator.
+  Trauma suffered on defeat does not come through here -- see
+  'handleInvestigatorIsDefeated', which applies it to the attrs directly. -}
+  traumaWindow <- checkWindows [mkAfter $ Window.SufferedTrauma iid physical mental]
+  pushAll $ [traumaWindow | physical > 0 || mental > 0] <> [CheckTrauma iid]
   pure $ a & physicalTraumaL +~ physical & mentalTraumaL +~ mental
 
 handleSetTrauma a@InvestigatorAttrs {..} iid physical mental = do

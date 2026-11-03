@@ -32,7 +32,7 @@ import Arkham.Event.Types (Field (..))
 which imports this module. The boot file declares them, so taking them from
 there breaks the cycle -- the same trick "Arkham.Investigate" uses. -}
 import {-# SOURCE #-} Arkham.Game ()
-import Arkham.GameEnv (getCardMaybe, getCardPlayStack, getSkillTest)
+import Arkham.GameEnv (getCardMaybe, getCardPlayStack, getLogBlockStack, getSkillTest)
 import Arkham.Id
 import Arkham.Investigator.Types (Field (..))
 import Arkham.Location.Types (Field (..))
@@ -45,6 +45,8 @@ import Arkham.Source
 import Arkham.Story.Types (Field (..))
 import Arkham.Target
 import Arkham.Treachery.Types (Field (..))
+import Data.Text qualified as T
+import Text.Read (readMaybe)
 
 {- | A location chip, drawing its back when the location is not yet revealed --
 which is why this needs game state and the pure constructor cannot do it.
@@ -216,24 +218,79 @@ sendLogInOpenBlock entry
 
 {- | The block an entry should join, if any.
 
-A skill test wins over a card play: playing a card to commit to a test happens
-inside the test, not the other way round.
+Innermost wins, and the order is the nesting: a skill test happens inside the
+card play that committed to it, and both happen inside whatever multi-step
+action opened a block around them.
 -}
 openBlockKey :: HasGame m => m (Maybe Text)
 openBlockKey =
   getSkillTest >>= \case
-    Just st -> pure $ Just (skillTestLogKey st)
-    Nothing -> fmap cardBlockKey . lastMay <$> getCardPlayStack
+    Just st -> Just <$> skillTestBlockKey st
+    Nothing -> do
+      mCardPlay <- fmap cardBlockKey . lastMay <$> getCardPlayStack
+      mAction <- lastMay <$> getLogBlockStack
+      pure $ mCardPlay <|> mAction
 
 -- | The key a skill test's block is filed under. Shared with the narrator.
 skillTestLogKey :: SkillTest -> Text
 skillTestLogKey st = "skillTest:" <> tshow st.id
+
+{- | 'skillTestLogKey', below whatever block an action opened around the test.
+
+A group id is a path: @navigate:x\/skillTest:y@ is a block inside a block, and
+the client reads the nesting back out of the id rather than being told it, which
+is what keeps rows flat and append-only.
+
+The parent comes from 'Arkham.Game.Base.gameLogBlockStack' alone, and
+deliberately not from the card-play stack, which changes under a running test --
+a card committed to it opens a block of its own. The path has to come out the
+same every time it is computed, or the test's rows scatter across two groups.
+-}
+skillTestBlockKey :: HasGame m => SkillTest -> m Text
+skillTestBlockKey st = do
+  mParent <- lastMay <$> getLogBlockStack
+  pure $ maybe key (\parent -> parent <> "/" <> key) mParent
+ where
+  key = skillTestLogKey st
 
 {- | The key the block around a card is filed under: a card being played, or an
 encounter card being drawn and resolved. Shared with the narrator.
 -}
 cardBlockKey :: CardId -> Text
 cardBlockKey cid = "cardPlay:" <> tshow cid
+
+{- | The block a batch of concealed-card placements is filed under.
+
+The key carries the investigator and the total on purpose. The only message
+that reliably marks the __end__ of a batch is the block's own
+'Arkham.Message.CloseLogBlock': two of the branches in @Scenario/Runner.hs@'s
+@PlaceConcealedCards@ place every card at once and never queue a tail message,
+and @CloseLogBlock@ carries nothing but the key. The narrator reads both back
+out of it -- the total to tell the first header from a revised one, and the
+investigator to name in the summary.
+
+The random token is what keeps a second batch out of the first: the client
+collects a block by id across the whole log (@groupLogEntries@) rather than by
+position, so a key reused next round would fold two batches into one block.
+Same reason a Navigate action's key is random.
+
+Fields are separated by @:@ and never @\/@, which the client reads as block
+nesting.
+-}
+placeConcealedBlockKey :: InvestigatorId -> Int -> BatchId -> Text
+placeConcealedBlockKey iid total token =
+  T.intercalate ":" ["placeConcealed", tshow total, idText iid, tshow token]
+
+{- | 'placeConcealedBlockKey' read back: who is placing, and how many in all.
+
+'Nothing' for any other block -- a Navigate action's, a card play's -- which is
+what keeps the narrator's summary off every other 'Arkham.Message.CloseLogBlock'.
+-}
+placeConcealedBlock :: Text -> Maybe (InvestigatorId, Int)
+placeConcealedBlock key = case T.splitOn ":" key of
+  ["placeConcealed", total, iid, _] ->
+    (InvestigatorId (CardCode iid),) <$> readMaybe (unpack total)
+  _ -> Nothing
 
 {- | Last resort when the entity is gone: the id, so the line still names
 something stable, and the client can still try its own lookup.

@@ -1428,6 +1428,8 @@ components:
         - beta
         - phaseTransitionNotifications
         - admin
+        - allowSpectatorsByDefault
+        - features
       properties:
         username:
           type: string
@@ -1440,6 +1442,17 @@ components:
           type: boolean
         admin:
           type: boolean
+        allowSpectatorsByDefault:
+          type: boolean
+          description: Starting value for the new-game form's allowSpectators switch.
+        features:
+          type: array
+          description: >-
+            Admin-granted feature names this account may use (currently only
+            "apiKeys"). Unknown names are never emitted; clients should ignore
+            names they do not recognise.
+          items:
+            type: string
     UserSettings:
       $ref: "./schemas/account.schema.json#/$defs/userSettings"
     SettingsUser:
@@ -1449,12 +1462,21 @@ components:
       additionalProperties: false
       required:
         - assetHost
+        - maintenance
       properties:
         assetHost:
           type:
             - string
             - "null"
           format: uri
+        maintenance:
+          type: boolean
+          description: >-
+            True while the server is in a maintenance window. During a window
+            every route except /health, this one and the admin /maintenance
+            switch answers 503 with a Retry-After header and a
+            {maintenance, since, message} JSON body, including
+            /capabilities and WebSocket upgrades.
     ServerCapabilities:
       $ref: "./schemas/capabilities.schema.json"
     CampaignCatalog:

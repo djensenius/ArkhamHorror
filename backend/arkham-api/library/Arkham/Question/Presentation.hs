@@ -441,6 +441,15 @@ questionPresentations version = Map.map (questionPresentation version)
 presentQuestion :: Int -> Question Message.Message -> QuestionPresentation
 presentQuestion version = \case
   ChooseOne choices -> choiceQuestion version "chooseOne" GeneralChoiceContext choices Null
+  -- One pick from a fixed pool of card codes; the answer is the picked code's
+  -- index, exactly like a chooseOne whose choices are all card targets.
+  ChooseFromCollection _ source cardCodes ->
+    QuestionPresentationWithMetadata
+      version
+      "chooseFromCollection"
+      (length cardCodes)
+      (zipWith (\sourceIndex code -> targetChoice sourceIndex ChooseTarget (CardCodeEntity code)) [0 ..] cardCodes)
+      (defaultQuestionMetadata "chooseFromCollection" <> Map.singleton "questionSource" (sourceMetadata source))
   PlayerWindowChooseOne choices -> choiceQuestion version "playerWindowChooseOne" PlayerWindowContext choices Null
   WindowChooseOne choices -> choiceQuestion version "windowChooseOne" GeneralChoiceContext choices Null
   ChooseOneFromEach groups ->
@@ -500,10 +509,14 @@ presentQuestion version = \case
   ChooseDeck -> deckQuestion version "chooseDeck" mempty
   ChooseJoinDeck usedInvestigators ->
     deckQuestion version "chooseJoinDeck" $ Map.singleton "usedInvestigators" (Aeson.toJSON usedInvestigators)
-  QuestionLabel label card question ->
+  -- `cardCode` stays the first card the label is about, as it was when a label
+  -- could only carry one. `labelCards` is added only when there are more, so a
+  -- single-card label presents exactly as before.
+  QuestionLabel label labelCards question ->
     presentQuestion version question
       & addQuestionField "questionLabel" (Aeson.toJSON $ EmbeddedI18nLabel label)
-      & maybe id (addQuestionField "cardCode" . Aeson.toJSON) card
+      & maybe id (addQuestionField "cardCode" . Aeson.toJSON) (headMay labelCards)
+      & (if length labelCards > 1 then addQuestionField "labelCards" (Aeson.toJSON labelCards) else id)
   PayCostQuestion cost question ->
     presentQuestion version question
       & addQuestionField "payCost" (Aeson.toJSON $ presentCost cost)

@@ -13,7 +13,8 @@
     "forceDraw",
     "tokenPool",
     "totalRevealedChaosTokens",
-    "pendingRequests"
+    "pendingRequests",
+    "debugRevealedChaosTokens"
   ],
   "properties": {
     "chaosTokens": {
@@ -67,6 +68,37 @@
     "pendingRequests": {
       "description": "A Source-keyed map of pending chaos-token requests, encoded as an array of [source, chaosTokens] pairs because Source is not a plain string key. Broad and out of scope for this contract slice.",
       "type": "array"
+    },
+    "debugRevealedChaosTokens": {
+      "description": "Tokens revealed through the debug/test chaos-bag override, with the value and auto-fail/auto-success outcome forced for each (Arkham.ChaosBag.Base.DebugRevealedChaosToken). Empty in ordinary play.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "token",
+          "value",
+          "autoFail",
+          "autoSuccess"
+        ],
+        "properties": {
+          "token": {
+            "$ref": "./chaos-token.schema.json"
+          },
+          "value": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "autoFail": {
+            "type": "boolean"
+          },
+          "autoSuccess": {
+            "type": "boolean"
+          }
+        }
+      }
     }
   }
 }

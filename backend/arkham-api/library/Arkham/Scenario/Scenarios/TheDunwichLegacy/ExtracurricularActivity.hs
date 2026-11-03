@@ -11,12 +11,14 @@ import Arkham.Enemy.CardDefs.TheDunwichLegacy.ExtracurricularActivity qualified 
 import Arkham.Exception
 import Arkham.Helpers.Campaign hiding (addCampaignCardToDeckChoice)
 import Arkham.Helpers.FlavorText
+import Arkham.Helpers.Narrative
 import Arkham.Helpers.Query
 import Arkham.Helpers.SkillTest (withSkillTest)
 import Arkham.Helpers.Xp
 import Arkham.Investigator.Types (Field (..))
 import Arkham.Location.CardDefs.TheDunwichLegacy.ExtracurricularActivity qualified as Locations
 import Arkham.Message.Lifted.Log
+import Arkham.Narrative.TheDunwichLegacy
 import Arkham.Projection
 import Arkham.Resolution
 import Arkham.Scenario.Import.Lifted
@@ -54,10 +56,10 @@ instance HasChaosTokenValue ExtracurricularActivity where
 
 instance RunMessage ExtracurricularActivity where
   runMessage msg s@(ExtracurricularActivity attrs) = runQueueT $ scenarioI18n $ case msg of
-    PreScenarioSetup -> do
-      flavor $ scope "intro" do
-        h "title"
-        p "body"
+    PreScenarioSetup -> scope "intro" do
+      narrative <- getDunwichNarrative
+      storyBuild
+        =<< narrativeBuilder narrative.extracurricularActivityIntro (h "title" >> p "body")
       pure s
     StandaloneSetup -> do
       setChaosTokens $ chaosBagContents attrs.difficulty
@@ -83,6 +85,9 @@ instance RunMessage ExtracurricularActivity where
       gather Set.LockedDoors
       gather Set.AgentsOfYogSothoth
 
+      setAgendaDeck [Agendas.quietHalls, Agendas.deadOfNight, Agendas.theBeastUnleashed]
+      setActDeck [Acts.afterHours, Acts.ricesWhereabouts, Acts.campusSafety]
+
       startAt =<< place Locations.miskatonicQuad
       placeAll
         [ Locations.humanitiesBuilding
@@ -103,9 +108,6 @@ instance RunMessage ExtracurricularActivity where
         , Locations.alchemyLabs
         , Assets.professorWarrenRice
         ]
-
-      setAgendaDeck [Agendas.quietHalls, Agendas.deadOfNight, Agendas.theBeastUnleashed]
-      setActDeck [Acts.afterHours, Acts.ricesWhereabouts, Acts.campusSafety]
     ResolveChaosToken drawnToken ElderThing iid -> do
       let amount = if isEasyStandard attrs then 2 else 3
       discardTopOfDeckAndHandle iid ElderThing amount (ChaosTokenTarget drawnToken)
@@ -132,7 +134,9 @@ instance RunMessage ExtracurricularActivity where
           investigators <- allInvestigators
           addCampaignCardToDeckChoice investigators DoNotShuffleIn Assets.professorWarrenRice
         Resolution 2 -> do
-          resolutionWithXp "resolution2" $ allGainXp' attrs
+          narrative <- getDunwichNarrative
+          key <- narrativeKey "resolution2" narrative.extracurricularActivityResolution2
+          resolutionWithXp key $ allGainXp' attrs
           record ProfessorWarrenRiceWasKidnapped
           record TheStudentsWereRescued
         Resolution 3 -> do

@@ -14,22 +14,13 @@ newtype TwistingAlleys = TwistingAlleys LocationAttrs
 twistingAlleys :: LocationCard TwistingAlleys
 twistingAlleys = symbolLabel $ location TwistingAlleys Cards.twistingAlleys 4 (PerPlayer 1)
 
-{- | "Forced - When you would leave Twisting Alleys, if you are not moving to a
-new Arkham Streets location: Test [willpower] or [agility] (3). If you fail, move
-to a new Arkham Streets location instead of your original destination. If no such
-locations exist, instead cancel the effects of the move."
-
-"Not moving to a new Arkham Streets location" is read as "the destination is
-already revealed": a new one is always put into play facedown and is revealed
-the moment you arrive, so an unrevealed destination can only be a street that
-was just dealt (or the one Eternity's Sentinel was placed on).
--}
 instance HasAbilities TwistingAlleys where
   getAbilities (TwistingAlleys a) =
     extendRevealed1 a
       $ skillTestAbility
-      $ forcedAbility a 1
-      $ WouldMove #when You #any (be a) RevealedLocation
+      $ restricted a 1 (MovingTo RevealedLocation)
+      $ forced
+      $ Leaves #when You (be a)
 
 instance RunMessage TwistingAlleys where
   runMessage msg l@(TwistingAlleys attrs) = runQueueT $ case msg of

@@ -31,6 +31,20 @@ export const CARD_FLIGHT_TRANSITION_CLASS = 'card-flight'
  * inside the overlay, which would make the overlay its own destination. */
 export const CARD_FLIGHT_ATTR = 'data-card-flight'
 
+/* The attribute that marks a *pile* a card can land in: a discard, where only
+ * the top card is ever rendered and the one that just arrived is usually not it
+ * by the time a reveal is dismissed. Its value is the ids the pile is currently
+ * holding, space separated, so the fallback can tell "this card went here" from
+ * "a pile exists somewhere on screen".
+ *
+ * Separate from `CARD_FLIGHT_ATTR` because the two behave differently: a card's
+ * own element hides while an overlay previews it, so the card is never on
+ * screen twice. A pile must not -- hiding it would blank the whole discard
+ * behind the overlay, and the pile is not a second picture of the flying card
+ * anyway. It only takes a transition name, and only during the flight.
+ */
+export const CARD_FLIGHT_PILE_ATTR = 'data-card-flight-pile'
+
 /* Injected as one object so a destination can tell the two phases apart.
  *
  * `previewed`: an overlay is showing this card full-screen. The board copy is
@@ -57,23 +71,43 @@ export const CARD_FLIGHT_STATE = 'cardFlightState'
  * card frame inside it rather than fighting for the same element.
  */
 export function useCardFlight(id: MaybeRefOrGetter<string | undefined>) {
-  const state = inject<CardFlightState>(CARD_FLIGHT_STATE, {
+  const state = useCardFlightState()
+  return computed(() => cardFlightStyle(state, toValue(id)))
+}
+
+/* The same state, for a destination that renders a list and so cannot call
+ * `useCardFlight` per item -- `inject` only runs during setup. Pair it with
+ * `cardFlightStyle` in the template. */
+export function useCardFlightState(): CardFlightState {
+  return inject<CardFlightState>(CARD_FLIGHT_STATE, {
     previewed: ref(new Set()),
     flying: ref(new Set()),
   })
-  return computed(() => {
-    const value = toValue(id)
-    if (!value) return undefined
-    if (state.flying.value.has(value)) {
-      return {
-        viewTransitionName: cardFlightTransitionName(value),
-        viewTransitionClass: CARD_FLIGHT_TRANSITION_CLASS,
-      }
+}
+
+export function cardFlightStyle(state: CardFlightState, id: string | undefined) {
+  if (!id) return undefined
+  if (state.flying.value.has(id)) {
+    return {
+      viewTransitionName: cardFlightTransitionName(id),
+      viewTransitionClass: CARD_FLIGHT_TRANSITION_CLASS,
     }
-    // `visibility`, not `display`: the slot has to keep its layout box, both so
-    // the board does not reflow under the overlay and so the placeholder can be
-    // measured from it.
-    if (state.previewed.value.has(value)) return { visibility: 'hidden' as const }
-    return undefined
-  })
+  }
+  // `visibility`, not `display`: the slot has to keep its layout box, both so
+  // the board does not reflow under the overlay and so the placeholder can be
+  // measured from it.
+  if (state.previewed.value.has(id)) return { visibility: 'hidden' as const }
+  return undefined
+}
+
+/* Style bindings for a pile: the transition name while one of its cards is in
+ * flight, and nothing otherwise. Deliberately not `cardFlightStyle`, which also
+ * hides a previewed card. */
+export function cardFlightPileStyle(state: CardFlightState, ids: string[]) {
+  const flying = ids.find((id) => state.flying.value.has(id))
+  if (!flying) return undefined
+  return {
+    viewTransitionName: cardFlightTransitionName(flying),
+    viewTransitionClass: CARD_FLIGHT_TRANSITION_CLASS,
+  }
 }

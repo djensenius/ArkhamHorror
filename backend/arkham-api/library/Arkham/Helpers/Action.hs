@@ -38,6 +38,7 @@ import Arkham.Matcher.Action
 import Arkham.Matcher.Card
 import Arkham.Matcher.Enemy
 import Arkham.Matcher.Window
+import Arkham.Metrics (timedPure)
 import Arkham.Modifier (Modifier (..))
 import Arkham.Prelude
 import Arkham.Projection
@@ -161,6 +162,54 @@ getAdditionalActions attrs = do
   if CannotGainAdditionalActions `elem` mods
     then pure []
     else pure $ filter (`notElem` investigatorUsedAdditionalActions attrs) additionalActions
+
+{- | An investigator's /unrestricted/ actions: their remaining actions plus
+every unspent additional action that carries no limitation on its use.
+'getAdditionalActions' is what makes the count exclude the ones already spent.
+
+This is what Ages Unwound calls a "standard action":
+
+> A standard action is any action that does not have a limitation on its use,
+> regardless of its source.
+
+The name deliberately avoids that word. The core rules use "standard action"
+for the opposite side of the split -- the investigator's /three base/ actions,
+as against their additional ones ("not one of Daisy's three standard actions",
+glossary "Action"; FAQ 1.10) -- so an identifier saying /standard/ would read
+as the narrower count to anyone holding the rulebook and the wider one to
+anyone holding the campaign guide. Keep the campaign's wording on the cards and
+out of the engine.
+
+The unqualified count is 'getAllRemainingActions'.
+
+AU uses the term only where it *counts* actions ("for each standard action you
+have remaining", "if you have any standard actions remaining", "X is the number
+of standard actions you have"). Its "lose N action(s)" effects are a different
+thing -- see 'Arkham.Message.LoseUnrestrictedActions'.
+-}
+
+{- | Every action the investigator still has: their remaining actions plus
+every unspent additional action, whatever limitation it carries.
+
+This is what a card means by "actions remaining" left unqualified -- an
+investigator holding only Finn Edwards's evade-only action does have an action
+remaining -- so it backs 'Arkham.Matcher.InvestigatorWithActionsRemaining', and
+it is the count that losing an action goes by (FAQ 1.10).
+
+'getUnrestrictedActions' is the narrower one, for the cards that say /standard
+action/.
+-}
+getAllRemainingActions :: HasGame m => InvestigatorId -> m Int
+getAllRemainingActions iid = do
+  remaining <- field InvestigatorRemainingActions iid
+  additional <- length <$> field InvestigatorAdditionalActions iid
+  pure $ remaining + additional
+
+getUnrestrictedActions :: HasGame m => InvestigatorId -> m Int
+getUnrestrictedActions iid = do
+  remaining <- field InvestigatorRemainingActions iid
+  additional <- count isUnrestrictedAdditionalAction <$> field InvestigatorAdditionalActions iid
+  pure $ remaining + additional
 
 getActionCost :: HasGame m => InvestigatorAttrs -> [Action] -> m Int
 getActionCost attrs as = do
@@ -333,6 +382,10 @@ getActionsWith iid ws f = do
         _ -> Nothing
 
   unfilteredActions <- map f <$> getAllAbilities
+  {- TEMPORARY profiling instrumentation. Enumerating every ability in the game
+  is pure work, otherwise paid for piecemeal by whatever forces the list below;
+  forcing it here puts the whole of it in one span. -}
+  let !_enumerated = timedPure "actions/enumerate" (length unfilteredActions)
   actions' <-
     if null abilityFilters
       then pure unfilteredActions
@@ -357,6 +410,13 @@ getActionsWith iid ws f = do
         ProxySource (EnemyMatcherSource m) base -> do
           sources <- selectMap EnemySource m
           pure $ sources & map \source -> action {abilitySource = ProxySource source base}
+        -- An ability anchored on the investigator it is offered to, so the UI
+        -- draws its button on their portrait rather than on the card that
+        -- grants it. These abilities are collected per investigator, so @iid@
+        -- is the anchor -- unlike 'replaceMatcherSources', which has no seat to
+        -- work from and has to settle for `You`.
+        ProxySource YouSource base ->
+          pure [action {abilitySource = ProxySource (InvestigatorSource iid) base}]
         _ -> pure [action]
 
   entryTicks <- getEntryTicks

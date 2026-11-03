@@ -180,11 +180,11 @@ instance RunMessage TurnBackTime where
       doStep (if forcedToWaitForSupplies then 1 else 2) PreScenarioSetup
       pure s
     DoStep 1 PreScenarioSetup -> scope "intro" do
-      flavor $ setTitle "title" >> p "intro1"
+      flavor $ h "title" >> p "intro1"
       traverse_ crossOut . drop 3 . campaignLogOrderedKeys =<< getCampaignLog
       pure s
     DoStep 2 PreScenarioSetup -> scope "intro" do
-      flavor $ setTitle "title" >> p "intro2"
+      flavor $ h "title" >> p "intro2"
       traverse_ crossOut . drop 3 . campaignLogOrderedKeys =<< getCampaignLog
       pure s
     Setup -> runScenarioSetup TurnBackTime attrs $ setupTurnBackTime attrs
@@ -205,11 +205,11 @@ instance RunMessage TurnBackTime where
           resolution "noResolution"
           record TheFabricOfTimeIsUnwoven
           eachInvestigator drivenInsane
-          gameOver
+          gameOverLost
         Resolution 1 -> do
           resolutionWithXp "resolution1" $ allGainXp' attrs
           record TheInvestigatorsSealedTheRelicOfAgesForever
-          gameOver
+          gameOverWon
         _ -> error "Unknown Resolution"
       pure s
     Explore iid source _ -> do

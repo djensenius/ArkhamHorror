@@ -1,6 +1,7 @@
 module Arkham.Homebrew.AgesUnwound.Agendas.TheRitualBegins (theRitualBegins) where
 
 import Arkham.Agenda.Import.Lifted
+import Arkham.Card
 import Arkham.Enemy.Types (Field (EnemyCardCode))
 import Arkham.Helpers.Query (getLead)
 import Arkham.Homebrew.AgesUnwound.CardDefs.Agendas qualified as Cards
@@ -37,7 +38,12 @@ instance RunMessage TheRitualBegins where
       The mythos phase is after @Do BeginRound@ has already re-derived everyone's
       remaining actions, so this is a plain gain/loss for the round that is
       starting -- no next-turn modifier needed (contrast agendas 2a and 3a, whose
-      Forced fires at the end of a turn). -}
+      Forced fires at the end of a turn).
+
+      "Lose N actions" is 'loseActions', not 'loseUnrestrictedActions': the campaign's
+      /standard action/ term governs the effects that *count* actions, while losing
+      follows the core rule -- remaining actions go first, and an investigator left
+      with only additional actions loses those, whatever their limitation (FAQ 1.10). -}
       eachInvestigator \iid -> do
         sid <- getRandom
         beginSkillTest sid iid (attrs.ability 1) iid #willpower (Fixed 4)
@@ -61,11 +67,12 @@ instance RunMessage TheRitualBegins where
       Aid From Afar ...'. Place this card next to the agenda deck as a reminder,
       then advance to agenda 2a."
 
-      The reminder is carried as scenario memory and read by agendas 2a and 3a,
-      which is what makes "the /current/ agenda" true after the deck advances; a
-      card placed next to the agenda deck is a 'Card', not an entity, so it could
-      not offer the ability itself. -}
+      The ability itself is carried as scenario memory and read by agendas 2a
+      and 3a, which is what makes "the /current/ agenda" true after the deck
+      advances; the card next to the agenda deck is a 'Card', not an entity, so
+      it is only the reminder and could not offer the ability itself. -}
       remember theCurrentAgendaCallsForAid
+      push $ PlaceNextTo AgendaDeckTarget [flipCard $ toCard attrs]
 
       advanceAgendaDeck attrs
       pure a
@@ -73,6 +80,6 @@ instance RunMessage TheRitualBegins where
       gainActions iid (attrs.ability 1) 1
       pure a
     FailedThisSkillTestBy iid (isAbilitySource attrs 1 -> True) n | n >= 3 -> do
-      loseStandardActions iid (attrs.ability 1) 1
+      loseActions iid (attrs.ability 1) 1
       pure a
     _ -> TheRitualBegins <$> liftRunMessage msg attrs

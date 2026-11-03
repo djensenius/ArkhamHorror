@@ -56,7 +56,7 @@
         "windowChooseOne"
       ],
       "file": "2p.jsonl",
-      "jsonlBytes": 911492,
+      "jsonlBytes": 914009,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -156,6 +156,7 @@
         "evade",
         "fight",
         "gainResource",
+        "invalidLabel",
         "investigate",
         "localizedLabel",
         "move",
@@ -190,7 +191,7 @@
         "windowChooseOne"
       ],
       "file": "3p.jsonl",
-      "jsonlBytes": 1710502,
+      "jsonlBytes": 1901561,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -225,7 +226,7 @@
             "weaknessSeed": 12001
           },
           "playerId": "00000000-0000-0000-0000-000300000001",
-          "promptCount": 116
+          "promptCount": 122
         },
         {
           "investigator": {
@@ -235,7 +236,7 @@
             "weaknessSeed": 12002
           },
           "playerId": "00000000-0000-0000-0000-000300000002",
-          "promptCount": 71
+          "promptCount": 82
         },
         {
           "investigator": {
@@ -245,16 +246,16 @@
             "weaknessSeed": 12003
           },
           "playerId": "00000000-0000-0000-0000-000300000003",
-          "promptCount": 128
+          "promptCount": 147
         }
       ],
       "reachedEndOf01142": true,
-      "recordCount": 315,
+      "recordCount": 351,
       "seed": 22003,
       "stepsByScenario": {
         "01104": 143,
-        "01120": 102,
-        "01142": 62,
+        "01120": 103,
+        "01142": 97,
         "continue:01104": 1,
         "continue:01120": 1,
         "continue:01142": 1,
@@ -265,7 +266,7 @@
         "campaignFinished": true,
         "lastQuestion": {
           "questionKind": "read",
-          "questionVersion": 62,
+          "questionVersion": 97,
           "rawQuestionTag": "Read",
           "scenario": {
             "code": "01142",
@@ -335,7 +336,7 @@
         "windowChooseOne"
       ],
       "file": "4p.jsonl",
-      "jsonlBytes": 2386174,
+      "jsonlBytes": 2406616,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -390,7 +391,7 @@
             "weaknessSeed": 12003
           },
           "playerId": "00000000-0000-0000-0000-000400000003",
-          "promptCount": 172
+          "promptCount": 174
         },
         {
           "investigator": {
@@ -400,16 +401,16 @@
             "weaknessSeed": 12004
           },
           "playerId": "00000000-0000-0000-0000-000400000004",
-          "promptCount": 111
+          "promptCount": 112
         }
       ],
       "reachedEndOf01142": true,
-      "recordCount": 459,
+      "recordCount": 462,
       "seed": 22004,
       "stepsByScenario": {
         "01104": 214,
         "01120": 103,
-        "01142": 133,
+        "01142": 136,
         "continue:01104": 1,
         "continue:01120": 1,
         "continue:01142": 1,
@@ -420,7 +421,7 @@
         "campaignFinished": true,
         "lastQuestion": {
           "questionKind": "read",
-          "questionVersion": 133,
+          "questionVersion": 136,
           "rawQuestionTag": "Read",
           "scenario": {
             "code": "01142",

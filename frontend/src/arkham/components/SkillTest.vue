@@ -3,6 +3,7 @@ import AbilityButton from '@/arkham/components/AbilityButton.vue'
 import Question from '@/arkham/components/Question.vue';
 import { useDebug } from '@/arkham/debug'
 import { computed } from 'vue';
+import { isCollectionSearch } from '@/arkham/collectionSearch';
 import { ChaosBag } from '@/arkham/types/ChaosBag';
 import * as Cards from '@/arkham/types/Card';
 import { chaosTokenImage, customTokenKey, type TokenFace } from '@/arkham/types/ChaosToken';
@@ -20,7 +21,6 @@ import * as ArkhamGame from '@/arkham/types/Game';
 import { imgsrc, formatContent } from '@/arkham/helpers';
 import { cardArt, portraitImage, sourceCardCode } from '@/arkham/cardImages';
 import ChaosBagView from '@/arkham/components/ChaosBag.vue';
-import SkillTestDraw from '@/arkham/components/debug/SkillTestDraw.vue';
 import Token from '@/arkham/components/Token.vue';
 import { useI18n } from 'vue-i18n';
 import { useMenu } from '@/composable/menu';
@@ -102,6 +102,8 @@ const modifiers = computed(() =>
     filter(shouldRender), ...yourModifiers.value, ...(props.skillTest.modifiers ?? []).filter(shouldRenderSkillTestModifier)]) 
 const committedCards = computed(() => props.skillTest.committedCards)
 const choices = computed(() => ArkhamGame.choices(props.game, props.playerId))
+const collectionSearch = computed(() => isCollectionSearch(props.game, props.playerId))
+
 const skipTriggersAction = computed(() => choices.value.findIndex((c) => c.tag === MessageType.SKIP_TRIGGERS_BUTTON))
 
 const currentInvestigator = computed(() =>
@@ -223,6 +225,33 @@ const swarmEnemy = computed<SwarmEnemy | null>(() => {
 const swarmHost = computed(() => {
   if (!swarmEnemy.value) return null
   return props.game.cards[props.game.enemies[swarmEnemy.value.placement.swarmHost].cardId]
+})
+
+/* The enemy being tested stands on a card from someone's deck (The Myriad
+ * Gentleman's copies), so its entity id is that deck card's and `targetCard`
+ * resolves to the deck card rather than to the enemy. Read it off the entity
+ * instead and draw it the way a swarm card is drawn: a player back beside the
+ * enemy's own card. A weakness enemy IS its player card, so its codes match and
+ * this leaves it alone. */
+const deckCardEnemy = computed(() => {
+  if (!targetCardId.value || swarmEnemy.value) return null
+  const physical = targetCard.value
+  if (!physical || physical.tag !== 'PlayerCard') return null
+  const code = Cards.toCardContents(physical).cardCode
+  return (
+    Object.values(props.game.enemies).find(
+      (e) => e.cardId === targetCardId.value && e.cardCode !== code,
+    ) ?? null
+  )
+})
+
+const deckCardEnemyCard = computed<Cards.Card | null>(() => {
+  const enemy = deckCardEnemy.value
+  if (!enemy || !targetCard.value) return null
+  return {
+    tag: 'EncounterCard',
+    contents: { ...Cards.toCardContents(targetCard.value), cardCode: enemy.cardCode },
+  }
 })
 
 const sourceCard = computed(() => {
@@ -359,12 +388,12 @@ const adjustDebugSkillValue = (event: MouseEvent, direction: 1 | -1) => {
         <button type="button" class="skip-triggers-notice__button" @click="openSettings">{{ $t('skillTest.skipTriggersAdjust') }}</button>
       </div>
       <div class="skill-test-contents">
-        <div v-if="swarmEnemy" class="target-card swarming">
+        <div v-if="swarmEnemy || deckCardEnemy" class="target-card swarming">
           <div class="swarm">
             <img :src="imgsrc('backs/back_player.jpg')" class="card" />
           </div>
-          <div v-if="swarmHost" class="host">
-            <Card :game="game" :card="swarmHost" :revealed="true" playerId="" />
+          <div v-if="swarmHost ?? deckCardEnemyCard" class="host">
+            <Card :game="game" :card="(swarmHost ?? deckCardEnemyCard)!" :revealed="true" playerId="" />
           </div>
         </div>
         <Card
@@ -385,11 +414,15 @@ const adjustDebugSkillValue = (event: MouseEvent, direction: 1 | -1) => {
           <div class="test-difficulty">
             <button
                 v-if="debug.active"
+                type="button"
+                class="debug-stepper-button"
                 @click="createModifier({tag: 'SkillTestTarget', contents: skillTest.id}, {tag: 'Difficulty', contents: -1})"
             >-</button>
             <span class="difficulty">{{skillTest.modifiedDifficulty}}</span>
             <button
                 v-if="debug.active"
+                type="button"
+                class="debug-stepper-button"
                 @click="createModifier({tag: 'SkillTestTarget', contents: skillTest.id}, {tag: 'Difficulty', contents: 1})"
             >+</button>
           </div>
@@ -407,11 +440,15 @@ const adjustDebugSkillValue = (event: MouseEvent, direction: 1 | -1) => {
           <div class="modified-skill">
             <button
                 v-if="debug.active"
+                type="button"
+                class="debug-stepper-button"
                 @click="adjustDebugSkillValue($event, -1)"
             >-</button>
             <span class="skill">{{skillValue}}</span>
             <button
                 v-if="debug.active"
+                type="button"
+                class="debug-stepper-button"
                 @click="adjustDebugSkillValue($event, 1)"
             >+</button>
           </div>
@@ -465,7 +502,6 @@ const adjustDebugSkillValue = (event: MouseEvent, direction: 1 | -1) => {
         <button @click="debug.send(game.id, {tag: 'SkillTestMessage', contents: {tag: 'PassSkillTest_'}})">{{ $t('skillTestActions.passSkillTest') }}</button>
         <button @click="debug.send(game.id, {tag: 'SkillTestMessage', contents: {tag: 'FailSkillTest_'}})">{{ $t('skillTestActions.failSkillTest') }}</button>
       </div>
-      <SkillTestDraw v-if="debug.active" :gameId="game.id" :skillTest="skillTest" :chaosBag="chaosBag" />
       <div v-if="committedCards.length > 0" class="committed-skills" key="committed-skills">
         <template v-if="skillTest.step === 'CommitCardsFromHandToSkillTestStep'">
           <h2>{{t('toBeCommitted')}}</h2>
@@ -548,6 +584,9 @@ const adjustDebugSkillValue = (event: MouseEvent, direction: 1 | -1) => {
           <template v-if="modifier.type.tag === 'OtherModifier' && modifier.type.contents === 'MayIgnoreLocationEffectsAndKeywords'">
             <span class="text">{{ $t('modifier.mayIgnoreLocationEffects') }}</span>
           </template>
+          <template v-if="modifier.type.tag === 'OtherModifier' && modifier.type.contents === 'ReturnBlessedToChaosBag'">
+            <span class="text" v-html="formatContent($t('modifier.returnBlessedToChaosBag'))"></span>
+          </template>
           <template v-if="modifier.type.tag === 'OtherModifier' && modifier.type.contents === 'SkillIconsSubtract'">
             <span class="text">{{ $t('modifier.skillIconsSubtract') }}</span>
           </template>
@@ -589,7 +628,7 @@ const adjustDebugSkillValue = (event: MouseEvent, direction: 1 | -1) => {
         @click="$emit('choose', skipTriggersAction)"
         class="skip-triggers-button"
       >{{ $t('investigator.skipTriggers') }}</button>
-      <Question :game="game" :playerId="playerId" @choose="choose" :isSkillTest="true" />
+      <Question v-if="!collectionSearch" :game="game" :playerId="playerId" @choose="choose" :isSkillTest="true" />
       <button
         class="apply-results"
         v-if="applyResultsAction !== -1"
@@ -599,12 +638,15 @@ const adjustDebugSkillValue = (event: MouseEvent, direction: 1 | -1) => {
   </Draggable>
 </template>
 
+<style scoped src="./debug/stepper.css"></style>
+
 <style lang="scss" scoped>
 .skill-test {
   backdrop-filter: blur(0px);
   -webkit-backdrop-filter: blur(0px); /* Safari support */
   background: #75968600;
-  min-width: fit-content;
+  min-width: 0;
+  max-width: 100%;
   text-align: center;
   z-index: var(--z-index-10);
   overflow: auto;
@@ -647,19 +689,10 @@ const adjustDebugSkillValue = (event: MouseEvent, direction: 1 | -1) => {
   flex-direction: row;
   gap: 5px;
   align-items: center;
-  button {
-    width: fit-content;
-    height: auto;
-    display: inline-block;
-    aspect-ratio: 2;
-    padding: 2px 4px;
-    box-sizing: border-box;
-    border-radius: 2px;
-    min-width: 1.5em;
-  }
 }
 
 .difficulty {
+  flex-shrink: 0;
   background-color: darkred;
   color: white;
   font-weight: bold;
@@ -672,6 +705,7 @@ const adjustDebugSkillValue = (event: MouseEvent, direction: 1 | -1) => {
 }
 
 .skill {
+  flex-shrink: 0;
   background-color: darkgreen;
   color: white;
   font-weight: bold;
@@ -688,16 +722,6 @@ const adjustDebugSkillValue = (event: MouseEvent, direction: 1 | -1) => {
   flex-direction: row;
   align-items: center;
   gap: 5px;
-  button {
-    width: fit-content;
-    height: auto;
-    display: inline-block;
-    aspect-ratio: 2;
-    padding: 2px 4px;
-    box-sizing: border-box;
-    border-radius: 2px;
-    min-width: 1.5em;
-  }
 }
 
 .portrait {
@@ -758,7 +782,7 @@ const adjustDebugSkillValue = (event: MouseEvent, direction: 1 | -1) => {
   color: #EEE;
 }
 
-button {
+button:where(:not(.debug-stepper-button)) {
   width: 100%;
   border: 0;
   text-align: center;

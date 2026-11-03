@@ -14,7 +14,7 @@
   "question": {
     "tag": "QuestionLabel",
     "label": "Assign 1 horror",
-    "card": null,
+    "labelCards": [],
     "question": {
       "tag": "ChooseOne",
       "choices": [

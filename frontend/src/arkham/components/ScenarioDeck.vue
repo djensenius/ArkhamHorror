@@ -1,9 +1,9 @@
 <script lang="ts" setup>
-import { computed, ComputedRef } from 'vue';
+import { computed, type ComputedRef } from 'vue';
 import { useDebug } from '@/arkham/debug';
 import type { Card } from '@/arkham/types/Card';
 import { cardImage, toCardContents } from '@/arkham/types/Card';
-import { imgsrc } from '@/arkham/helpers';
+import { cardImg, imgsrc } from '@/arkham/helpers';
 import { homebrewScenarioDeckDisplay } from '@/arkham/homebrewAssets';
 import { investigatorPortrait as portraitFor } from '@/arkham/cardImages';
 import { MessageType } from '@/arkham/types/Message'
@@ -18,7 +18,6 @@ export interface Props {
 }
 
 
-const cards = computed(() => props.deck[1])
 const debug = useDebug()
 const props = defineProps<Props>()
 const choices = computed(() => ArkhamGame.choices(props.game, props.playerId))
@@ -48,24 +47,34 @@ const investigatorPortrait = computed(() => {
   return portraitFor(props.game, investigator.value.id)
 })
 
-const revealedCards = computed(() => props.deck[1].map(card => {
-  if (card.tag === 'EncounterCard') {
-    return { ...card, contents: { ...card.contents, isFlipped: false } }
-  }
-  return card
-}))
+const revealedCards = computed(() => props.deck[1].map(card =>
+  card.tag === 'EncounterCard'
+    ? { ...card, contents: { ...card.contents, isFlipped: false } }
+    : card
+))
 const showCards = () => emits('show', revealedCards, props.deck[0], false)
 const homebrewDisplay = computed(() => homebrewScenarioDeckDisplay(props.deck[0]))
 
+const homebrewBack = computed(() => {
+  const back = homebrewDisplay.value?.back
+  return back ? cardImg(back) : null
+})
+
 const deckImage = computed(() => {
+  if (homebrewDisplay.value?.image === 'player-back') {
+    return imgsrc("backs/back_player.jpg")
+  }
+
   if (homebrewDisplay.value?.image === 'top-card-back') {
     const topCard = props.deck[1][0]
     if (topCard) {
       const contents = toCardContents(topCard)
       return imgsrc(cardImage({ ...contents, isFlipped: true, facedown: false }))
     }
-    return imgsrc("backs/back_encounter.jpg")
+    return homebrewBack.value ?? imgsrc("backs/back_encounter.jpg")
   }
+
+  if (homebrewBack.value) return homebrewBack.value
 
   switch(props.deck[0]) {
     case 'UnknownPlacesDeck':
@@ -151,22 +160,24 @@ const deckLabel = computed(() => {
       class="discard-card discard-placeholder"
       aria-hidden="true"
     ></div>
-    <div class="deck">
-      <img
-        :src="deckImage"
-        class="card"
-        :class="{ 'can-interact': deckAction !== -1 }"
-        @click="choose(deckAction)"
-      />
-      <span v-if="deckLabel" class="deck-label">{{deckLabel}}</span>
-      <span class="deck-size" :class="{ 'abyss-deck-size': deck[0] === 'AbyssDeck' }">{{deck[1].length}}</span>
-      <img
-        v-if="investigatorPortrait"
-        class="portrait"
-        :src="investigatorPortrait"
-      />
+    <div class="deck-with-controls">
+      <div class="deck">
+        <img
+          :src="deckImage"
+          class="card"
+          :class="{ 'can-interact': deckAction !== -1 }"
+          @click="choose(deckAction)"
+        />
+        <span v-if="deckLabel" class="deck-label">{{deckLabel}}</span>
+        <span class="deck-size" :class="{ 'abyss-deck-size': deck[0] === 'AbyssDeck' }">{{deck[1].length}}</span>
+        <img
+          v-if="investigatorPortrait"
+          class="portrait"
+          :src="investigatorPortrait"
+        />
+      </div>
+      <button v-if="debug.active" class="show-cards-button" @click="showCards">{{ $t('scenarioDeck.showCards') }}</button>
     </div>
-    <button v-if="debug.active" @click="showCards">{{ $t('scenarioDeck.showCards') }}</button>
   </div>
 </template>
 
@@ -174,6 +185,18 @@ const deckLabel = computed(() => {
 .scenario-deck-area {
   display: flex;
   gap: 2px;
+}
+
+.deck-with-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.show-cards-button {
+  max-width: var(--card-width);
+  font-size: 0.75rem;
 }
 
 .card {

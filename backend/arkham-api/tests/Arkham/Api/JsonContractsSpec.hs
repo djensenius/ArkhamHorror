@@ -82,6 +82,14 @@ import Arkham.Draw.Types (newCardDraw)
 import Arkham.Draw.Types qualified as Draw
 import Arkham.Epic.Types (SharedEventState (..))
 import Arkham.Event.Cards qualified as EventCards
+import Arkham.Game.Outcome (
+  Certainty (Certain),
+  Ending (Ending),
+  GameOutcome (GameOutcome),
+  GameResult (Won),
+  OutcomeSource (Recorded),
+  Verdict (Verdict),
+ )
 import Arkham.Game.State (GameState (IsActive, IsChooseDecks, IsOver, IsPending))
 import Arkham.Game.Settings (AsIfRuling (Chapter1AsIfRuling))
 import Arkham.GameValue qualified as GameValue
@@ -122,6 +130,7 @@ import Arkham.Phase
   )
 import Arkham.Replay.Checkpoint (canonicalQuestionSha256)
 import Arkham.Replay.ImportAuthority (ReplayImportReceipt)
+import Arkham.Resolution (Resolution (Resolution))
 import Arkham.Scenario.Types (Field (ScenarioDiscard, ScenarioSetAsideCards), Scenario)
 import Arkham.SkillType (SkillType (SkillWillpower))
 import Arkham.Tarot (TarotCard (TarotCard), TarotCardArcana (TheFool0), TarotCardFacing (Upright))
@@ -1786,6 +1795,9 @@ serverMessageFixtures =
           (Set.fromList ["delta-a", "delta-b"])
     )
   , ("event-changed.json", EventChanged)
+  , ("game-unarchived.json", GameUnarchived)
+  , ("game-unarchive-failed.json", GameUnarchiveFailed "The archived steps could not be restored.")
+  , ("game-watcher-count.json", GameWatcherCount 2)
   , ("room-closed.json", RoomClosed "deleted")
   ]
  where
@@ -1807,6 +1819,7 @@ fixtureGameList =
         (Just $ ScenarioDetails "01104" Easy (mkName "The Gathering") Nothing)
         Nothing
         (IsPending [])
+        Nothing
         "Contract fixture game"
         []
         []
@@ -1818,6 +1831,7 @@ fixtureGameList =
         Nothing
         (Just $ CampaignDetails "06" Easy (Just TheDreamQuest))
         (IsChooseDecks [fixturePlayerId])
+        Nothing
         "Campaign contract fixture"
         [InvestigatorDetails "06001" Guardian, InvestigatorDetails "06002" Seeker]
         [InvestigatorDetails "06003" Rogue]
@@ -1829,6 +1843,7 @@ fixtureGameList =
         (Just $ ScenarioDetails "01104" Easy (mkName "The Gathering") Nothing)
         Nothing
         IsActive
+        Nothing
         "Active contract fixture"
         []
         []
@@ -1840,6 +1855,12 @@ fixtureGameList =
         (Just $ ScenarioDetails "01104" Easy (mkName "The Gathering") Nothing)
         Nothing
         IsOver
+        ( Just
+            $ GameOutcome
+              (Verdict Won Certain Nothing)
+              (Just $ Ending "01104" (Resolution 1))
+              Recorded
+        )
         "Completed contract fixture"
         []
         []
@@ -1981,6 +2002,7 @@ spec = describe "Native client contract fixtures" do
         (Just Chapter1AsIfRuling)
         (Set.fromList [Boon BoonOfHades, Ultimatum UltimatumOfChaos])
         False
+        True
 
   it "applies the real create-game request defaults" do
     request <-
@@ -2002,6 +2024,7 @@ spec = describe "Native client contract fixtures" do
         Nothing
         mempty
         True
+        False
 
   it "applies the real create-game request defaults to null fields" do
     request <-
@@ -2023,6 +2046,7 @@ spec = describe "Native client contract fixtures" do
         Nothing
         mempty
         True
+        False
 
   it "decodes the real choose-deck request" do
     request <-
@@ -2212,7 +2236,7 @@ spec = describe "Native client contract fixtures" do
         , ( "question label wrapper"
           , QuestionLabel
               "Draw encounter card"
-              Nothing
+              []
               (ChooseOne [exactChoice])
           )
         , ( "pay cost wrapper"
@@ -2428,7 +2452,7 @@ spec = describe "Native client contract fixtures" do
         ]
     case fixtureDamageAssignmentQuestion of
       QuestionWithSource source' Nothing
-        (QuestionLabel label Nothing (ChooseOne [DamageLabel damageIid damageMessages, HorrorLabel horrorIid horrorMessages])) -> do
+        (QuestionLabel label [] (ChooseOne [DamageLabel damageIid damageMessages, HorrorLabel horrorIid horrorMessages])) -> do
           source' `shouldBe` source
           label `shouldBe` "Assign 1 damage and 1 horror"
           damageIid `shouldBe` iid
@@ -2538,7 +2562,7 @@ spec = describe "Native client contract fixtures" do
         ]
     case fixtureRemainingHorrorAssignmentQuestion of
       QuestionWithSource source' Nothing
-        (QuestionLabel label Nothing (ChooseOne [HorrorLabel componentIid messages])) -> do
+        (QuestionLabel label [] (ChooseOne [HorrorLabel componentIid messages])) -> do
           source' `shouldBe` source
           label `shouldBe` "Assign 1 horror"
           componentIid `shouldBe` iid
@@ -2549,7 +2573,7 @@ spec = describe "Native client contract fixtures" do
           <> show other
     case fixtureRemainingDamageAssignmentQuestion of
       QuestionWithSource source' Nothing
-        (QuestionLabel label Nothing (ChooseOne [DamageLabel componentIid messages])) -> do
+        (QuestionLabel label [] (ChooseOne [DamageLabel componentIid messages])) -> do
           source' `shouldBe` source
           label `shouldBe` "Assign 1 damage"
           componentIid `shouldBe` iid
@@ -3161,12 +3185,12 @@ spec = describe "Native client contract fixtures" do
         , ( "question-gathering-attic-horror-assignment.json"
           , "question-presentation-gathering-attic-horror-assignment.json"
           , 38
-          , "63ef3583c5440bb0eea5cc0c8f05bcf21d633ec5e9508d2f3bd45572a7abb43d"
+          , "32bf8ea5258829f6da891652365864cf66527bb72ee3f6a8a5095050ed10a259"
           )
         , ( "question-gathering-cellar-damage-assignment.json"
           , "question-presentation-gathering-cellar-damage-assignment.json"
           , 38
-          , "8259de19c744c3b781b434e40b4a78cd5d8a8af0a324aec8c16f009111f9ed2b"
+          , "c217ab72e4decf82d45c6a2d1204be2742c65ecb773cde1d43eb42206cb7e074"
           )
         ]
     for_ fixtureCases \(questionFile, presentationFile, version, expectedDigest) -> do
@@ -3620,7 +3644,7 @@ spec = describe "Native client contract fixtures" do
         , ChooseUpgradeDeck
         , ChooseDeck
         , ChooseJoinDeck []
-        , QuestionLabel "$wrapped" (Just "01001") labelQuestion
+        , QuestionLabel "$wrapped" ["01001"] labelQuestion
         , PayCostQuestion Cost.Free labelQuestion
         , QuestionWithSource (ProxySource (LocationSource locationId) GameSource) (Just $ Tooltip "$source.tooltip") labelQuestion
         , Read mempty (BasicReadChoices [Label "$read" [ClearUI]]) Nothing
@@ -3642,6 +3666,8 @@ spec = describe "Native client contract fixtures" do
         , PickScenarioSpecific "gathering" Aeson.Null
         , ChooseExchangeAmounts GameSource iid 1 (InvestigatorId "01002") 0 Resource
         , ContinueCampaign
+        , ChooseFromCollection iid GameSource ["01001", "01002"]
+        , QuestionLabel "$wrapped.many" ["01001", "01002"] labelQuestion
         ]
     let
       uiConstructorNames = map showConstr $ dataTypeConstrs $ dataTypeOf (Label "$x" [] :: UI Message)
@@ -3649,12 +3675,12 @@ spec = describe "Native client contract fixtures" do
     uiConstructorNames
       `shouldBe` [ "Label", "InvalidLabel", "TooltipLabel", "CostLabel", "CardLabel", "ChaosTokenLabel", "KeyLabel", "PortraitLabel", "TargetLabel", "SkillLabel", "SkillLabelWithLabel", "EvadeLabel", "EvadeLabelWithSkill", "FightLabel", "FightLabelWithSkill", "EngageLabel", "GridLabel", "ConnectionLabel", "TarotLabel", "AbilityLabel", "ComponentLabel", "AuxiliaryComponentLabel", "EndTurnButton", "StartSkillTestButton", "SkillTestApplyResultsButton", "ChaosTokenGroupChoice", "EffectActionButton", "Done", "SkipTriggersButton", "CardPile", "Info", "ScenarioLabel" ]
     questionConstructorNames
-      `shouldBe` [ "ChooseOne", "PlayerWindowChooseOne", "WindowChooseOne", "ChooseOneFromEach", "ChooseN", "ChooseSome", "ChooseSome1", "ChooseUpToN", "ChooseOneAtATime", "ChooseOneAtATimeWithAuto", "ChoosePaymentAmounts", "ChooseAmounts", "ChooseUpgradeDeck", "ChooseDeck", "ChooseJoinDeck", "QuestionLabel", "PayCostQuestion", "QuestionWithSource", "Read", "ChooseOneWizard", "PickSupplies", "PickDestiny", "DropDown", "PickScenarioSettings", "PickCampaignSettings", "PickCampaignSpecific", "PickScenarioSpecific", "ChooseExchangeAmounts", "ContinueCampaign" ]
+      `shouldBe` [ "ChooseOne", "ChooseFromCollection", "PlayerWindowChooseOne", "WindowChooseOne", "ChooseOneFromEach", "ChooseN", "ChooseSome", "ChooseSome1", "ChooseUpToN", "ChooseOneAtATime", "ChooseOneAtATimeWithAuto", "ChoosePaymentAmounts", "ChooseAmounts", "ChooseUpgradeDeck", "ChooseDeck", "ChooseJoinDeck", "QuestionLabel", "PayCostQuestion", "QuestionWithSource", "Read", "ChooseOneWizard", "PickSupplies", "PickDestiny", "DropDown", "PickScenarioSettings", "PickCampaignSettings", "PickCampaignSpecific", "PickScenarioSpecific", "ChooseExchangeAmounts", "ContinueCampaign" ]
     traverse_ assertComplete representativeQuestions
     let
       representativeNames :: [Text]
       representativeNames =
-        [ "chooseOne-all-ui", "playerWindowChooseOne", "windowChooseOne", "chooseOneFromEach", "chooseN", "chooseSome", "chooseSome1", "chooseUpToN", "chooseOneAtATime", "chooseOneAtATimeWithAuto", "choosePaymentAmounts-null-target", "chooseAmounts", "chooseUpgradeDeck", "chooseDeck", "chooseJoinDeck", "questionLabel", "payCostQuestion", "questionWithProxySource", "read", "readN", "readUpToNWithCards", "readLead", "chaosStepChoose", "chaosStepChooseMatch", "chaosStepChooseMatchChoice", "opaqueTarget", "componentInvestigatorDeckGeneral", "chooseOneWizard", "pickSupplies", "pickDestiny", "dropDown", "pickScenarioSettings", "pickCampaignSettings", "pickCampaignSpecific", "pickScenarioSpecific", "chooseExchangeAmounts", "continueCampaign" ]
+        [ "chooseOne-all-ui", "playerWindowChooseOne", "windowChooseOne", "chooseOneFromEach", "chooseN", "chooseSome", "chooseSome1", "chooseUpToN", "chooseOneAtATime", "chooseOneAtATimeWithAuto", "choosePaymentAmounts-null-target", "chooseAmounts", "chooseUpgradeDeck", "chooseDeck", "chooseJoinDeck", "questionLabel", "payCostQuestion", "questionWithProxySource", "read", "readN", "readUpToNWithCards", "readLead", "chaosStepChoose", "chaosStepChooseMatch", "chaosStepChooseMatchChoice", "opaqueTarget", "componentInvestigatorDeckGeneral", "chooseOneWizard", "pickSupplies", "pickDestiny", "dropDown", "pickScenarioSettings", "pickCampaignSettings", "pickCampaignSpecific", "pickScenarioSpecific", "chooseExchangeAmounts", "continueCampaign", "chooseFromCollection", "questionLabel-many" ]
     length representativeNames `shouldBe` length representativeQuestions
     representativeFixture <- loadFixture "question-presentation-representatives.json"
     fixturePresentations <- case representativeFixture of
@@ -4538,7 +4564,7 @@ spec = describe "Native client contract fixtures" do
           )
         , ( "question-agenda-horror-assignment.json"
           , fixtureAgendaHorrorAssignmentQuestion
-          , "5c3ece0a8ceebbd8c2a883c89bb9db753427b198fc4f5f2c9d834b036f8fe4c9"
+          , "1c434f430349e1874c31af10ad5e614aab301b442f9fd38d8aedf51b7e6243fe"
           )
         ]
     for_ fixtures \(fileName, question, expectedDigest) -> do
@@ -4729,7 +4755,7 @@ spec = describe "Native client contract fixtures" do
         Nothing
         ( QuestionLabel
             "Assign 2 horror"
-            Nothing
+            []
             (ChooseOne [HorrorLabel iid expectedMessages])
         )
 
@@ -5026,11 +5052,12 @@ spec = describe "Native client contract fixtures" do
 
     settings.betaSetting `shouldBe` Just True
     settings.phaseTransitionNotificationsSetting `shouldBe` Just False
+    settings.allowSpectatorsByDefaultSetting `shouldBe` Just True
 
   it "matches the real settings response encoder" do
     fixture <- loadFixtureField "account.json" "settingsUser"
 
-    Aeson.toJSON (SettingsUser "Investigator" "investigator@example.com" True False)
+    Aeson.toJSON (SettingsUser "Investigator" "investigator@example.com" True False False)
       `shouldBe` fixture
 
   it "matches the real notification-list encoder" do

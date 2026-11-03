@@ -61,7 +61,10 @@ instance Be TreacheryAttrs TreacheryMatcher where
 instance RunMessage TreacheryAttrs where
   runMessage msg a@TreacheryAttrs {..} = runQueueT $ case msg of
     Msg.SealedChaosToken token _ (isTarget a -> True) -> do
-      pure $ a & sealedChaosTokensL %~ (token :)
+      pure $ a & sealedChaosTokensL %~ addSealedChaosToken token
+    -- sealed somewhere else: it is no longer on this card
+    Msg.SealedChaosToken token _ _ -> do
+      pure $ a & sealedChaosTokensL %~ filter (/= token)
     Msg.UnsealChaosToken token -> do
       when (token `elem` treacherySealedChaosTokens) do
         checkWhen $ Window.ChaosTokenReleased (toTarget a) token
@@ -189,9 +192,10 @@ instance RunMessage TreacheryAttrs where
     InSearch msg'@(UseAbility _ ab _) | isSource a ab.source || isProxySource a ab.source -> do
       push $ Do msg'
       pure a
-    InDiscard iid msg'@(UseAbility iid' ab _) | iid == iid' && (isSource a ab.source || isProxySource a ab.source) -> do
-      push $ Do msg'
-      pure a
+    -- NOTE: No InDiscard UseAbility handler here. In-discard entities also receive the raw
+    -- message (see RunMessage Game in Game/Runner.hs), so the bare handler above already
+    -- fires for them; a second one pushes `Do (UseAbility)` twice and resolves the ability
+    -- (and pays its cost) twice -- see #4764 and Monastic Training's doubled reaction.
     InHand iid msg'@(UseAbility iid' ab _) | iid == iid' && (isSource a ab.source || isProxySource a ab.source) -> do
       push $ Do msg'
       pure a

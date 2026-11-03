@@ -5,15 +5,12 @@ import Arkham.Helpers.SkillTest.Lifted (revelationSkillTest)
 import Arkham.Homebrew.AgesUnwound.CardDefs.Enemies qualified as Cards
 
 newtype MyriadAssassin = MyriadAssassin EnemyAttrs
-  deriving anyclass (IsEnemy, HasAbilities, HasModifiersFor)
-  deriving newtype (Show, Eq, ToJSON, FromJSON, Entity)
+  deriving anyclass (IsEnemy, HasModifiersFor)
+  deriving newtype (Show, Eq, ToJSON, FromJSON, Entity, HasAbilities)
 
 myriadAssassin :: EnemyCard MyriadAssassin
 myriadAssassin = enemy MyriadAssassin Cards.myriadAssassin
 
-{- | "Revelation - Test [agility] (3). If you fail, Myriad Assassin makes an
-immediate attack against you."
--}
 instance RunMessage MyriadAssassin where
   runMessage msg e@(MyriadAssassin attrs) = runQueueT $ case msg of
     Revelation iid (isSource attrs -> True) -> do

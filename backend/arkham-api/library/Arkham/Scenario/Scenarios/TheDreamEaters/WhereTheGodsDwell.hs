@@ -9,9 +9,10 @@ import Arkham.EncounterSet qualified as Set
 import Arkham.Enemy.CardDefs.TheDreamEaters.AgentsOfNyarlathotep qualified as Enemies
 import Arkham.Enemy.CardDefs.TheDreamEaters.WhereTheGodsDwell qualified as Enemies
 import Arkham.Exception
+import Arkham.Game.Outcome (neverSeenInTheWakingWorld)
 import Arkham.Helpers.Act (getCurrentActStep)
 import Arkham.Helpers.Agenda (getCurrentAgendaStep)
-import Arkham.Helpers.FlavorText (li, setup, ul)
+import Arkham.Helpers.FlavorText (flavor, li, setup, ul, withHeading)
 import Arkham.Helpers.Query (getLead)
 import Arkham.Helpers.Xp
 import Arkham.Location.CardDefs.TheDreamEaters.WhereTheGodsDwell qualified as Locations
@@ -76,7 +77,7 @@ instance RunMessage WhereTheGodsDwell where
     PreScenarioSetup -> do
       story $ i18nWithHeading "intro"
       carried <- getHasRecord TheInvestigatorsWereCarriedToTheColdWastes
-      story $ i18nWithTitle $ if carried then "intro1" else "intro2"
+      flavor $ withHeading $ if carried then "intro1" else "intro2"
       pure s
     StandaloneSetup -> do
       record RandolphSurvivedTheVoyage
@@ -166,7 +167,7 @@ instance RunMessage WhereTheGodsDwell where
         NoResolution -> do
           resolution "noResolution"
           record Nyarlathotep'sInvasionHasBegun
-          whenM getIsTheDreamQuest $ push GameOver
+          whenM getIsTheDreamQuest gameOverLost
           endOfScenario
         Resolution 1 -> do
           resolutionWithXp "resolution1" $ allGainXp' attrs
@@ -199,12 +200,12 @@ instance RunMessage WhereTheGodsDwell where
         Resolution 3 -> do
           resolution "resolution3"
           record TheDreamersAwoke
-          whenM getIsTheDreamQuest $ push GameOver
+          whenM getIsTheDreamQuest gameOverWon
           endOfScenario
         Resolution 4 -> do
           resolution "resolution4"
           record TheDreamersStayedInTheDreamlandsForever
-          whenM getIsTheDreamQuest $ push GameOver
+          whenM getIsTheDreamQuest $ gameOverWonNoting neverSeenInTheWakingWorld
           endOfScenario
         Resolution 5 -> do
           resolution "resolution5"

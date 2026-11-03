@@ -36,7 +36,7 @@ import Arkham.Helpers.Source
 import Arkham.Helpers.Target
 import Arkham.Id
 import Arkham.Investigator.Types (Field (..))
-import Arkham.Keyword (Keyword (Peril))
+import Arkham.Keyword (Keyword (Hidden, Peril))
 import Arkham.Location.Types (Field (..))
 import Arkham.Matcher hiding (IgnoreChaosToken)
 import Arkham.Matcher qualified as Matcher
@@ -556,14 +556,18 @@ skillIconCount SkillTest {..} = do
     addedIcons = foldMap (Sum . toValue) . filter matches $ flip concatMap mods \case
       AddSkillIcons icons -> icons
       _ -> []
-  cardIcons <- flip foldMapM (mapToList skillTestCommittedCards) \(iid, cards) -> do
-    flip foldMapM cards \card -> do
+  cardIcons <- flip concatMapM (mapToList skillTestCommittedCards) \(iid, cards) -> do
+    imods <- getModifiers iid
+    let less = sum [n | FewerMatchingIconsPerCard n <- imods]
+    flip concatMapM cards \card -> do
       icons <- sort . map toValue . filter matches <$> iconsForCard card
-      imods <- getModifiers iid
-      let less = sum [n | FewerMatchingIconsPerCard n <- imods]
-      pure $ foldMap Sum $ drop less icons
+      pure $ drop less icons
 
-  let totalIcons = getSum (cardIcons <> addedIcons)
+  -- "Ignore the first skill icon committed to all skill tests you perform" is
+  -- reckoned once over the whole test, so it reads the performer's modifiers.
+  performerMods <- getModifiers skillTestInvestigator
+  let ignored = sum [n | FewerMatchingIcons n <- performerMods]
+  let totalIcons = getSum (foldMap Sum (drop ignored (sort cardIcons)) <> addedIcons)
 
   case skillTestType of
     SkillSkillTest sType -> do
@@ -672,12 +676,22 @@ getIsCommittable a c = runValidT do
     onlyCardComittedToTestCommitted = any onlyCardCommittedToTest allCommittedCards
   let cannotCommitCards = CannotCommitCards AnyCard `elem` modifiers'
   guard $ not $ c `elem` allCommittedCards || cannotCommitCards || onlyCardComittedToTestCommitted
+  -- A hidden card "cannot leave your hand by any means except those described on the
+  -- card", so committing it is out unless its own text allows it (Possession
+  -- (Traitorous)). Watcher from Another Dimension handed a wild icon by Friends in Low
+  -- Places (Bolstering) is otherwise committable on icons alone.
+  let cdef = toCardDef c
+  let isHidden = Hidden `elem` cdKeywords cdef
+  let committableByOwnText = CommittableTreachery `elem` cdCommitRestrictions cdef
+  guard $ not isHidden || committableByOwnText
   case c of
     PlayerCard card -> do
       let
         committedCardTitles = map toTitle allCommittedCards
         passesCommitRestriction = \case
-          OnlySkillTestSource matcher -> sourceMatches skillTest.source matcher
+          -- "you control" on a commit restriction is the committing investigator, not
+          -- the active one; every player is asked at once during the commit step (#5862)
+          OnlySkillTestSource matcher -> sourceMatches skillTest.source (replaceYouMatcher a matcher)
           OnlySkillTest matcher -> skillTestMatches iid skillTest.source skillTest (replaceYouMatcher iid matcher)
           CommittableTreachery -> error "unhandled"
           AnyCommitRestriction cs -> anyM passesCommitRestriction cs
@@ -704,13 +718,7 @@ getIsCommittable a c = runValidT do
             x <- getSkillTestDifficultyDifferenceFromBaseValue a skillTest
             pure $ x >= n
           CanCommitAfterRevealingTokens -> pure True
-        prevented = flip any modifiers' $ \case
-          -- Weaknesses do not interact with the class system (FAQ 1.35)
-          CanOnlyUseCardsInRole role ->
-            isNothing (cdCardSubType $ toCardDef card)
-              && null (intersect (cdClassSymbols $ toCardDef card) (setFromList [Mythos, Neutral, role]))
-          CannotCommitCards matcher -> cardMatch card matcher
-          _ -> False
+        prevented = any (preventsCommit c) modifiers'
 
       guard $ not prevented
 
@@ -743,6 +751,51 @@ getIsCommittable a c = runValidT do
 
 getMustBeCommittableCards :: HasGame m => InvestigatorId -> m [Card]
 getMustBeCommittableCards = filterM (`hasModifier` MustBeCommitted) <=< getCommittableCards
+
+{- | Whether a modifier forbids committing a card outright, leaving icons,
+commit restrictions and cost alone.
+
+The prohibition half of 'getIsCommittable', and the only part of committability
+that is a flat ban rather than a thing that depends on the test in front of you.
+'getCommitProhibitions' hands it to the client as "you cannot commit this, and
+here is what is stopping you", off this same predicate, so the badge cannot
+disagree with whether the card is offered.
+-}
+preventsCommit :: Card -> ModifierType -> Bool
+preventsCommit c = \case
+  -- Weaknesses do not interact with the class system (FAQ 1.35)
+  CanOnlyUseCardsInRole role ->
+    isNothing (cdCardSubType def)
+      && null (cdClassSymbols def `intersect` setFromList [Mythos, Neutral, role])
+  CannotCommitCards matcher -> cardMatch c matcher
+  _ -> False
+ where
+  def = toCardDef c
+
+{- | For each card the investigator could be asked to commit -- their hand, plus
+whatever an effect lets them commit from elsewhere -- the modifiers that forbid
+committing it, in full, so a caller can say which effect is responsible.
+
+A whole zone at a time, because the modifiers are read once rather than per
+card. Empty with no test running: nothing can be committed then, so there is
+nothing to explain, which is also where 'getIsCommittable' starts.
+
+Player cards only: an encounter card is uncommittable unless its own text says
+otherwise, which is not something an effect did.
+-}
+getCommitProhibitions :: HasGame m => InvestigatorId -> m [(Card, [Modifier])]
+getCommitProhibitions iid =
+  getSkillTest >>= \case
+    Nothing -> pure []
+    Just _ -> do
+      hand <- field InvestigatorHand iid
+      asIfInHand <- getAsIfInHandCardsFor NotForPlay iid
+      mods <- getFullModifiers iid
+      pure [(c, prohibiting mods c) | c <- nub (hand <> asIfInHand)]
+ where
+  prohibiting mods = \case
+    c@(PlayerCard _) -> filter (preventsCommit c . modifierType) mods
+    _ -> []
 
 getCommittableCards :: HasGame m => InvestigatorId -> m [Card]
 getCommittableCards iid = do
@@ -854,6 +907,9 @@ skillTestMatches iid source st mtchr = case Matcher.replaceYouMatcher iid mtchr 
     pure $ null $ skillTestRevealedChaosTokens st
   Matcher.SkillTestWithCommittedCards cardListMatcher ->
     cardListMatches (concat $ Map.elems $ skillTestCommittedCards st) cardListMatcher
+  Matcher.SkillTestWithCommittedIcons icons valueMatcher -> do
+    committed <- concatMapM iconsForCard (concat $ Map.elems $ skillTestCommittedCards st)
+    gameValueMatches (count (`elem` icons) committed) valueMatcher
   Matcher.SkillTestWithRevealedChaosToken matcher ->
     anyM (`Query.matches` Matcher.IncludeSealed matcher)
       $ skillTestRevealedChaosTokens st
@@ -1177,14 +1233,23 @@ getSkillTestValueBreakdown s = do
     faceEffects <- getChaosTokenFaceEffects s fullModifiers
     let modifiers' = map modifierType fullModifiers
     let tokens = chaosBagChaosTokens bag
-    entries <- for tokens.uniqueByFace \tok -> do
+    {- A revealed token has left the bag, but the window still draws a band for its
+    face, so that face gets an entry of its own -- counted 0, since it is no longer
+    drawable, which leaves the odds untouched. -}
+    let revealed = skillTestResolvedChaosTokens s <> s.revealedChaosTokens
+    let drawn = uniqueTokenFaces [t | t <- revealed, t.face `notElem` map (.face) tokens]
+    entries <- for (tokens.uniqueByFace <> drawn) \tok -> do
       value <- getModifiedChaosTokenValue s tok
       ChaosTokenValue _ tokenModifier <- getChaosTokenValue s.investigator tok.face ()
+      faceModifiers <- getModifiers (ChaosTokenFaceTarget tok.face)
       -- TODO: need some way for homebrew to  hook into these
       let autoFail = tokenModifier == AutoFailModifier
           autoSuccess = tokenModifier == AutoSuccessModifier
           revealsAnother = tok.face `elem` [#curse, #bless, #frost]
-          effects = [e | (face, e) <- faceEffects, face == tok.face]
+          printed = [e | (face, e) <- faceEffects, face == tok.face]
+          gained = [f | GainsChaosTokenEffectsOf f <- faceModifiers]
+          effects =
+            printed <> [e | (face, e) <- faceEffects, face `elem` gained, e `notElem` printed]
           effectValue = sum $ mapMaybe ctfeValue effects
       pure
         $ ChaosTokenValueEntry

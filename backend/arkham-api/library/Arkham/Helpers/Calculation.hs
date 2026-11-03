@@ -17,6 +17,7 @@ import Arkham.Helpers.GameValue
 import Arkham.Helpers.Investigator
 import Arkham.Helpers.Log
 import Arkham.Helpers.Scenario
+import {-# SOURCE #-} Arkham.Helpers.SkillTest (getSkillTestDifficulty)
 import Arkham.Helpers.SkillTest.Target
 import Arkham.Helpers.Slot
 import Arkham.Id
@@ -108,6 +109,7 @@ calculate = go
     AssetTokenCountCalculation aid token -> fieldMap AssetTokens (countTokens token) aid
     GameValueCalculation gv -> getGameValue gv
     DoomCountCalculation -> getDoomCount
+    CurrentAgendaDoomCountCalculation -> getDoomOnAgenda
     DistanceFromCalculation iid matcher -> do
       l1 <- getMaybeLocation iid
       l2 <- selectOne matcher
@@ -131,6 +133,7 @@ calculate = go
     DuringEventCalculation c1 c2 -> do
       inEvent <- selectAny ActiveEvent
       go $ if inEvent then c1 else c2
+    SkillTestDifficultyCalculation -> fromMaybe 0 <$> getSkillTestDifficulty
     VengeanceCalculation -> do
       -- getVengeanceInVictoryDisplay
       victoryDisplay <- field ScenarioVictoryDisplay =<< selectJust TheScenario

@@ -32,7 +32,7 @@ first appeared in 0.1.23), because it describes the whole server contract
 rather than one optional runtime feature. A server that under-reported it would
 lie to every client that negotiates on it. Clients compare the three numeric
 revision components and ignore unknown identifiers, and clients below
-@nativeClientMinimumRevision@ (currently 0.1.53) must enter update-required
+@nativeClientMinimumRevision@ (currently 0.1.57) must enter update-required
 even when this deployment has no catalog configured.
 @contracts\/manifest.json@'s @legacyCompatibilityChecks@ pins that baseline and
 both this repository's contract validator and
@@ -69,16 +69,16 @@ deployment has configured (see "Base.Api.Types.LocaleCatalog").
 
 The catalog capability string and the @localeCatalog@ object are derived from
 the same 'Maybe', so a client can never be shown one without the other. The
-minimum native-client revision is unconditional: clients older than 0.1.53 are
+minimum native-client revision is unconditional: clients older than 0.1.57 are
 update-required even for deployments that omit the catalog fields.
 -}
 serverCapabilities :: Maybe LocaleCatalog -> Bool -> ServerCapabilities
 serverCapabilities localeCatalog arkhamDBEnabled =
   ServerCapabilities
-    { schemaRevision = "0.1.56"
+    { schemaRevision = "0.1.57"
     , status = "baseline-incomplete"
     , apiBasePath = "/api/v1"
-    , nativeClientMinimumRevision = "0.1.53"
+    , nativeClientMinimumRevision = "0.1.57"
     , capabilities = List.sort $ baseCapabilities <> catalogCapabilities <> arkhamDBCapabilities
     , campaignCatalog = campaignCatalogMetadata
     , localeCatalog = localeCatalog

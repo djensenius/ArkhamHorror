@@ -16,6 +16,12 @@ module Api.Handler.Arkham.Game.Bug (
   runHeadObjectAction,
   runPutObjectAction,
   describeBugUploadFailure,
+
+  -- * The hardened upload, shared with the third-edition bug endpoint
+  BugUploadTransport,
+  awsBugUpload,
+  uploadBugExport,
+  uploadBugExportUsing,
 ) where
 
 import Amazonka (Error (..), SerializeError (..), ServiceError (..), ToBody (toBody), discover, newEnv, runResourceT, send)
@@ -201,12 +207,57 @@ newtype BugUploadError = BugUploadError {message :: Text}
 -- crosses from 'runResourceT IO' back into 'Handler' as an ordinary,
 -- already-sanitized field of 'BugUploadFailure' (see 'runBugUploadPolicy'),
 -- never via a mutable side channel, so there is nothing here to keep in
--- sync with what actually happened.
-describeBugUploadFailure :: ArkhamGameId -> BugUploadFailure -> Text
-describeBugUploadFailure gameId = \case
-  CredentialDiscoveryFailed -> "AWS credential discovery failed for game " <> toPathPiece gameId
-  HeadCheckFailed diag -> "HeadObject failed for game " <> toPathPiece gameId <> ": " <> tshow diag
-  PutObjectFailed diag -> "PutObject failed for game " <> toPathPiece gameId <> ": " <> tshow diag
+-- sync with what actually happened. The subject names what was being filed
+-- (@game <id>@, @third-edition table <id>@); it never carries request data.
+describeBugUploadFailure :: Text -> BugUploadFailure -> Text
+describeBugUploadFailure subject = \case
+  CredentialDiscoveryFailed -> "AWS credential discovery failed for " <> subject
+  HeadCheckFailed diag -> "HeadObject failed for " <> subject <> ": " <> tshow diag
+  PutObjectFailed diag -> "PutObject failed for " <> subject <> ": " <> tshow diag
+
+{- | Stores one export under an S3 object key in the bug bucket. Production uses
+'awsBugUpload'; tests supply a stub built from the same policy seams so they
+never reach AWS or the machine's credentials.
+-}
+type BugUploadTransport = Text -> LByteString -> IO BugUploadOutcome
+
+{- | Credential discovery, then 'runBugUploadPolicy' against the bug bucket:
+an existing object is never rewritten, only a confirmed 404 unlocks the PUT,
+and every other failure is returned already sanitized.
+-}
+awsBugUpload :: BugUploadTransport
+awsBugUpload objectKey jsonBody =
+  runBugUploadWithEnvDiscovery
+    (try @_ @AuthError (newEnv discover))
+    \env -> runResourceT do
+      result <-
+        runBugUploadPolicy
+          (runHeadObjectAction (try @_ @Error (send env (newHeadObject bucket key))))
+          (runPutObjectAction (try @_ @Error (send env (newPutObject bucket key (toBody jsonBody)))))
+      liftIO (evaluate result)
+ where
+  bucket = "arkham-horror-bugs"
+  key = ObjectKey objectKey
+
+{- | Upload a bug export as @exports/<prefix><sha256>.json@ in the bug bucket
+and return its public URL. The one hardened upload path for both the Arkham and
+the third-edition bug endpoints: the prefix says which game it came from.
+Callers authorize first. A failure is logged with only its sanitized diagnostic
+and answered with the stable 502 envelope.
+-}
+uploadBugExport :: Text -> Text -> LByteString -> Handler Text
+uploadBugExport = uploadBugExportUsing awsBugUpload
+
+uploadBugExportUsing :: BugUploadTransport -> Text -> Text -> LByteString -> Handler Text
+uploadBugExportUsing transport subject prefix jsonBody =
+  liftIO (transport ("exports/" <> filename) jsonBody) >>= \case
+    BugUploadSucceeded ->
+      pure $ "https://arkham-horror-bugs.s3.amazonaws.com/exports/" <> filename
+    BugUploadFailed failure -> do
+      $(logWarn) $ "bug report upload: " <> describeBugUploadFailure subject failure
+      sendStatusJSON Status.status502 $ BugUploadError "Failed to upload bug report"
+ where
+  filename = prefix <> decodeUtf8 (B16.encode $ SHA256.hashlazy jsonBody) <> ".json"
 
 postApiV1ArkhamGameBugR :: ArkhamGameId -> Handler Text
 postApiV1ArkhamGameBugR gameId = do
@@ -217,26 +268,4 @@ postApiV1ArkhamGameBugR gameId = do
     notFound
     $ do
       export <- generateScenarioExport gameId
-
-      let jsonBody = encode export
-      let filename = decodeUtf8 (B16.encode $ SHA256.hashlazy jsonBody) <> ".json"
-
-      -- Set S3 parameters
-      let bucket = "arkham-horror-bugs"
-          key = ObjectKey $ "exports/" <> filename
-
-      outcome <-
-        runBugUploadWithEnvDiscovery
-          (liftIO $ try @_ @AuthError (newEnv discover))
-          \env -> liftIO $ runResourceT do
-            result <-
-              runBugUploadPolicy
-                (runHeadObjectAction (try @_ @Error (send env (newHeadObject bucket key))))
-                (runPutObjectAction (try @_ @Error (send env (newPutObject bucket key (toBody jsonBody)))))
-            liftIO (evaluate result)
-      case outcome of
-        BugUploadSucceeded ->
-          pure $ "https://arkham-horror-bugs.s3.amazonaws.com/exports/" <> filename
-        BugUploadFailed failure -> do
-          $(logWarn) $ "bug report upload: " <> describeBugUploadFailure gameId failure
-          sendStatusJSON Status.status502 $ BugUploadError "Failed to upload bug report"
+      uploadBugExport ("game " <> toPathPiece gameId) "" (encode export)

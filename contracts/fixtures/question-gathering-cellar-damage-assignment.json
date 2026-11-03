@@ -14,7 +14,7 @@
   "question": {
     "tag": "QuestionLabel",
     "label": "Assign 1 damage",
-    "card": null,
+    "labelCards": [],
     "question": {
       "tag": "ChooseOne",
       "choices": [

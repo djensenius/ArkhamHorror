@@ -4,6 +4,7 @@ import Arkham.Ability
 import Arkham.Card
 import Arkham.Helpers.SkillTest (withSkillTest)
 import Arkham.Homebrew.AgesUnwound.CardDefs.Skills qualified as Cards
+import Arkham.Homebrew.AgesUnwound.Helpers (campaignI18n)
 import Arkham.I18n
 import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
@@ -16,11 +17,10 @@ newtype MonasticTraining = MonasticTraining SkillAttrs
 {- | /Gratitude/ adds this to a hand mid-scenario; Scenario V's resolution lets a
 player add it to a deck.
 
-TODO(ages-unwound): the discard-pile ability needs @cdOutOfPlayEffects =
-[InDiscardEffect]@ on the def, or @preloadDiscardEntities@ never builds the
-entity and 'getAbilities' is never consulted while the card is in the discard
-pile. @CardDefs/Skills.hs@ is the orchestrator's, so the ability below is
-correct but dormant until that lands.
+The discard-pile ability below is live only because the def carries
+@cdOutOfPlayEffects = [InDiscardEffect]@: without it @preloadDiscardEntities@
+never builds the entity and 'getAbilities' is never consulted for a card in the
+discard pile.
 -}
 monasticTraining :: SkillCard MonasticTraining
 monasticTraining = skill MonasticTraining Cards.monasticTraining
@@ -42,6 +42,8 @@ instance RunMessage MonasticTraining where
       withSkillTest \sid -> afterThisTestResolves sid do
         cards <- select $ inHandOf NotForPlay iid <> basic AnyCard
         chooseOneM iid do
+          campaignI18n $ scope "monasticTraining" $ questionLabeled "discardToReturn"
+          questionLabeledCard attrs
           withI18n skip_
           targets cards \card -> do
             push $ DiscardCard iid (attrs.ability 1) (toCardId card)

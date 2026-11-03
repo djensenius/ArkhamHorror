@@ -86,6 +86,11 @@ data ModifierType
   | AdditionalCostToExplore Cost
   | AdditionalCostToInvestigate Cost
   | AdditionalCostToLeave Cost
+  | {- | An extra cost to move, carried by the moving investigator rather than by a
+    location. It is a cost of the move itself, so it is paid before the would-move
+    and leaving windows instead of on entering (Lost in the Dark).
+    -}
+    AdditionalCostToMove Cost
   | AdditionalCostToResign Cost
   | AdditionalResources Int
   | {- | "Resolve its revelation effect an additional time." Adds N extra copies
@@ -229,6 +234,32 @@ data ModifierType
   | CannotDisengageEnemies
   | CannotDrawCards
   | CannotDrawCardsFromPlayerCardEffects
+  | {- | This investigator is left out of the game's own "each investigator draws
+    an encounter card" entirely -- out of the draw and out of Gloria Goldberg's
+    draw-order choice, rather than handed a draw that then does nothing. Honored
+    by 'Arkham.Message.AllDrawEncounterCard' and its per-investigator
+    @ForInvestigator@, which is the mythos draw and the handful of cards that
+    re-run it.
+
+    It does NOT cover an effect that names this investigator and tells them to
+    draw an encounter card; 'CannotDrawCards' does not either (it gates what may
+    be offered and the opening hand, not a draw the game pushes). An out-of-play
+    seat that must be unreachable by everything needs its own enumerated list of
+    bans -- see /Ritual Circle: A Harnessed Future/.
+    -}
+    CannotDrawEncounterCards
+  | {- | "Cannot willingly end their turn". Drops the end-turn button from the
+    player window, and nothing else: an effect that ends the turn for you is
+    not the investigator choosing to, so it still resolves.
+
+    Only while the window offers something else. A window with no other option
+    keeps the button, since there would otherwise be no way out of the turn at
+    all; see 'Arkham.Investigator.Runner.Action.handlePlayerWindow'. Whatever
+    condition the card attaches to -- /Ritual Circle: A Harnessed Future/ holds
+    you while you have actions remaining -- belongs in the matcher that applies
+    this, not here.
+    -}
+    CannotEndTurn
   | CannotEngage InvestigatorId
   | CannotEnter LocationId
   | {- | "You cannot enter X except by <source>". Unlike 'CannotEnter' this is
@@ -276,10 +307,16 @@ data ModifierType
   | CannotLeavePlay
   | CannotLeaveYourHand
   | CannotTakeAction ActionTarget
+  | CannotSpendLastActions Int
   | CannotPerformAction ActionTarget
   | CannotTakeControlOfClues
   | CannotTriggerAbilityMatching AbilityMatcher
   | CannotTriggerFastAbilities
+  | {- | An asset played with no room for it stays anyway, unslotted, rather
+    than discarding something to make room or being discarded itself. Natalie
+    Soulier, who then sweeps them up again at the start of upkeep.
+    -}
+    KeepAssetsInExcessOfSlots
   | CardsCannotLeaveYourDiscardPile
   | ChangeChaosTokenModifier ChaosTokenModifier
   | ChangeRevealStrategy RevealStrategy
@@ -302,6 +339,11 @@ data ModifierType
     -}
     MovesAsIfConnectedTo LocationMatcher
   | ControlledAssetsCannotReady
+  | {- | "Your exhausted cards cannot ready", which is wider than
+    'ControlledAssetsCannotReady': an event in play can be exhausted too, and a
+    card that says /cards/ rather than /assets/ has to reach it.
+    -}
+    ControlledCardsCannotReady
   | CountAllDoomInPlay
   | CountsAsInvestigatorForHunterEnemies
   | CountsAsDifferentLocation
@@ -324,6 +366,13 @@ data ModifierType
   | DoNotRevealAnotherChaosToken -- see: Ancient Covenant (2)
   | DoNotTakeUpSlot SlotType
   | DoNotTakeUpSlots
+  | {- | Isolates a location's connections: it connects to nothing and nothing
+    connects to it, while staying in play for everything else. Wired outbound in
+    'Arkham.Helpers.Location.connectedMatcherParts' and inbound in the
+    @LocationWithSymbol@ branch of 'Arkham.Game.getLocationsMatching'. Unlike
+    'LosesConnectionSymbol', which drops one symbol and is outbound-only.
+    -}
+    DoesNotConnect
   | DoesNotDamageOtherInvestigator
   | DoesNotReadyDuringUpkeep
   | DoomSubtracts
@@ -355,6 +404,22 @@ data ModifierType
   | EnemyFight Int
   | EnemyFightActionCriteria CriteriaOverride
   | EnemyFightWithMin Int (Min Int)
+  | {- | Say this investigator's arrival at a location with this i18n key
+    instead of "moves to" / "is moved to", and as flavour rather than as an
+    action -- see 'Arkham.Log.Narrator'. The key is handed the same
+    @investigator@ and @location@ variables the default line uses.
+
+    For an arrival that is not a move at all. /Ritual Circle: A Harnessed
+    Future/ hands back a seat it had taken out of the game, and "Daisy Walker
+    moves to Ritual Circle" sends the reader looking for an action nobody
+    spent.
+
+    It replaces the line for __every__ arrival while it holds, so it belongs
+    only on a seat that can arrive the one way: the Ritual Circle carries it on
+    a suspended investigator, who is under 'CannotMove' until the card itself
+    puts them back.
+    -}
+    EntersLocationNarratedAs Text
   | EntersPlayWithDoom Int
   | CanEvadeOverride CriteriaOverride
   | ExhaustIfDefeated
@@ -362,6 +427,11 @@ data ModifierType
   | FailTies
   | FewerActions Int
   | FewerMatchingIconsPerCard Int
+  | {- | Ignore this many matching icons committed to each skill test this
+    investigator performs, across every card committed to it, rather than
+    'FewerMatchingIconsPerCard''s per-card reckoning.
+    -}
+    FewerMatchingIcons Int
   | FewerSlots SlotType Int
   | ForEach GameCalculation [ModifierType]
   | ForceConcealedPlacement Placement
@@ -370,6 +440,15 @@ data ModifierType
   | ForceSpawnLocation LocationMatcher
   | ForcedChaosTokenChange ChaosTokenFace [ChaosTokenFace]
   | Foresight Text
+  | {- | On a 'ChaosTokenFaceTarget': this face also carries every chaos token effect
+    DECLARED for the named face, so the skill test window predicts it.
+
+    A declaration only (see 'abilityChaosTokenEffects') -- the card that broadens the
+    faces still resolves the effect itself. The Masque of the Red Death's agendas print
+    exactly this: "add each [skull] effect on your location to each [cultist] and
+    [tablet] token you reveal during skill tests."
+    -}
+    GainsChaosTokenEffectsOf ChaosTokenFace
   | GainVictory Int
   | GiveAdditionalAction AdditionalAction
   | HandSize Int
@@ -398,6 +477,13 @@ data ModifierType
     -}
     IgnoreChaosTokenSymbolEffects
   | IgnoreCommitOneRestriction
+  | {- | The tokens stay on the card and are still clues to the card itself, but
+    @n@ of them are subtracted from every clue count the engine reads off it:
+    the controller's 'InvestigatorClues' (so they are not spendable), the clue
+    matchers (so the card is not offered as a clue source), and anything
+    aggregating 'AssetClues'. The mirror of 'IgnoreDoomOnThis'.
+    -}
+    IgnoreCluesOnThis Int
   | IgnoreDoomOnThis Int
   | IgnoreEngagementRequirement
   | IgnoreHandSizeReduction
@@ -406,6 +492,34 @@ data ModifierType
   | IgnorePlayableModifierContexts
   | IgnoreRetaliate
   | IgnoreRevelation
+  | {- | On an INVESTIGATOR: drop the always-on skill bonuses their assets publish
+    onto them. Read at collection time in 'Arkham.Helpers.Modifiers.getModifiers'',
+    beside 'CannotReceiveModifiersFromPlayerSources', which is far broader --- that one
+    takes every modifier from every player card (health, sanity, slots, actions), while
+    this one takes only skill bonuses, and only from assets.
+
+    "A bonus to a skill" is read narrowly and only at the top level: a positive
+    'SkillModifier', 'ActionSkillModifier' or 'AnySkillValue'. A NEGATIVE value is a
+    penalty, not a bonus, and is left alone --- the wording this exists for is "lose all
+    bonuses", which never improves a skill. The calculated forms
+    ('CalculatedSkillModifier', 'AnySkillValueCalculated') are also left alone, since
+    their sign is not knowable without evaluating a 'GameCalculation', which this filter
+    cannot do without re-entering modifier collection. Skill /substitution/
+    ('AddSkillValue', 'AddSkillToOtherSkill', 'UseSkillInPlaceOf'), base-value
+    ('BaseSkill', 'SetSkillValue', 'DoubleBaseSkillValue') and commit-icon
+    ('AddSkillIcons') modifiers are not bonuses and are untouched.
+
+    A bonus counts as "printed on the asset" only when the asset entity publishes it
+    itself --- @controllerGets@ and friends, source exactly @AssetSource@ (an
+    @AbilitySource (AssetSource _) _@ does NOT match) and no 'modifierEffect' stamp. A
+    bonus a card ADDS DURING AN ACTION arrives through a window-modifier effect
+    instead ('skillTestModifier', 'modifySkill'), which 'Arkham.Effect.Types' stamps
+    with its effect id, so those survive. That split is what lets the clause carry its
+    usual parenthetical: Holy Rosary's +1 [willpower] and Boxing Gloves' +1 [combat]
+    while fighting go away, while .45 Automatic's and Machete's +1 [combat] from
+    activating them do not.
+    -}
+    IgnoreSkillBonusesFromAssets
   | RevelationModifier Source ModifierType
   | IgnoreText
   | IgnoreTextOnLocation LocationMatcher
@@ -446,6 +560,27 @@ data ModifierType
   | MustFight EnemyId
   | MustTakeAction ActionTarget
   | MustPerformAbilityIfCan AbilityRef
+  | {- | This investigator has a turn that was suspended mid-turn and is owed the
+    rest of it. Carried from the moment of suspension until the resumed turn
+    ends, and honored in three places, all in the investigation phase:
+
+    * 'Arkham.Message.ChooseTurnPlayer' narrows the offer to the investigators
+      carrying this while any of them still has a turn coming, so a resumed turn
+      comes before anyone else's. Several of them are still /chosen between/
+      rather than ordered for the players.
+    * that same choice resolves as 'Arkham.Question.ResumeTurnPlayer' rather
+      than @SetTurnPlayer@, so the turn is picked back up instead of begun: no
+      @TurnBegins@ windows, and the investigator lands in 2.2.1.
+    * @Begin InvestigationPhase@ leaves out its own player window between 2.1
+      and 2.2, because a turn that resumes as the phase begins is already in
+      progress -- the phase never reaches a point between turns.
+
+    /Ritual Circle: A Harnessed Future/ is what wants it. What it still cannot
+    carry across the phase boundary is per-turn bookkeeping: @actionsTaken@,
+    @actionsPerformed@ and per-turn ability limits are reset by @Do BeginRound@
+    before the phase is reached.
+    -}
+    ResumesSuspendedTurn
   | NegativeToPositive
   | NoDamageDealt
   | NoInitialSwarm
@@ -496,6 +631,10 @@ data ModifierType
   | SanityModifier Int
   | CampaignModifier Text
   | InvestigatorModifier Text
+  | {- | Only while an encounter card (including a player-deck treachery) asks
+    for a nearest/furthest location. Does not change movement connections.
+    -}
+    EncounterCardDistancesAreBidirectional
   | ScenarioModifier Text
   | ScenarioModifierValue Text Value
   | SearchDepth Int
@@ -665,6 +804,14 @@ overModifierTypeM f m = f (modifierType m) <&> \mt -> m {modifierType = mt}
 
 setActiveDuringSetup :: Modifier -> Modifier
 setActiveDuringSetup m = m {modifierActiveDuringSetup = True}
+
+-- | Drop the clues 'IgnoreCluesOnThis' hides from a raw clue count.
+subtractIgnoredClues :: [ModifierType] -> Int -> Int
+subtractIgnoredClues mods n = foldl' go n mods
+ where
+  go k = \case
+    IgnoreCluesOnThis x -> max 0 (k - x)
+    _ -> k
 
 mconcat
   [ deriveToJSON defaultOptions ''ModifierType

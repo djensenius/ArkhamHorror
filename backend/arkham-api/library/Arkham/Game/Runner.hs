@@ -14,6 +14,7 @@ import Arkham.Asset
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Asset.Types (Asset, AssetAttrs (..), Field (..), assetIsStory)
 import Arkham.Attack
+import Arkham.Calculation qualified as Calc
 import Arkham.Campaign.Option
 import Arkham.Campaign.Types hiding (campaign, modifiersL)
 import Arkham.CampaignLog
@@ -28,6 +29,7 @@ import Arkham.Cost qualified as Cost
 import Arkham.DamageEffect
 import Arkham.Debug
 import Arkham.Debug.CardDestination
+import Arkham.Debug.SkillTest
 import Arkham.Deck qualified as Deck
 import Arkham.Decklist
 import Arkham.Decklist.RandomBasicWeakness (
@@ -42,6 +44,7 @@ import Arkham.Enemy
 import Arkham.Enemy.Creation (EnemyCreation (..), EnemyCreationMethod (..))
 import Arkham.Enemy.Runner (getPreyMatcher)
 import Arkham.Enemy.Types (Enemy, EnemyAttrs (..), Field (..), delayEngagementL)
+import Arkham.Enemy.Types qualified as Field
 import Arkham.EnemyLocation hiding (EnemyLocation)
 import Arkham.EnemyLocation.Types (EnemyLocationAttrs (..))
 import Arkham.Entities
@@ -50,9 +53,11 @@ import Arkham.Event.Types
 import Arkham.Game.Base
 import Arkham.Game.Diff
 import Arkham.Game.Json ()
+import Arkham.Game.Outcome
 import Arkham.Game.Settings (
   activeUltimatumsAndBoons,
   settingsAsIfRuling,
+  settingsCustomRandomWeaknessPools,
   settingsRolledUltimatumOrBoon,
   settingsScreamedAllies,
   settingsUltimatumsAndBoons,
@@ -61,6 +66,7 @@ import Arkham.Game.Settings (
 import Arkham.Game.State
 import Arkham.Game.Utils
 import Arkham.GameEnv
+import Arkham.GameT (GameT)
 import Arkham.Helpers
 import Arkham.Helpers.Ability (abilityRidesAlong, isForcedAbility)
 import Arkham.Helpers.Action (getPreventedActions, getPreventedPlayerAbilities)
@@ -103,6 +109,7 @@ import Arkham.Investigator.Types qualified as Investigator
 import Arkham.Keyword qualified as Keyword
 import Arkham.Location
 import Arkham.Location.Types (Field (..), LocationAttrs (..), updateLocation)
+import Arkham.Log qualified as Log
 import Arkham.Matcher hiding (
   AssetCard,
   AssetDefeated,
@@ -308,6 +315,64 @@ isPerTurnLimit = \case
   MaxPerTurn _ -> True
   _ -> False
 
+{- | Stop the game, recording how it ended.
+
+@mverdict@ is what the ending declared, if it declared anything ('GameOverWith').
+Without one the outcome is inferred -- from the campaign's step and resolutions,
+or, for a standalone, from the resolution the scenario reached. The mode is
+collapsed to the campaign here, which drops the scenario, so the outcome is
+computed first.
+-}
+endGame :: Maybe Verdict -> Game -> GameT Game
+endGame mverdict g = do
+  clearQueue
+  pure $ g & (gameStateL .~ IsOver) & (modeL .~ newMode) & (outcomeL .~ outcome)
+ where
+  mode = g ^. modeL
+  newMode = case mode of
+    This c -> This c
+    That c -> That c
+    These c1 _ -> This c1
+  ending = g ^. lastResolutionL
+  outcome = case mverdict of
+    Just verdict -> Just $ GameOutcome verdict ending Recorded
+    Nothing -> case modeCampaign mode of
+      Just c ->
+        let attrs = toAttrs c
+         in withEnding
+              <$> inferCampaignOutcome
+                (campaignId attrs)
+                (campaignStep attrs)
+                (campaignCompletedSteps attrs)
+                (campaignResolutions attrs)
+      Nothing -> standaloneOutcome <$> ending
+  -- The resolution the game actually saw beats the one reconstructed from the
+  -- campaign's records, which cannot tell which scenario was last.
+  withEnding o = o {outcomeEnding = ending <|> outcomeEnding o}
+
+{- | The state a turn is played out of, shared by beginning one ('BeginTurn') and
+picking a suspended one back up ('Arkham.Question.ResumeTurnPlayer'). The
+windows are the caller's business; this is only the bookkeeping, and a resumed
+turn needs all of it -- in particular the undo boundary, so an undo from inside
+the resumed turn lands at its first action and not back in the mythos phase.
+-}
+turnStartState :: InvestigatorId -> PlayerId -> Game -> Game
+turnStartState x player g =
+  g
+    & (activeInvestigatorIdL .~ x)
+    & (activePlayerIdL .~ player)
+    & (turnPlayerInvestigatorIdL ?~ x)
+    & (activeAbilitiesL .~ mempty)
+    & (logBlockStackL .~ mempty)
+    & (actionRemovedEntitiesL .~ mempty)
+    & (tombstonesL .~ mempty)
+    & (entitiesL %~ clearRemovedEntities)
+    -- +1 because the batch processing the turn's start ends at the next Ask
+    -- (the investigator's first action choice). We want undo to land there,
+    -- not at the prior batch (which would be the choose-player question or
+    -- the end of mythos).
+    & (undoTurnStepL ?~ (gameScenarioSteps g + 1))
+
 runGameMessage :: Runner Game
 runGameMessage msg g = case msg of
   -- ClearUI is pushed exactly once per accepted answer (Api Games.Shared), so
@@ -375,6 +440,21 @@ runGameMessage msg g = case msg of
   SetAsIfAtIgnored iid True -> pure $ g & asIfAtIgnoredL %~ insertSet iid
   SetAsIfAtIgnored iid False -> pure $ g & asIfAtIgnoredL %~ deleteSet iid
   SetLocationOffset lid x y -> pure $ g & locationOffsetsL %~ insertMap lid (x, y)
+  SetCustomRandomWeaknessPool enabled sets -> do
+    pid <- getActivePlayer
+    push $ SetPlayerCustomRandomWeaknessPool pid enabled sets
+    pure g
+  SetPlayerCustomRandomWeaknessPool pid enabled sets -> do
+    let updated =
+          g & settingsL %~ \settings ->
+            settings
+              { settingsCustomRandomWeaknessPools =
+                  insertMap pid (enabled, setFromList sets) settings.settingsCustomRandomWeaknessPools
+              }
+    let available = fromMaybe mempty (getTransient $ gameCollectionCards g) <> gameCustomCards g
+    defs <- runReaderT (getCustomRandomWeaknessCards pid) $ updated & customCardsL .~ available
+    let snapshots = Map.restrictKeys available (setFromList $ map toCardCode defs)
+    pure $ updated & customCardsL %~ (snapshots <>)
   SetAsIfRuling ruling -> do
     currentWindows <- concat <$> getWindowStack
     when (any (\w -> Window.windowType w == Window.FastPlayerWindow) currentWindows) do
@@ -733,6 +813,59 @@ runGameMessage msg g = case msg of
   ForTarget GameTarget (EndOfScenario _) -> do
     persistedAssets <- select $ AssetWithModifier Persist
     let
+      survivingEffects =
+        Map.keysSet
+          $ filterMap (or . sequence [effectIsForResolution, effectIsForNextGame])
+          $ g
+          ^. entitiesL
+          . effectsL
+      sourceGone = \case
+        ActSource _ -> True
+        AgendaSource _ -> True
+        EnemyAttackSource _ -> True
+        EnemyDefeatSource _ -> True
+        EnemySource _ -> True
+        EventSource _ -> True
+        LocationSource _ -> True
+        ScenarioSource -> True
+        SkillSource _ -> True
+        SkillTestSource _ -> True
+        StorySource _ -> True
+        TreacherySource _ -> True
+        AssetSource aid -> aid `notElem` persistedAssets
+        EffectSource eid -> eid `Set.notMember` survivingEffects
+        AbilitySource s _ -> sourceGone s
+        IndexedSource _ s -> sourceGone s
+        PaymentSource s -> sourceGone s
+        UseAbilitySource _ s _ -> sourceGone s
+        BothSource x y -> sourceGone x || sourceGone y
+        ProxySource x y -> sourceGone x || sourceGone y
+        _ -> False
+      targetGone = \case
+        ActTarget _ -> True
+        AgendaTarget _ -> True
+        EnemyTarget _ -> True
+        EventTarget _ -> True
+        LocationTarget _ -> True
+        ScenarioTarget -> True
+        SkillTarget _ -> True
+        SkillTestTarget _ -> True
+        StoryTarget _ -> True
+        TreacheryTarget _ -> True
+        AssetTarget aid -> aid `notElem` persistedAssets
+        EffectTarget eid -> eid `Set.notMember` survivingEffects
+        BothTarget x y -> targetGone x || targetGone y
+        ProxyTarget x y -> targetGone x || targetGone y
+        LabeledTarget _ t -> targetGone t
+        SkillTestInitiatorTarget t -> targetGone t
+        _ -> False
+      keeps m = maybe (not $ sourceGone m.source) (`Set.member` survivingEffects) m.effect
+      -- 'preloadModifiers' will not rebuild this in campaign mode, so a row left
+      -- here outlives the entity that published it for the whole interlude.
+      pruneModifiers =
+        Map.filter notNull
+          . Map.map (filter keeps)
+          . Map.filterWithKey (\target _ -> not (targetGone target))
       update g' =
         g'
           & (entitiesL . assetsL %~ Map.filterWithKey (\k _ -> k `elem` persistedAssets))
@@ -757,9 +890,11 @@ runGameMessage msg g = case msg of
           & (focusedChaosTokensL .~ mempty)
           & (activeCardL .~ Nothing)
           & (activeAbilitiesL .~ mempty)
+          & (logBlockStackL .~ mempty)
           & (actionRemovedEntitiesL .~ mempty)
           & (tombstonesL .~ mempty)
           & (activeAbilitiesL .~ mempty)
+          & (modifiersL %~ pruneModifiers)
           -- A scenario-ending action (e.g. Resign) leaves the game "in action"
           -- with a revert diff/snapshot pointing at the entities we just tore
           -- down. Clear the action bookkeeping so we don't persist a stale diff
@@ -821,6 +956,7 @@ runGameMessage msg g = case msg of
       & (focusedChaosTokensL .~ mempty)
       & (activeCardL .~ Nothing)
       & (activeAbilitiesL .~ mempty)
+      & (logBlockStackL .~ mempty)
       & (playerOrderL .~ (g ^. entitiesL . investigatorsL . to keys))
       & (actionRemovedEntitiesL .~ mempty)
       & (tombstonesL .~ mempty)
@@ -999,6 +1135,7 @@ runGameMessage msg g = case msg of
           , activeCostPayments = Cost.NoPayment
           , activeCostTarget = ForAdditionalCost batchId
           , activeCostWindows = []
+          , activeCostInitiationTick = Just (gameWindowTick g)
           , activeCostInvestigator = iid
           , activeCostSealedChaosTokens = []
           , activeCostCancelled = False
@@ -1108,6 +1245,7 @@ runGameMessage msg g = case msg of
           , activeCostPayments = Cost.NoPayment
           , activeCostTarget = ForAbility ability
           , activeCostWindows = windows'
+          , activeCostInitiationTick = Just (gameWindowTick g)
           , activeCostInvestigator = iid
           , activeCostSealedChaosTokens = []
           , activeCostCancelled = False
@@ -1149,9 +1287,23 @@ runGameMessage msg g = case msg of
     push $ CreatedEffect effectId Nothing source (toTarget iid)
     pure $ g & entitiesL . effectsL %~ insertMap effectId effect
   CreateEndOfTurnEffect source iid message -> do
-    (effectId, effect) <- createEndOfTurnEffect source iid message
-    push $ CreatedEffect effectId Nothing source (toTarget iid)
-    pure $ g & entitiesL . effectsL %~ insertMap effectId effect
+    -- "At the end of your turn" with the turn already over has to resolve now, not
+    -- never: a reaction deferred past a nested skill test (Spiritual Echo (2)'s echoed
+    -- Fight or Investigate) runs after EndTurn, so the effect was created behind its own
+    -- trigger and sat inert until some later turn's EndTurn fired every orphan at once
+    -- (#5945). The phase guard matters: investigatorEndedTurn is only cleared by
+    -- BeginRound/Begin InvestigationPhase, so it stays set through the later phases.
+    turnOver <- case gamePhase g of
+      InvestigationPhase {} -> maybe False (attr investigatorEndedTurn) <$> getInvestigatorMaybe iid
+      _ -> pure False
+    if turnOver
+      then do
+        pushAll message
+        pure g
+      else do
+        (effectId, effect) <- createEndOfTurnEffect source iid message
+        push $ CreatedEffect effectId Nothing source (toTarget iid)
+        pure $ g & entitiesL . effectsL %~ insertMap effectId effect
   CreateEndOfRoundEffect source message -> do
     (effectId, effect) <- createEndOfRoundEffect source message
     push $ CreatedEffect effectId Nothing source GameTarget
@@ -1220,13 +1372,27 @@ runGameMessage msg g = case msg of
   ChoosePlayer iid SetTurnPlayer -> do
     pushAll [BeginTurn iid, After (BeginTurn iid)]
     pure $ g & activeInvestigatorIdL .~ iid & turnPlayerInvestigatorIdL ?~ iid
+  {- A turn suspended mid-turn is picked back up: the bookkeeping 'BeginTurn'
+  does, with none of its windows, because the turn is not beginning. The queue
+  drain then opens this investigator's action window, so the phase resumes at
+  2.2.1 rather than 2.2. See 'Arkham.Modifier.ResumesSuspendedTurn'. -}
+  ChoosePlayer iid ResumeTurnPlayer -> do
+    player <- getPlayer iid
+    pure $ turnStartState iid player g
   After (MoveTo (moveTarget -> InvestigatorTarget iid)) -> do
+    -- Where it ended up, as well as that it happened: "moved to a location with
+    -- an enemy" is a question about the destination, and read afterwards, which
+    -- is when the investigator is already standing there.
+    arrived <- field Investigator.InvestigatorLocation iid
     let
-      historyItem = HistoryItem HistoryMoved 1
+      historyItems =
+        HistoryItem HistoryMoved 1
+          : [HistoryItem HistoryMovedTo [lid] | lid <- maybeToList arrived]
       turn = isJust $ view turnPlayerInvestigatorIdL g
-      setTurnHistory =
-        if turn then turnHistoryL %~ insertHistory iid historyItem else id
-    pure $ g & (phaseHistoryL %~ insertHistory iid historyItem) & setTurnHistory
+      record item =
+        (phaseHistoryL %~ insertHistory iid item)
+          . (if turn then turnHistoryL %~ insertHistory iid item else id)
+    pure $ foldr record g historyItems
   Arkham.Helpers.Message.Defeated (EnemyTarget eid) _ source _ -> do
     attrs <- toAttrs <$> getEnemy eid
     mlid <- field EnemyLocation eid
@@ -1263,13 +1429,8 @@ runGameMessage msg g = case msg of
       $ g
       & (foundCardsL . each %~ deleteFirstMatch ((== cardId) . toCardId))
       . (focusedCardsL %~ map (filter ((/= cardId) . toCardId)))
-  GameOver -> do
-    clearQueue
-    let newMode = case g ^. modeL of
-          This c -> This c
-          That c -> That c
-          These c1 _ -> This c1
-    pure $ g & gameStateL .~ IsOver & modeL .~ newMode
+  GameOver -> endGame Nothing g
+  GameOverWith verdict -> endGame (Just verdict) g
   PlaceLocation lid card ->
     if isNothing $ g ^. entitiesL . locationsL . at lid
       then do
@@ -1947,11 +2108,9 @@ runGameMessage msg g = case msg of
 
       card <- field AssetCard assetId
       underneath <- field AssetCardsUnderneath assetId
-      if assetIsStory $ toAttrs asset
-        then do
-          unless (cdDoubleSided (toCardDef asset)) do
-            push $ addToHand iid card
-        else pushAll [RemoveFromPlay (toSource assetId), addToHand iid card]
+      -- a double-sided story asset flips rather than leaving play
+      unless (assetIsStory (toAttrs asset) && cdDoubleSided (toCardDef asset)) do
+        pushAll [RemoveFromPlay (toSource assetId), addToHand iid card]
       for_ underneath (push . addToDiscard iid)
     pure g
   When (PlaceInBonded _ (toCardId -> cardId)) -> do
@@ -1973,18 +2132,23 @@ runGameMessage msg g = case msg of
   RemovedFromPlay (TreacherySource treacheryId) -> do
     runMessage (RemoveTreachery treacheryId) g
   ReturnToHand iid (EventTarget eventId) -> do
-    event' <- getEvent eventId
-    card <- field EventCard eventId
-    push $ addToHand iid card
-    removedEntitiesF <-
-      if gameInAction g || attr eventWaiting event'
-        then do
-          pure
-            $ actionRemovedEntitiesL
-            . eventsL
-            %~ insertEntity (overAttrs (\e -> e {eventPlacement = Unplaced}) event')
-        else pure id
-    pure $ g & entitiesL . eventsL %~ deleteMap eventId & removedEntitiesF
+    -- More than one return can be queued for the same event -- orphaned end-of-turn
+    -- effects (Spiritual Echo (2) under TabooList25) pile up and all fire at the same
+    -- EndTurn -- and the first one wins, so a later one finds nothing (#5945).
+    getEventMaybe eventId >>= \case
+      Nothing -> pure g
+      Just event' -> do
+        card <- field EventCard eventId
+        push $ addToHand iid card
+        removedEntitiesF <-
+          if gameInAction g || attr eventWaiting event'
+            then do
+              pure
+                $ actionRemovedEntitiesL
+                . eventsL
+                %~ insertEntity (overAttrs (\e -> e {eventPlacement = Unplaced}) event')
+            else pure id
+        pure $ g & entitiesL . eventsL %~ deleteMap eventId & removedEntitiesF
   -- fight/evade events pick their enemy during resolution, so record it as the
   -- event's target for "targets an enemy" matchers
   ChoseEnemy _ _ ((.event) -> Just eid) enemyId -> setEventEnemyTarget eid enemyId g
@@ -2617,7 +2781,15 @@ runGameMessage msg g = case msg of
         player <- case allAttacked of
           [iid] -> getPlayer iid
           _ -> getPlayer (gameLeadInvestigatorId g)
-        push $ chooseOneAtATime player $ map toUI as
+        -- Capture hosts before resolving the attacks: a swarm card may leave
+        -- play before the completion message reaches its host.
+        hosts <-
+          catMaybes <$> for attackingEnemies \eid -> do
+            fieldMay EnemyPlacement eid <&> \case
+              Just (AsSwarm host _) -> Just host
+              _ -> Nothing
+        pushAll
+          [chooseOneAtATime player $ map toUI as, FinishedEnemyAttacks $ nub (attackingEnemies <> hosts)]
         pure
           $ g
           & entitiesL
@@ -2670,7 +2842,7 @@ runGameMessage msg g = case msg of
           then pushAll msgs'
           else do
             askMap <-
-              fmap (QuestionLabel "$label.chooseAfterSkillTestEffect" Nothing . ChooseOneAtATime) . Map.unionsWith (<>) <$> forMaybeM (msg : options) \case
+              fmap (QuestionLabel "$label.chooseAfterSkillTestEffect" [] . ChooseOneAtATime) . Map.unionsWith (<>) <$> forMaybeM (msg : options) \case
                 AfterSkillTestOption iid lbl xs -> do
                   playerId <- getPlayer iid
                   pure $ Just $ singletonMap playerId [Label lbl xs]
@@ -2881,9 +3053,12 @@ runGameMessage msg g = case msg of
   PlayerWindow iid _ _ _ -> do
     player <- getPlayer iid
     pure $ g & activeInvestigatorIdL .~ iid & activePlayerIdL .~ player
+  {- The first turn's player is chosen by 'ChooseTurnPlayer' rather than a
+  question built here, because the steps below are all queued before the "when
+  the investigation phase begins" window has run -- and a card in that window
+  can decide who takes the first turn. See 'ChooseTurnPlayer'. -}
   Begin InvestigationPhase -> do
     let phaseStep step msgs = Msg.PhaseStep (InvestigationPhaseStep step) msgs
-    investigatorIds <- getInvestigators
     phaseBeginsWindow <-
       checkWindows
         [ mkWhen Window.AnyPhaseBegins
@@ -2897,28 +3072,35 @@ runGameMessage msg g = case msg of
         ]
 
     fastWindow <- checkWindows [mkWhen Window.FastPlayerWindow]
-    case investigatorIds of
-      [] -> error "no investigators"
-      [iid] ->
-        pushAll
-          [ phaseStep InvestigationPhaseBeginsStep [phaseBeginsWindow, afterPhaseBeginsWindow]
-          , phaseStep InvestigationPhaseBeginsWindow [fastWindow]
-          , phaseStep NextInvestigatorsTurnBeginsStep [ChoosePlayer iid SetTurnPlayer]
-          ]
-      xs@(x : _) -> do
-        let fixId z = if z == "00000" then x else z
-        player <- getPlayer (fixId (g ^. leadInvestigatorIdL))
-        pushAll
-          [ phaseStep InvestigationPhaseBeginsStep [phaseBeginsWindow, afterPhaseBeginsWindow]
-          , phaseStep InvestigationPhaseBeginsWindow [fastWindow]
-          , phaseStep
-              NextInvestigatorsTurnBeginsStep
-              [ questionLabel "$label.choosePlayerToTakeTurn" player
-                  $ ChooseOne
-                    [PortraitLabel iid [ChoosePlayer iid SetTurnPlayer] | iid <- xs]
-              ]
-          ]
+    {- The window between 2.1 and 2.2 is left out when a turn is resuming: that
+    turn is already in progress when the phase begins, so the phase never
+    reaches a point between turns for a player window to sit in. Read here, not
+    in the window itself, because the step is queued either way. -}
+    resuming <- anyM (`hasModifier` ResumesSuspendedTurn) (g ^. playerOrderL)
+    pushAll
+      $ [phaseStep InvestigationPhaseBeginsStep [phaseBeginsWindow, afterPhaseBeginsWindow]]
+      <> [phaseStep InvestigationPhaseBeginsWindow [fastWindow] | not resuming]
+      <> [phaseStep NextInvestigatorsTurnBeginsStep [ChooseTurnPlayer]]
     pure $ g & phaseL .~ InvestigationPhase & undoPhaseStepL ?~ (gameScenarioSteps g + 1)
+  ChooseTurnPlayer -> do
+    playing <- filterM (fmap (not . doneWithTurn) . getInvestigator) (g ^. playerOrderL)
+    -- A seat owed the rest of a suspended turn narrows the offer and is resumed
+    -- rather than begun; several of them are still chosen between, which is
+    -- what the players expect to be asked.
+    resuming <- filterM (`hasModifier` ResumesSuspendedTurn) playing
+    let choice = if null resuming then SetTurnPlayer else ResumeTurnPlayer
+    case if null resuming then playing else resuming of
+      [] -> pushEnd EndInvestigation
+      [x] -> push $ ChoosePlayer x choice
+      xs
+        -- No lead yet: settle that first, then come back and ask them.
+        | g ^. leadInvestigatorIdL == "00000" -> pushAll [ChooseLeadInvestigator, ChooseTurnPlayer]
+        | otherwise -> do
+            player <- getPlayer (g ^. leadInvestigatorIdL)
+            push
+              $ questionLabel "$label.choosePlayerToTakeTurn" player
+              $ ChooseOne [PortraitLabel iid [ChoosePlayer iid choice] | iid <- xs]
+    pure g
   BeginTurn x -> do
     player <- getPlayer x
     -- Two checks, not one batch: a `When your turn begins` reaction is a different timing
@@ -2937,20 +3119,7 @@ runGameMessage msg g = case msg of
         $ map (uncurry $ AbilityPrevented x)
         <$> getPreventedPlayerAbilities x
     pushAll $ prevented <> [whenWindow, afterWindow]
-    pure
-      $ g
-      & (activeInvestigatorIdL .~ x)
-      & (activePlayerIdL .~ player)
-      & (turnPlayerInvestigatorIdL ?~ x)
-      & (activeAbilitiesL .~ mempty)
-      & (actionRemovedEntitiesL .~ mempty)
-      & (tombstonesL .~ mempty)
-      & (entitiesL %~ clearRemovedEntities)
-      -- +1 because the batch processing this BeginTurn ends at the next Ask
-      -- (the investigator's first action choice). We want undo to land there,
-      -- not at the prior batch (which would be the choose-player question or
-      -- the end of mythos).
-      & (undoTurnStepL ?~ (gameScenarioSteps g + 1))
+    pure $ turnStartState x player g
   SetPlayerOrder -> do
     lead <- getLead
     players <- getInvestigators
@@ -2992,6 +3161,19 @@ runGameMessage msg g = case msg of
     let card = lookupCard cardCode cardId
     replaceCard cardId card
     pure g
+  AskCollection iid source codes -> do
+    let
+      available = fromMaybe mempty (getTransient $ gameCollectionCards g) <> gameCustomCards g
+      custom =
+        Map.restrictKeys
+          (Map.fromList [(toCardCode card.customCardDef, card) | card <- toList available])
+          (setFromList codes)
+      offered = filter (\code -> not (isCustomCardCode code) || Map.member code custom) codes
+    registerCustomCards custom
+    unless (null offered) do
+      player <- getPlayer iid
+      push $ Ask player $ ChooseFromCollection iid source offered
+    pure $ g & customCardsL %~ (custom <>)
   DebugRegisterCustomCard customCard -> do
     let def = (customCardDef customCard) {cdCardCode = cardCode, cdArt = unCardCode cardCode}
         cardCode = sanitizeCustomCardCode (toCardCode $ customCardDef customCard)
@@ -3035,6 +3217,68 @@ runGameMessage msg g = case msg of
     for_ (find ((== tokenId) . (.id)) tokens) \token ->
       pushAll [SealChaosToken token, SealedChaosToken token Nothing target]
     pure g
+  DebugBeginSkillTest spec -> do
+    let
+      iid = debugTestInvestigator spec
+      refuse key = g <$ Log.sendLog (Log.notice [Log.ikeyPart key []])
+      -- an enemy target, and its value for "use the target's value" if it has one
+      enemyWithValue eid fld = do
+        inPlay <- selectAny $ EnemyWithId eid
+        value <- fieldMayJoin fld eid
+        pure
+          $ if inPlay
+            then Just (EnemyTarget eid, Calc.EnemyMaybeFieldCalculation eid fld <$ value)
+            else Nothing
+    iids <- getInvestigators
+    inTest <- isJust <$> getSkillTestId
+    mSourceCard <- traverse getCardMaybe (debugTestSourceCard spec)
+    mTarget <- case (debugTestAction spec, debugTestTarget spec) of
+      (Nothing, mtarget) -> pure $ Just (fromMaybe (toTarget iid) mtarget, Nothing)
+      (Just Action.Fight, Just (EnemyTarget eid)) -> enemyWithValue eid Field.EnemyFight
+      (Just Action.Evade, Just (EnemyTarget eid)) -> enemyWithValue eid Field.EnemyEvade
+      (Just Action.Parley, Just (EnemyTarget eid)) -> fmap (\(t, _) -> (t, Nothing)) <$> enemyWithValue eid Field.EnemyFight
+      (Just Action.Parley, Nothing) -> pure $ Just (toTarget iid, Nothing)
+      (Just Action.Investigate, Just (LocationTarget lid)) -> do
+        inPlay <- selectAny $ LocationWithId lid
+        shroud <- fieldMayJoin LocationShroud lid
+        pure
+          $ if inPlay
+            then Just (LocationTarget lid, Calc.LocationMaybeFieldCalculation lid LocationShroud <$ shroud)
+            else Nothing
+      _ -> pure Nothing
+    let
+      mTestType = case debugTestSkill spec of
+        DebugTestOneSkill skillType -> Just (SkillSkillTest skillType, SkillBaseValue skillType)
+        DebugTestCombined [] -> Nothing
+        DebugTestCombined [skillType] -> Just (SkillSkillTest skillType, SkillBaseValue skillType)
+        DebugTestCombined skillTypes -> Just (AndSkillTest skillTypes, AndSkillBaseValue skillTypes)
+        DebugTestFixed n -> Just (BaseValueSkillTest n [(#wild, 1), (#wildMinus, -1)], FixedBaseValue n)
+    if
+      | inTest -> refuse "log.debug.skillTestActive"
+      | iid `notElem` iids -> refuse "log.debug.invalidRequest"
+      | Just Nothing <- mSourceCard -> refuse "log.debug.invalidRequest"
+      | otherwise -> case (mTarget, mTestType) of
+          (Just (target, mTargetValue), Just (testType, baseValue)) -> do
+            let
+              mDifficulty = case debugTestDifficulty spec of
+                DebugDifficultyFixed n -> Just (Calc.Fixed n)
+                DebugDifficultyOfTarget -> mTargetValue
+            case mDifficulty of
+              Nothing -> refuse "log.debug.noTargetValue"
+              Just difficulty -> do
+                sid <- getRandom
+                let source = maybe GameSource CardIdSource (debugTestSourceCard spec)
+                Log.sendLog
+                  $ Log.mechanic
+                    [Log.ikeyPart "log.debug.startsSkillTest" ["investigator" Log.~> Log.investigatorRefById iid]]
+                push
+                  $ BeginSkillTest
+                  $ (buildSkillTest sid iid source target testType baseValue (SkillTestDifficulty difficulty))
+                    { skillTestAction = debugTestAction spec
+                    , skillTestSourceCard = debugTestSourceCard spec
+                    }
+                pure g
+          _ -> refuse "log.debug.invalidRequest"
   DebugMoveCard cardId destination -> do
     card <- getCard cardId
     case destination of
@@ -3042,6 +3286,10 @@ runGameMessage msg g = case msg of
       -- their first step, so they already pull it out of every other zone.
       DebugCardRemovedFromGame -> push $ RemoveCard cardId
       DebugCardSetAside -> push $ SetAsideCards [card]
+      DebugCardLocation ->
+        when (cdCardType (toCardDef card) `elem` [LocationType, EnemyLocationCardType]) do
+          placement <- placeLocation_ card
+          pushAll [ObtainCard cardId, placement]
       DebugCardHand iid -> push $ DebugAddToHand iid cardId
       DebugCardDiscard -> case card of
         EncounterCard ec -> push $ AddToEncounterDiscard ec
@@ -3079,7 +3327,7 @@ runGameMessage msg g = case msg of
       CampaignPhase {} -> error "should not be called in this situation"
     pure
       $ g
-      & (roundHistoryL %~ (<> view phaseHistoryL g))
+      & (roundHistoryL %~ foldPhaseHistory g)
       & (phaseHistoryL %~ mempty)
   EndInvestigation -> do
     whenWindow <- checkWindows [mkWhen (Window.PhaseEnds InvestigationPhase)]
@@ -3089,7 +3337,7 @@ runGameMessage msg g = case msg of
     pure
       $ g
       & (phaseHistoryL .~ mempty)
-      & (roundHistoryL %~ (<> view phaseHistoryL g))
+      & (roundHistoryL %~ foldPhaseHistory g)
       & (turnPlayerInvestigatorIdL .~ Nothing)
   Begin EnemyPhase -> do
     runQueueT $ runEnemyPhase EndEnemy
@@ -3113,7 +3361,7 @@ runGameMessage msg g = case msg of
         [mkWhen (Window.PhaseEnds EnemyPhase)]
     pure
       $ g
-      & (roundHistoryL %~ (<> view phaseHistoryL g))
+      & (roundHistoryL %~ foldPhaseHistory g)
       & (phaseHistoryL .~ mempty)
   Begin UpkeepPhase -> do
     let phaseStep step msgs = Msg.PhaseStep (UpkeepPhaseStep step) msgs
@@ -3142,7 +3390,7 @@ runGameMessage msg g = case msg of
         [mkWhen (Window.PhaseEnds UpkeepPhase)]
     pure
       $ g
-      & (roundHistoryL %~ (<> view phaseHistoryL g))
+      & (roundHistoryL %~ foldPhaseHistory g)
       & (phaseHistoryL .~ mempty)
   EndRoundWindow -> do
     windows' <-
@@ -3219,15 +3467,23 @@ runGameMessage msg g = case msg of
   AllDrawEncounterCard -> do
     push $ SetActiveInvestigator $ g ^. activeInvestigatorIdL
     mGloria <- selectOne $ investigatorIs Investigators.gloriaGoldberg
-    investigators <- filterM (fmap not . isEliminated) =<< getInvestigatorsInOrder
+    -- A seat that cannot draw one is dropped from the draw rather than handed one
+    -- that does nothing, so it is also absent from Gloria Goldberg's draw order.
+    investigators <-
+      filterM
+        (\iid -> andM [not <$> isEliminated iid, not <$> hasModifier iid CannotDrawEncounterCards])
+        =<< getInvestigatorsInOrder
     case mGloria of
-      Just gloria -> push $ SendMessage (toTarget gloria) (ForInvestigators investigators AllDrawEncounterCard)
-      Nothing -> do
-        for_ (reverse investigators) \iid -> push $ ForInvestigator iid AllDrawEncounterCard
+      Just gloria | gloria `elem` investigators -> do
+        push $ SendMessage (toTarget gloria) (ForInvestigators investigators AllDrawEncounterCard)
+      _ -> for_ (reverse investigators) \iid -> push $ ForInvestigator iid AllDrawEncounterCard
     pure g
   ForInvestigator iid AllDrawEncounterCard -> do
     iid' <- fromMaybe iid <$> selectOne (InvestigatorWithModifier DrawsEachEncounterCard)
-    whenM (not <$> isEliminated iid) do
+    -- Also guarded here, not only in the fan-out above: a scenario that rebuilds
+    -- the draw pushes these directly (Ages Unwound VI).
+    cannotDraw <- hasModifier iid CannotDrawEncounterCards
+    unless cannotDraw $ whenM (not <$> isEliminated iid) do
       player <- getPlayer iid'
       mods <- getModifiers iid'
       viaTargets <- nub . concat <$> traverse select [tm | DrawEncounterCardsVia tm <- mods]
@@ -3240,7 +3496,7 @@ runGameMessage msg g = case msg of
       =<< checkWindows [mkWhen (Window.PhaseEnds MythosPhase)]
     pure
       $ g
-      & (roundHistoryL %~ (<> view phaseHistoryL g))
+      & (roundHistoryL %~ foldPhaseHistory g)
       & (phaseHistoryL .~ mempty)
   BeginSkillTestWithPreMessages _ pre skillTest -> runMessage (BeginSkillTestWithPreMessages' pre skillTest) g
   BeginSkillTestWithPreMessages' pre skillTest -> do
@@ -3359,7 +3615,7 @@ runGameMessage msg g = case msg of
                     -- test is active, the new test is relocated to after the current
                     -- one. ResolvedStory (which removes the story) must travel with
                     -- it, or the story is removed before its own test resolves.
-                    MoveWithSkillTest (StoryMessage (ResolvedStory storyMode storyId))
+                    MoveWithSkillTest (StoryMessage (ResolvedStory iid storyMode storyId))
                   ]
               ]
           ]
@@ -3370,7 +3626,7 @@ runGameMessage msg g = case msg of
             [ targetLabel
                 (toTarget storyId)
                 [ StoryMessage (ResolveStory iid storyMode storyId)
-                , MoveWithSkillTest (StoryMessage (ResolvedStory storyMode storyId))
+                , MoveWithSkillTest (StoryMessage (ResolvedStory iid storyMode storyId))
                 ]
             ]
     pure $ g & entitiesL . storiesL . at storyId ?~ story'
@@ -3385,9 +3641,26 @@ runGameMessage msg g = case msg of
       ?~ story'
       & entryTicksL
       %~ insertMap card.id (gameWindowTick g)
-  StoryMessage (ResolveStory _ _ sid) -> do
+  StoryMessage (ResolveStory iid mode sid) -> do
     card <- field StoryCard sid
+    {- The when-half of the resolution window. This runs after the story entity has
+    already queued its own resolution, and 'push' prepends, so the window still
+    resolves in front of the story's effects. -}
+    when (mode == ResolveIt) do
+      whenResolve <- checkWhen $ Window.ResolvesStory iid sid
+      push whenResolve
     pure $ g & focusedCardsL %~ map (filter (/= card))
+  {- The after-half. Raised here rather than at the push sites so that every path
+  that ends a story read gets it: both of 'ReadStoryWithPlacement''s prompts
+  (where it travels with the story's skill test, since 'ResolvedStory' does), and
+  anything that queues 'ResolvedStory' itself. Because this runs after the
+  entities -- which is where 'RemoveStory' is pushed -- and 'push' prepends, the
+  window always resolves while the story is still in play. -}
+  StoryMessage (ResolvedStory iid mode sid) -> do
+    when (mode == ResolveIt) do
+      afterResolve <- checkAfter $ Window.ResolvesStory iid sid
+      push afterResolve
+    pure g
   StoryMessage (RemoveStory storyId) -> do
     pure $ g & entitiesL . storiesL %~ deleteMap storyId
   CreateSkill skillId card investigatorId placement -> do
@@ -3406,6 +3679,23 @@ runGameMessage msg g = case msg of
       Just cost -> do
         pushAll [PutCardIntoPlay iid card mTarget payment ws, CreatedCost (activeCostId cost)]
         pure $ g & (activeCostL %~ insertMap (activeCostId cost) cost)
+  RescuedCard iid card -> do
+    afterRescue <- checkAfter $ Window.CardRescued iid card
+    if cardMatch card CardIsStoryAsset
+      then do
+        -- Create only the temporary entity: CreateAssetAt also removes its card
+        -- from the victory display, where a rescued story asset must remain.
+        aid <- getRandom
+        let asset =
+              overAttrs (\attrs -> attrs {assetPlacement = OutOfPlay VictoryDisplayZone}) $ createAsset card aid
+        pushAll [afterRescue, Do (RescuedCard iid card)]
+        pure $ g & entitiesL . assetsL . at aid ?~ asset
+      else g <$ push afterRescue
+  Do (RescuedCard _ card) -> do
+    for_ (toList $ g ^. entitiesL . assetsL) \asset -> do
+      when (toCardId asset == card.id && asset.placement == OutOfPlay VictoryDisplayZone) do
+        push $ RemoveAsset (toId asset)
+    pure g
   CreateAssetAt assetId card placement -> do
     let asset = createAsset card assetId
     iid <- getActiveInvestigatorId
@@ -3645,9 +3935,15 @@ runGameMessage msg g = case msg of
         <*> field Investigator.InvestigatorTaboo iid
         <*> field Investigator.InvestigatorCardPool iid
         <*> getIsStandalone
+        <*> pure []
+    pid <- getPlayer iid
+    ctxWithCustom <- withCustomRandomWeaknessPool pid ctx
     mcard <-
       traverse genPlayerCard
-        =<< sampleRandomBasicWeaknessMatching ((`cardMatch` matcher) . (`lookupPlayerCard` nullCardId)) [] ctx
+        =<< sampleRandomBasicWeaknessMatching
+          ((`cardMatch` matcher) . (`lookupPlayerCard` nullCardId))
+          []
+          ctxWithCustom
     g <$ push (RequestedPlayerCard iid source mcard [])
   CancelSurge _ -> do
     ems <- effectModifiers GameSource [NoSurge]
@@ -3668,7 +3964,10 @@ runGameMessage msg g = case msg of
         (effectId, surgeEffect) <- createSurgeEffect source cardId
         pure $ g & entitiesL . effectsL . at effectId ?~ surgeEffect
       Nothing -> pure g
-  Surge iid source -> g <$ push (drawEncounterCard iid source)
+  Surge iid source -> do
+    whenWindow <- checkWhen $ Window.GainedSurge iid source
+    pushAll [whenWindow, drawEncounterCard iid source]
+    pure g
   ReplaceCard cardId card -> do
     replaceCard cardId card -- We must update the IORef
     pure $ g & cardsL %~ insertMap cardId card
@@ -3885,16 +4184,28 @@ runGameMessage msg g = case msg of
           assetId <- getRandom
           let asset = createAsset card assetId
           -- Story assets can be drawn from encounter decks while still having AssetType.
-          pushAll $ afterDraw
+          -- Active while the revelation resolves, so the card is visible in the
+          -- play area the way a resolving treachery or a spawning enemy is.
+          pushAll
+            $ afterDraw
             : (guard (not ignoreRevelation) *> resolve (Revelation iid $ AssetSource assetId))
-          pure $ g' & (entitiesL . assetsL . at assetId ?~ asset)
+              <> [UnsetActiveCard]
+          pure
+            $ g'
+            & (entitiesL . assetsL . at assetId ?~ asset)
+            & (activeCardL ?~ toCard card)
         EncounterAssetType -> do
           assetId <- getRandom
           let asset = createAsset card assetId
           -- Asset is assumed to have a revelation ability if drawn from encounter deck
-          pushAll $ afterDraw
+          pushAll
+            $ afterDraw
             : (guard (not ignoreRevelation) *> resolve (Revelation iid $ AssetSource assetId))
-          pure $ g' & (entitiesL . assetsL . at assetId ?~ asset)
+              <> [UnsetActiveCard]
+          pure
+            $ g'
+            & (entitiesL . assetsL . at assetId ?~ asset)
+            & (activeCardL ?~ toCard card)
         EncounterEventType -> do
           eventId <- getRandom
           let owner = fromMaybe iid (toCardOwner card)
@@ -4079,6 +4390,9 @@ runGameMessage msg g = case msg of
     case toCardType card of
       AssetType -> runMessage (RemoveAsset (coerce uuid)) g
       _ -> error "Unhandle remove card entity type"
+  -- Log only; see 'gameLogBlockStack'.
+  OpenLogBlock gid -> pure $ g & logBlockStackL %~ (<> [gid])
+  CloseLogBlock gid -> pure $ g & logBlockStackL %~ filter (/= gid)
   UseAbility _ a _ -> pure $ g & activeAbilitiesL %~ (a :)
   ResolvedAbility ab -> do
     -- a queued ResolveWindowInitiations is a set of in-flight abilities: their sources
@@ -4157,7 +4471,16 @@ runGameMessage msg g = case msg of
             VengeanceCard _ -> error "Vengeance card"
     pure g
   Discard miid source (TreacheryTarget tid) -> do
-    mcard <- fieldMay TreacheryCard tid
+    {- "Cannot be discarded from play, except by abilities printed on it." The
+    same rule the asset runner applies for 'CannotLeavePlay', and for the same
+    reason: a card that prints its own way off the table is the one thing
+    allowed to take it, so a discard the treachery sources itself goes through
+    and everything else is refused. -}
+    cannotLeavePlay <-
+      if source.treachery == Just tid
+        then pure False
+        else elem CannotLeavePlay <$> getModifiers (TreacheryTarget tid)
+    mcard <- if cannotLeavePlay then pure Nothing else fieldMay TreacheryCard tid
     for_ mcard \card -> do
       inVictory <- selectAny $ VictoryDisplayCardMatch $ basic $ CardWithId $ toCardId card
       unless inVictory do
@@ -4428,7 +4751,35 @@ runActionRemovedEntities msg g = case msg of
               , entitiesAssets = entitiesAssets removed' <> parkedAssets
               }
         }
+  -- A parked copy is never the entity entering play: a card that re-enters play gets a fresh
+  -- entity, so the `card.id == attrs.cardId` guard every "I entered play" handler uses fires on
+  -- the corpse as well. The King in Yellow, discarded by its own reaction and then redrawn after
+  -- a reshuffle in the same action, placed a second, dead copy into the threat area that way and
+  -- forced an unrelated hand asset to be discarded (#5899).
+  CardIsEnteringPlay _ card -> withoutCardId card.id
+  CardEnteredPlay _ card -> withoutCardId card.id
   _ -> actionRemovedEntitiesL (runMessage msg) g
+ where
+  withoutCardId cid = do
+    let
+      removed = gameActionRemovedEntities g
+      -- assets, events and skills are the card-backed entity kinds (cf. `loadedCardIds`)
+      (parkedAssets, ownAssets) = Map.partition (\x -> (toAttrs x).cardId == cid) (entitiesAssets removed)
+      (parkedEvents, ownEvents) = Map.partition (\x -> (toAttrs x).cardId == cid) (entitiesEvents removed)
+      (parkedSkills, ownSkills) = Map.partition (\x -> (toAttrs x).cardId == cid) (entitiesSkills removed)
+    removed' <-
+      runMessage
+        msg
+        removed {entitiesAssets = ownAssets, entitiesEvents = ownEvents, entitiesSkills = ownSkills}
+    pure
+      $ g
+        { gameActionRemovedEntities =
+            removed'
+              { entitiesAssets = entitiesAssets removed' <> parkedAssets
+              , entitiesEvents = entitiesEvents removed' <> parkedEvents
+              , entitiesSkills = entitiesSkills removed' <> parkedSkills
+              }
+        }
 
 -- NOTE: We need preloadEntities to be a the end because the game state is not
 -- "saved" between steps here. For example if we discard a card with in discard
@@ -4470,9 +4821,21 @@ runPreGameMessage msg g = case msg of
         push (After msg)
         pure $ g & cardPlayStackL %~ (<> [toCardId card])
       _ -> pure g
-  After (Do (RevealLocation _ lid)) -> do
+  After (Do (RevealLocation miid lid)) -> do
     mCard <- fieldMay LocationCard lid
-    pure $ maybe g (\card -> g & cardPlayStackL %~ filter (/= toCardId card)) mCard
+    {- Whose reveal it was. A location revealed by moving into it, or by an
+    investigation, names the investigator; one the scenario turned over by
+    itself names nobody, and is credited to whoever's turn it is -- "if you
+    revealed or put a location into play this round" is said by a card in that
+    investigator's hand. -}
+    lead <- getLead
+    let
+      iid = fromMaybe (fromMaybe lead (view turnPlayerInvestigatorIdL g)) miid
+      historyItem = HistoryItem HistoryLocationsRevealed [lid]
+      turn = isJust $ view turnPlayerInvestigatorIdL g
+      setTurnHistory = if turn then turnHistoryL %~ insertHistory iid historyItem else id
+      recorded = g & (phaseHistoryL %~ insertHistory iid historyItem) & setTurnHistory
+    pure $ maybe recorded (\card -> recorded & cardPlayStackL %~ filter (/= toCardId card)) mCard
   ForInvestigator iid _ -> do
     player <- getPlayer iid
     pure $ g & activeInvestigatorIdL .~ iid & activePlayerIdL .~ player
@@ -4519,7 +4882,10 @@ runPreGameMessage msg g = case msg of
             _ -> Just xs
           Just (x : xs) -> Just (x : xs)
     pure $ g & windowDepthL -~ 1 & windowStackL .~ windowStack & (windowTickStackL %~ drop 1)
-  ScenarioResolution _ -> do
+  ScenarioResolution r -> do
+    -- Remember which resolution this was, so the game can name its ending once
+    -- it is over; see 'gameLastResolution'.
+    let ending = (\s -> Ending (attr scenarioId s) r) <$> modeScenario (g ^. modeL)
     pure
       $ g
       & (skillTestL .~ Nothing)
@@ -4527,6 +4893,7 @@ runPreGameMessage msg g = case msg of
       & (windowStackL .~ mempty)
       & (windowDepthL .~ 0)
       & (windowTickStackL .~ [])
+      & (lastResolutionL %~ \old -> ending <|> old)
   ResetInvestigators -> do
     -- if we reset and there is no player order, set it to the current investigator keys
     pure
@@ -4578,6 +4945,17 @@ runPreGameMessage msg g = case msg of
     card <- field EnemyCard details.enemy
     pure $ g & entryTicksL %~ insertMap card.id (gameWindowTick g)
   _ -> pure g
+
+{- | Fold a phase's history into the round's.
+
+@Map@'s own @<>@ is a left-biased union, so folding with it kept the round's
+existing entry for an investigator and dropped everything the phase recorded for
+them -- a 'RoundHistory' read saw only the first phase that recorded anything.
+'History' knows how to merge two of itself; this is the only thing that asks it
+to.
+-}
+foldPhaseHistory :: Game -> Map InvestigatorId History -> Map InvestigatorId History
+foldPhaseHistory g roundH = Map.unionWith (<>) roundH (view phaseHistoryL g)
 
 {- | Maintain the revert information for the in-flight action.
 

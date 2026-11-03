@@ -11,8 +11,10 @@ import {
   type VNodeRef,
 } from 'vue'
 import { cardImg, formatContent, imgsrc, isLocalized, toCamelCase } from '@/arkham/helpers'
+import { useUnwatermarked, warmCards } from '@/arkham/unwatermark'
 import { homebrewTokenMap } from '@/arkham/homebrewAssets'
 import { originalArt } from '@/arkham/artVariants'
+import { hasEngineCardDef } from '@/arkham/customCards'
 import { BugAntIcon } from '@heroicons/vue/20/solid'
 import { useDebug } from '@/arkham/debug'
 import { fetchCard, fetchPlayability, type PlayabilityResponse } from '@/arkham/api'
@@ -34,11 +36,19 @@ const VIEW_W = 1000             // stable viewBox width for percent → px mappi
 
 // Cache natural aspect ratios (width / height) to infer sideways when needed
 const imgARCache = reactive(new Map<string, number>())
+/* Card codes whose art does not exist. An enemy with no printed card -- Flying
+ * Polyp and Reanimated Dead have art drawn for them, Ages Unwound's Roman
+ * Soldier does not -- still carries a real card code, so the magnifier happily
+ * resolved a URL for it and painted the browser's broken-image glyph over the
+ * board. Nothing can be magnified that did not load, so remember the failure
+ * and show no overlay at all. */
+const imgBroken = reactive(new Set<string>())
 const loadAR = (url: string) => {
-  if (!url || imgARCache.has(url)) return
+  if (!url || imgARCache.has(url) || imgBroken.has(url)) return
   const i = new Image()
   i.decoding = 'async'
   i.onload = () => imgARCache.set(url, i.naturalWidth / i.naturalHeight)
+  i.onerror = () => imgBroken.add(url)
   i.src = url
 }
 
@@ -250,14 +260,42 @@ const clippedAt = (el: HTMLElement, x: number, y: number): boolean => {
 const queueHover = (el: HTMLElement) => {
   hoverTimer = clearTimer(hoverTimer)
   const delay = el.dataset.delay ? parseInt(el.dataset.delay, 10) : 0
+  // Probe before the overlay opens rather than after, so a card whose art is
+  // missing is already known broken by the time `card` is read.
+  const probe = getImage(el)
+  if (probe) loadAR(probe)
   hoverTimer = window.setTimeout(() => {
     hoveredElement.value = el
     canDisablePress = true
   }, delay)
 }
 
+/* Un-watermarking a card costs a fetch and a pixel pass, and doing that at the
+ * moment someone hovers is the one time it is visible. The cards on the table
+ * are reversed ahead of the ask instead, on idle time. Moving the pointer is
+ * the cue -- it means someone is playing, and it costs nothing to listen for,
+ * where a MutationObserver over the whole board would not be. */
+let lastSweep = 0
+const sweepVisibleCards = () => {
+  lastSweep = Date.now()
+  const urls: string[] = []
+  for (const img of document.querySelectorAll('img')) {
+    const src = img.currentSrc || img.src
+    if (!src) continue
+    const r = img.getBoundingClientRect()
+    if (r.width === 0 || r.bottom < 0 || r.top > window.innerHeight) continue
+    urls.push(src)
+  }
+  warmCards(urls)
+}
+
+const maybeSweep = () => {
+  if (Date.now() - lastSweep > 3000) sweepVisibleCards()
+}
+
 const onMouseOver = (e: MouseEvent) => {
   endDragIfIdle(e)
+  maybeSweep()
   if (currentPointerType === 'touch' || dragActive) return
   lastPointer.value = { clientX: e.clientX, clientY: e.clientY }
   const el = targetFromEvent(e)
@@ -338,6 +376,8 @@ const onOverlayContextMenu = (e: MouseEvent) => {
 }
 
 onMounted(() => {
+  /* The board is still filling in on mount, so the first sweep waits for it. */
+  window.setTimeout(sweepVisibleCards, 1500)
   document.addEventListener('pointerdown', onPointerDown, { passive: true })
   document.addEventListener('pointermove', onPointerMove, { passive: true })
   document.addEventListener('pointerup', onPointerUp, { passive: true })
@@ -412,15 +452,18 @@ onUnmounted(() => { hoveredObserver?.disconnect(); hoveredObserver = null })
 
 const card = computed<string | null>(() => {
   void hoveredVersion.value
-  return hoveredElement.value ? getImage(hoveredElement.value) : null
+  const src = hoveredElement.value ? getImage(hoveredElement.value) : null
+  // Every part of the overlay hangs off this, so a URL known to 404 turns the
+  // whole magnifier off rather than framing a broken image. See `imgBroken`.
+  return src && imgBroken.has(src) ? null : src
 })
 const overlayCardCode = computed<string | null>(() => {
   void hoveredVersion.value
   const el = hoveredElement.value
   if (!el) return null
   const direct = normalizedCardCode(el.dataset.cardCode ?? el.dataset.imageId)?.replace(/b$/, '')
-  // Homebrew definitions are not served by the single-card endpoint.
-  if (direct) return direct.startsWith(':') ? null : direct
+  // Homebrew and custom definitions are not served by the single-card endpoint.
+  if (direct) return hasEngineCardDef(direct) ? direct : null
 
   const image = card.value
   // A homebrew image path ends in /cards/<local code>, which otherwise looks
@@ -692,6 +735,12 @@ const additionalCard = computed<string | null>(() => {
   if (!["88043"].includes(cardCode.value)) return null
   return imgsrc(`cards/${cardCode.value}b.avif`)
 })
+
+/* The CDN serves card faces with a watermark across them; this is the same
+ * picture with it taken back off. Everything downstream still reads `card` --
+ * these are only what gets drawn. The customization sheets are never marked. */
+const cardImage = useUnwatermarked(card)
+const additionalCardImage = useUnwatermarked(additionalCard)
 
 // A later taboo can mutate a card without touching its customizable sheet -- Taboo 24
 // only changed Power Word's test difficulty, which lives on the front. Point those
@@ -1192,7 +1241,7 @@ watchEffect(() => {
     >
     <div class="card-image">
       <svg
-        v-if="card"
+        v-if="cardImage"
         class="card-svg"
         :viewBox="viewBox"
         :width="svgWidth"
@@ -1202,7 +1251,7 @@ watchEffect(() => {
       >
         <g :transform="groupTransform" :data-pc="playingCardOverlay">
           <image
-            :href="card"
+            :href="cardImage"
             x="0" y="0"
             :width="sideways ? viewH : VIEW_W"
             :height="sideways ? VIEW_W : viewH"
@@ -1271,10 +1320,10 @@ watchEffect(() => {
         </g>
       </svg>
 
-      <font-awesome-icon v-if="isSpirit && card" :icon="['fas', 'ghost']" class="spirit-icon" />
+      <font-awesome-icon v-if="isSpirit && cardImage" :icon="['fas', 'ghost']" class="spirit-icon" />
 
       <svg
-        v-if="additionalCard"
+        v-if="additionalCardImage"
         class="card-svg customizations-svg"
         :width="svgWidth"
         :height="svgHeight"
@@ -1284,7 +1333,7 @@ watchEffect(() => {
       >
         <g :transform="groupTransform">
           <image
-            :href="additionalCard"
+            :href="additionalCardImage"
             x="0" y="0"
             :width="sideways ? viewH : VIEW_W"
             :height="sideways ? VIEW_W : viewH"

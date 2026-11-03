@@ -119,7 +119,8 @@
         "usesGrid",
         "victoryDisplay",
         "xpBreakdown",
-        "customChaosBags"
+        "customChaosBags",
+        "sealedChaosTokens"
       ],
       "properties": {
         "actStack": {
@@ -394,6 +395,13 @@
         "substitutions": {
           "description": "Card-code substitutions active for this scenario, keyed by the replaced card code. Broad, out of scope for this contract slice.",
           "type": "object"
+        },
+        "sealedChaosTokens": {
+          "description": "Chaos tokens sealed on the scenario itself rather than on a card (ScenarioAttrs.scenarioSealedChaosTokens).",
+          "type": "array",
+          "items": {
+            "$ref": "./chaos-token.schema.json"
+          }
         }
       }
     }

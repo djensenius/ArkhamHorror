@@ -6,10 +6,11 @@
 module Entity.User where
 
 import Database.Persist.TH
-import Relude
 import Entity
+import Relude
 
-mkEntity $(discoverEntities)
+mkEntity
+  $(discoverEntities)
   [persistLowerCase|
 User json sql=users
     username Text
@@ -18,6 +19,8 @@ User json sql=users
     beta Bool
     phaseTransitionNotifications Bool default=False
     admin Bool default=False
+    features Text default=''
+    allowSpectatorsByDefault Bool default=False
     UniqueUsername username
     UniqueEmail email
     deriving Show

@@ -14,22 +14,12 @@ newtype WingsOfDamakairon = WingsOfDamakairon AssetAttrs
   deriving anyclass IsAsset
   deriving newtype (Show, Eq, ToJSON, FromJSON, Entity)
 
-{- | Health 2, which the def cannot carry.
-
-TODO(ages-unwound): the card is __Fast__, which lives on the def as
-@cdFastWindow@. @CardDefs/Assets.hs@ is the orchestrator's, so it still plays as
-an action.
--}
 wingsOfDamakairon :: AssetCard WingsOfDamakairon
 wingsOfDamakairon = assetWith WingsOfDamakairon Cards.wingsOfDamakairon (healthL ?~ 2)
 
--- | "You get +1 [agility]."
 instance HasModifiersFor WingsOfDamakairon where
   getModifiersFor (WingsOfDamakairon a) = controllerGets a [SkillModifier #agility 1]
 
-{- | "[free] Exhaust Wings of Damakairon: Your location gets -2 shroud for this
-skill test. You may not use this ability during your turn."
--}
 instance HasAbilities WingsOfDamakairon where
   getAbilities (WingsOfDamakairon a) =
     [ controlled a 1 (DuringSkillTest AnySkillTest <> Criteria.Negate (Criteria.DuringTurn You))

@@ -13,7 +13,9 @@
     "question": {
       "tag": "QuestionLabel",
       "label": "$wrapped",
-      "card": "c01120",
+      "labelCards": [
+        "c01120"
+      ],
       "question": {
         "tag": "ChooseOne",
         "choices": [

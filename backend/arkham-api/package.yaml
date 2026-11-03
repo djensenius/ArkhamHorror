@@ -223,8 +223,12 @@ tests:
     dependencies:
       - aeson
       - aeson-diff
+      - ah3e
+      - amazonka
+      - amazonka-core
       - arkham-api
       - bugsnag
+      - bytestring
       - containers
       - directory
       - fast-logger
