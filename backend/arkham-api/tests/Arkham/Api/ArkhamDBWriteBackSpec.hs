@@ -92,6 +92,12 @@ currentDeck = Linking.remote.deck
   , Decklist.taboo_id = Just 10
   }
 
+sourceWithNotes :: ArkhamDBRemoteDeck
+sourceWithNotes = Linking.remote
+  { descriptionMd = "Source guide", tags = "solo campaign"
+  , ignoreDeckLimitSlots = Map.singleton "01006" 1, problem = Just "too_few_cards"
+  }
+
 newHarness :: IO Harness
 newHarness = newHarnessWithKey pushKey
 
@@ -237,7 +243,10 @@ newHarnessWithKey pushKey = do
             record $ "save/" <> target
             -- The real save form has no investigator parameter.
             modifyIORef' remotes $ Map.adjust (\value -> value
-              {deck = deck.deck {Decklist.investigator_code = value.deck.investigator_code}, dateUpdate = Just "saved"}) target
+              { deck = deck.deck {Decklist.investigator_code = value.deck.investigator_code}, dateUpdate = Just "saved"
+              , descriptionMd = deck.descriptionMd, tags = deck.tags
+              , ignoreDeckLimitSlots = deck.ignoreDeckLimitSlots, problem = deck.problem
+              }) target
             pure $ Right target
         }
       run retry = runWriteBack claimStore writes client Linking.settings Linking.now retry Linking.userId Linking.deckId
@@ -597,7 +606,7 @@ spec = describe "ArkhamDB campaign write-back" do
       let queued = withExportedOverlay Nothing currentDeck
             {Decklist.meta = Just "{\"alternate_front\":\"01001\",\"extra_deck\":\"01100\",\"campaign\":\"kept\"}"}
           side = Map.singleton "01009" 2
-          source = Linking.remote {dateUpdate = Just "edited", deck = Linking.remote.deck
+          source = sourceWithNotes {dateUpdate = Just "edited", deck = Linking.remote.deck
             {Decklist.sideSlots = side, Decklist.meta = Just "{\"extra_deck\":\"01008\",\"remote_only\":\"not-campaign-meta\"}"}}
           apply entity (Update field value Assign) = runIdentity $ fieldLens field (const $ Identity value) entity
           apply _ _ = error "Checkpoint must use assignments"
@@ -606,8 +615,9 @@ spec = describe "ArkhamDB campaign write-back" do
           assertPrepared = do
             stored <- readIORef h.job
             arkhamDBPushStage stored `shouldBe` "creating"
-            case decodePushDeckPayload (arkhamDBPushPayload stored) of
-              Right (True, effective) -> do
+            case decodePushPreparation (arkhamDBPushPayload stored) of
+              Right (True, effective, fields) -> do
+                fields `shouldBe` Just (pushRemoteFields source)
                 effective.sideSlots `shouldBe` side
                 (pushDeckMetadata effective >>= pure . KM.lookup "extra_deck") `shouldBe` Right (Just $ String "01008")
               _ -> expectationFailure "Prepared payload was not persisted with creation"
@@ -630,11 +640,83 @@ spec = describe "ArkhamDB campaign write-back" do
       pushed.deck.sideSlots `shouldBe` side
       pushed.deck.slots `shouldBe` queued.slots
       pushed.deck.taboo_id `shouldBe` queued.taboo_id
+      pushRemoteFields pushed `shouldBe` pushRemoteFields source
       metadata <- either (fail . show) pure $ pushDeckMetadata pushed.deck
       KM.lookup "extra_deck" metadata `shouldBe` Just (String "01008")
       KM.lookup "campaign" metadata `shouldBe` Just (String "kept")
       KM.lookup "remote_only" metadata `shouldBe` Nothing
       exportedOverlay pushed.deck `shouldBe` exportedOverlay queued
+
+  for_ ["normal", "new"] \mode ->
+    for_ ["description", "tags", "ignored", "problem" :: Text] \field ->
+      it ("verifies the preserved source " <> toString field <> " after " <> toString mode <> " save") do
+        h <- newHarness
+        modifyIORef' h.remotes $ Map.insert "123" sourceWithNotes
+        modifyIORef' h.job \job -> job {arkhamDBPushMode = mode}
+        let corrupt :: ArkhamDBRemoteDeck -> ArkhamDBRemoteDeck
+            corrupt remote = case field of
+              "description" -> remote {descriptionMd = ""}
+              "tags" -> remote {tags = ""}
+              "ignored" -> remote {ignoreDeckLimitSlots = mempty}
+              _ -> remote {problem = Nothing}
+            client = h.client {saveDeck = \token target remote -> do
+              result <- h.client.saveDeck token target remote
+              modifyIORef' h.remotes $ Map.adjust corrupt target
+              pure result}
+        runWith h client False
+        assertState h "conflict"
+        arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "remoteChanged"
+        readIORef h.baseline `shouldReturn` 0
+
+  for_ [False, True] \lostReply ->
+    it ("recovers save-as-new with frozen source notes rather than later source/empty target fields, lostReply=" <> show lostReply) do
+      h <- newHarness
+      modifyIORef' h.remotes $ Map.insert "123" sourceWithNotes
+      modifyIORef' h.job \job -> job {arkhamDBPushMode = "new"}
+      let client = h.client {saveDeck = \token target remote ->
+            if not lostReply then pure $ Left $ ArkhamDBRemoteError "save unavailable"
+            else h.client.saveDeck token target remote >> pure (Left $ ArkhamDBRemoteError "lost save reply")}
+      runWith h client False
+      assertState h "failed"
+      frozen <- arkhamDBPushPayload <$> readIORef h.job
+      modifyIORef' h.remotes $ Map.adjust (\remote -> remote
+        {descriptionMd = "later edit", tags = "", ignoreDeckLimitSlots = mempty, problem = Nothing}) "123"
+      h.run True
+      assertState h "succeeded"
+      arkhamDBPushPayload <$> readIORef h.job `shouldReturn` frozen
+      target <- Map.lookup "125" <$> readIORef h.remotes >>= maybe (fail "Missing independent target") pure
+      pushRemoteFields target `shouldBe` pushRemoteFields sourceWithNotes
+      filter (== "new") <$> readIORef h.calls `shouldReturn` ["new"]
+
+  it "freezes empty independent-deck defaults only when the source cannot be loaded" do
+    h <- newHarness
+    modifyIORef' h.remotes $ Map.delete "123"
+    modifyIORef' h.job \job -> job {arkhamDBPushMode = "new"}
+    h.run False
+    assertState h "succeeded"
+    payload <- arkhamDBPushPayload <$> readIORef h.job
+    case decodePushPreparation payload of
+      Right (True, _, fields) -> fields `shouldBe` Just emptyPushRemoteFields
+      _ -> expectationFailure "Independent defaults were not frozen"
+
+  it "decodes old raw/prepared rows and defaults optional remote fields without erasing a legacy target" do
+    let old = decodeUtf8 $ toStrict $ encode $ object ["effectivePayloadRevision" .= (1 :: Int), "deck" .= currentDeck]
+    decodePushPreparation (encodePushDeck currentDeck) `shouldBe` Right (False, currentDeck, Nothing)
+    decodePushPreparation old `shouldBe` Right (True, currentDeck, Nothing)
+    fromJSON (object []) `shouldBe` Success emptyPushRemoteFields
+    withPushRemoteFields Nothing sourceWithNotes `shouldBe` sourceWithNotes
+    h <- newHarness
+    modifyIORef' h.remotes $ Map.insert "123" sourceWithNotes
+    runWith h h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "save failed"} False
+    modifyIORef' h.job \job -> job {arkhamDBPushPayload =
+      case decodePushDeckPayload (arkhamDBPushPayload job) of
+        Right (_, deck) -> decodeUtf8 $ toStrict $ encode $ object
+          ["effectivePayloadRevision" .= (1 :: Int), "deck" .= deck]
+        Left _ -> error "Missing prepared legacy fixture"}
+    h.run True
+    assertState h "succeeded"
+    target <- Map.lookup "124" <$> readIORef h.remotes >>= maybe (fail "Missing legacy target") pure
+    pushRemoteFields target `shouldBe` pushRemoteFields sourceWithNotes
 
   for_ [Nothing, Just Null, Just (String "")] \extra ->
     it ("removes or empties stale queued extra_deck from remote state: " <> show extra) do

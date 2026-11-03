@@ -407,20 +407,54 @@ needsCampaignCopy link job = arkhamDBPushMode job == "new" &&
 encodePushDeck :: ArkhamDBDecklist -> Text
 encodePushDeck = decodeUtf8 . toStrict . encode
 
+data PushRemoteFields = PushRemoteFields
+  { descriptionMd :: Text
+  , tags :: Text
+  , ignoreDeckLimitSlots :: Map Text Int
+  , problem :: Maybe Text
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass ToJSON
+
+instance FromJSON PushRemoteFields where
+  parseJSON = withObject "Push remote fields" \o -> PushRemoteFields
+    <$> o .:? "descriptionMd" .!= ""
+    <*> o .:? "tags" .!= ""
+    <*> o .:? "ignoreDeckLimitSlots" .!= mempty
+    <*> o .:? "problem"
+
+pushRemoteFields :: ArkhamDBRemoteDeck -> PushRemoteFields
+pushRemoteFields remote = PushRemoteFields remote.descriptionMd remote.tags remote.ignoreDeckLimitSlots remote.problem
+
+emptyPushRemoteFields :: PushRemoteFields
+emptyPushRemoteFields = PushRemoteFields "" "" mempty Nothing
+
+-- Missing fields mean an older preparation: preserve its loaded target rather
+-- than clearing it or pretending a later source read was the original source.
+withPushRemoteFields :: Maybe PushRemoteFields -> ArkhamDBRemoteDeck -> ArkhamDBRemoteDeck
+withPushRemoteFields Nothing remote = remote
+withPushRemoteFields (Just fields) remote = remote
+  { descriptionMd = fields.descriptionMd, tags = fields.tags
+  , ignoreDeckLimitSlots = fields.ignoreDeckLimitSlots, problem = fields.problem
+  }
+
 -- Internal, versioned storage envelope; never sent to ArkhamDB or clients.
 -- Its presence proves that remote-owned fields were frozen before side effects.
-encodePreparedPushDeck :: ArkhamDBDecklist -> Text
-encodePreparedPushDeck deck = decodeUtf8 $ toStrict $ encode $ object
-  ["effectivePayloadRevision" .= (1 :: Int), "deck" .= deck]
+encodePreparedPushDeck :: ArkhamDBDecklist -> Maybe PushRemoteFields -> Text
+encodePreparedPushDeck deck fields = decodeUtf8 $ toStrict $ encode $ object
+  ["effectivePayloadRevision" .= (1 :: Int), "deck" .= deck, "remoteFields" .= fields]
 
 decodePushDeckPayload :: Text -> Either String (Bool, ArkhamDBDecklist)
-decodePushDeckPayload text = eitherDecodeStrict' (encodeUtf8 text) >>= parseEither
+decodePushDeckPayload = fmap (\(prepared, deck, _) -> (prepared, deck)) . decodePushPreparation
+
+decodePushPreparation :: Text -> Either String (Bool, ArkhamDBDecklist, Maybe PushRemoteFields)
+decodePushPreparation text = eitherDecodeStrict' (encodeUtf8 text) >>= parseEither
   (\value -> withObject "Push payload" (\o ->
     if KM.member "effectivePayloadRevision" o then do
       revision <- o .: "effectivePayloadRevision"
       unless (revision == (1 :: Int)) $ fail "Unknown effective payload revision"
-      (True,) <$> o .: "deck"
-    else (False,) <$> parseJSON value) value)
+      (True,,) <$> o .: "deck" <*> o .:? "remoteFields"
+    else (\deck -> (False, deck, Nothing)) <$> parseJSON value) value)
 
 unpreparedPushPayload :: Text -> Text
 unpreparedPushPayload text = either (const text) (encodePushDeck . snd) $ decodePushDeckPayload text
@@ -483,6 +517,10 @@ samePushedDeck desired remote =
     && desired.taboo_id == remote.deck.taboo_id && samePushInvestigator desired remote
     && (decodeStrict' . encodeUtf8 =<< desired.meta :: Maybe Value) == (decodeStrict' . encodeUtf8 =<< remote.deck.meta)
     && maybe True (\name -> Just name == remote.deck.decklist_name) desired.decklist_name
+
+samePreparedPushDeck :: Maybe PushRemoteFields -> ArkhamDBDecklist -> ArkhamDBRemoteDeck -> Bool
+samePreparedPushDeck fields desired remote =
+  samePushedDeck desired remote && maybe True (== pushRemoteFields remote) fields
 
 -- A single durable job, with no network work in the game transaction. Errors
 -- become sanitized per-deck state; the caller never needs to fail a game answer.
@@ -573,13 +611,13 @@ runWriteBackWithClock clock store writes client settings now retry userId deckId
                 if owned then pure True else scan left rest
           if length bound > 100 then pure True
             else scan (100 :: Int) bound `catchError` const (pure True)
-        recover entity desired = do
+        recover entity desired fields = do
           original <- traverse (load $ entityVal entity) $ arkhamDBPushSourceId $ entityVal entity
           case original of
             Just source | isNothing source.nextDeckId && not source.nextDeckKnownAbsent ->
               conflict entity source "pushUncertain"
-            _ -> recoverVersion entity desired original
-        recoverVersion entity desired originalSource = do
+            _ -> recoverVersion entity desired fields original
+        recoverVersion entity desired fields originalSource = do
           let job = entityVal entity
               key = entityKey entity
           chainCandidate <- case originalSource of
@@ -608,8 +646,8 @@ runWriteBackWithClock clock store writes client settings now retry userId deckId
             Nothing -> throwError $ ArkhamDBError "pushUncertain" "ArkhamDB creation outcome is uncertain; no creation was retried"
             Just remote -> do
               next <- checkpoint entity job {arkhamDBPushStage = "created", arkhamDBPushTargetId = Just remote.remoteDeckId, arkhamDBPushExpectedDateUpdate = Nothing, arkhamDBPushExpectedVersion = Nothing}
-              saveVersion False next desired
-        saveVersion establishBaseline entity desired = do
+              saveVersion False next desired fields
+        saveVersion establishBaseline entity desired fields = do
           let job = entityVal entity
           target <- maybe (throwError $ ArkhamDBError "storageFailure" "Missing push target") pure $ arkhamDBPushTargetId job
           remote <- load job target
@@ -617,7 +655,7 @@ runWriteBackWithClock clock store writes client settings now retry userId deckId
           campaignTarget <- lift $ writes.campaignOwnsTarget (arkhamDBPushCampaignKey job) remote
           if (not (hasPushMarker (entityKey entity) remote) && not campaignTarget) || isJust remote.nextDeckId
             then conflict entity remote "remoteChanged"
-            else if samePushedDeck desired remote
+            else if samePreparedPushDeck fields desired remote
               then finish entity remote
               else if not establishBaseline &&
                 ((isNothing (arkhamDBPushExpectedDateUpdate job) && isNothing (arkhamDBPushExpectedVersion job)) ||
@@ -626,18 +664,19 @@ runWriteBackWithClock clock store writes client settings now retry userId deckId
                 else do
                   next <- checkpoint entity job
                     { arkhamDBPushStage = "saving", arkhamDBPushExpectedDateUpdate = remote.dateUpdate, arkhamDBPushExpectedVersion = remote.deckVersion }
-                  _ <- request (entityVal next) (\token -> client.saveDeck token target remote {deck = desired})
+                  _ <- request (entityVal next) (\token -> client.saveDeck token target $
+                    withPushRemoteFields fields remote {deck = desired})
                   verified <- load (entityVal next) target
-                  if samePushedDeck desired verified && isNothing verified.nextDeckId
+                  if samePreparedPushDeck fields desired verified && isNothing verified.nextDeckId
                     then finish next verified
                     else conflict next verified "remoteChanged"
-        createVersion entity desired source xp = do
+        createVersion entity desired fields source xp = do
           -- deck/upgrade and deck/save cannot change a lineage's investigator.
           -- A mismatched seat must use an explicit independent save-as-new.
           traverse_ (requireInvestigator desired) source
           next <- checkpoint entity (entityVal entity)
             { arkhamDBPushStage = "creating"
-            , arkhamDBPushPayload = encodePreparedPushDeck desired
+            , arkhamDBPushPayload = encodePreparedPushDeck desired fields
             , arkhamDBPushSourceId = (.remoteDeckId) <$> source
             , arkhamDBPushExpectedDateUpdate = source >>= (.dateUpdate)
             , arkhamDBPushExpectedVersion = source >>= (.deckVersion)
@@ -648,7 +687,7 @@ runWriteBackWithClock clock store writes client settings now retry userId deckId
           created <- checkpoint next (entityVal next)
             { arkhamDBPushStage = "created", arkhamDBPushTargetId = Just target
             , arkhamDBPushExpectedDateUpdate = Nothing, arkhamDBPushExpectedVersion = Nothing }
-          saveVersion True created desired
+          saveVersion True created desired fields
         finish entity remote = do
           current <- currentClaim entity
           _ <- ensureGeneration $ entityVal current
@@ -667,23 +706,24 @@ runWriteBackWithClock clock store writes client settings now retry userId deckId
           else processDeck entity link
         processDeck entity link = do
           let job = entityVal entity
-          (prepared, unmarked) <- either (const $ throwError $ ArkhamDBError "storageFailure" "Invalid pending deck") pure $ decodePushDeckPayload $ arkhamDBPushPayload job
+          (prepared, unmarked, fields) <- either (const $ throwError $ ArkhamDBError "storageFailure" "Invalid pending deck") pure $ decodePushPreparation $ arkhamDBPushPayload job
           desired <- either throwError pure $ markedDeck (entityKey entity) unmarked
           when (not prepared && (arkhamDBPushStage job /= "ready" || hasCreationIntent job)) $
             throwError $ ArkhamDBError "pushUncertain" "Legacy in-flight payload has no prepared remote-field provenance"
           case arkhamDBPushStage job of
-            "creating" -> recover entity desired
-            "created" -> saveVersion False entity desired
-            "saving" -> saveVersion False entity desired
+            "creating" -> recover entity desired fields
+            "created" -> saveVersion False entity desired fields
+            "saving" -> saveVersion False entity desired fields
             _ | arkhamDBPushMode job == "new" -> do
-              effective <- if prepared then pure desired else do
+              (effective, frozenFields) <- if prepared then pure (desired, fields) else do
                 -- An independent new deck may still be made when its old
                 -- source is gone/inaccessible; it never mutates that source.
                 source <- (Just <$> (load job (arkhamDBDeckLinkRemoteDeckId link) >>= latestVersion job [arkhamDBDeckLinkRemoteDeckId link]))
                   `catchError` \err -> if arkhamDBErrorCode err `elem` ["notFound", "tokenExpired"]
                     then pure Nothing else throwError err
-                maybe (pure desired) (either throwError pure . effectivePushDeck desired . (.deck)) source
-              createVersion entity effective Nothing 0
+                merged <- maybe (pure desired) (either throwError pure . effectivePushDeck desired . (.deck)) source
+                pure (merged, Just $ maybe emptyPushRemoteFields pushRemoteFields source)
+              createVersion entity effective frozenFields Nothing 0
             _ -> do
               ready <- checkpoint entity job
                 { arkhamDBPushExpectedDateUpdate = arkhamDBDeckLinkLastSyncedDateUpdate link
@@ -708,10 +748,11 @@ runWriteBackWithClock clock store writes client settings now retry userId deckId
                     -- Recovery may prove an upgrade was never sent and return
                     -- to ready. Keep its frozen payload, but never overwrite
                     -- newly edited source fields after a sync advances markers.
-                    if prepared && not (samePushedDeck desired source {deck = merged})
+                    if prepared && not (samePreparedPushDeck fields desired source {deck = merged})
                       then conflict ready source "remoteChanged"
                     else do
                       let effective = if prepared then desired else merged
+                          frozenFields = if prepared then fields else Just $ pushRemoteFields source
                       if arkhamDBPushMode job == "normal" && arkhamDBPushTotalXp job == baseline &&
                         samePushedDeck (unmarkedDeck effective) original {deck = unmarkedDeck original.deck}
                         then finish ready original
@@ -720,10 +761,10 @@ runWriteBackWithClock clock store writes client settings now retry userId deckId
                         then do
                           target <- checkpoint ready (entityVal ready)
                             { arkhamDBPushStage = "created", arkhamDBPushTargetId = Just original.remoteDeckId
-                            , arkhamDBPushPayload = encodePreparedPushDeck effective
+                            , arkhamDBPushPayload = encodePreparedPushDeck effective frozenFields
                             , arkhamDBPushExpectedDateUpdate = original.dateUpdate, arkhamDBPushExpectedVersion = original.deckVersion }
-                          saveVersion False target effective
-                      else createVersion ready effective (Just source) (max 0 $ arkhamDBPushTotalXp job - baseline)
+                          saveVersion False target effective frozenFields
+                      else createVersion ready effective frozenFields (Just source) (max 0 $ arkhamDBPushTotalXp job - baseline)
     result <- runExceptT $ process initial
     case result of
       Left err -> do

@@ -289,7 +289,7 @@ httpArkhamDBClient manager baseUrl clientId clientSecret = ArkhamDBClient {..}
   createDeck token decklist = authedWrite token "POST" "/api/oauth2/deck/new" $
     [("investigator", unCardCode (unInvestigatorId decklist.investigator_code))] <> deckFields decklist
   -- saveDeckAction assigns ignored/problem even when omitted. Forward the
-  -- loaded target's non-campaign fields rather than clearing legality or guides.
+  -- prepared non-campaign fields rather than clearing legality or guides.
   saveDeck token remoteId remote = authedWrite token "PUT" ("/api/oauth2/deck/save/" <> remoteId) $
     [("slots", jsonText (Map.mapKeys unCardCode remote.deck.slots)), ("side", jsonText (Map.mapKeys unCardCode remote.deck.sideSlots))
     , ("description_md", remote.descriptionMd), ("tags", remote.tags), ("ignored", jsonText remote.ignoreDeckLimitSlots)]
