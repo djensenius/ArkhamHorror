@@ -20,7 +20,8 @@ import Arkham.Decklist qualified as Decklist
 import Arkham.Message (Message (..))
 import Arkham.Taboo.Types (TabooList, fromTabooId)
 import Arkham.Target (Target (GameTarget))
-import Data.Aeson (Value, parseJSON, withObject, (.:), (.:?))
+import Data.Aeson (Value (..), decodeStrict', encode, parseJSON, withObject, (.:), (.:?))
+import Data.Aeson.KeyMap qualified as KM
 import Data.Aeson.Types (parseMaybe)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
@@ -211,9 +212,19 @@ campaignDeckSnapshot original cards story invalid _side taboo = original
 -- Use the provenance of the latest materialization, not a forever-valid seat
 -- capture. Whole-deck replacements reset it; incremental campaign edits retain
 -- their source lineage. The store follows ordinary persistence and undo.
-campaignWriteBackSnapshot :: Map Text Value -> InvestigatorId -> Decklist.ArkhamDBDecklist -> [PlayerCard] -> [Card] -> [CardCode] -> Maybe [PlayerCard] -> Maybe TabooList -> Decklist.ArkhamDBDecklist
-campaignWriteBackSnapshot store iid original cards story invalid side taboo =
-  let snapshot = campaignDeckSnapshot original cards story invalid side taboo
+campaignWriteBackSnapshot :: Map Text Value -> InvestigatorId -> InvestigatorId -> Decklist.ArkhamDBDecklist -> [PlayerCard] -> [Card] -> [CardCode] -> Maybe [PlayerCard] -> Maybe TabooList -> Decklist.ArkhamDBDecklist
+campaignWriteBackSnapshot store iid stableIid original cards story invalid side taboo =
+  -- Use the captured seat, not the mutable saved base/overlay. Homunculus
+  -- keeps its recorded origin; alternate fronts keep the materialized front.
+  let captured = original
+        { Decklist.investigator_code = stableIid
+        , Decklist.meta = case original.meta >>= decodeStrict' . encodeUtf8 of
+            Just (Object metadata) | Just (String front) <- KM.lookup "alternate_front" metadata, not (T.null front) ->
+              Just $ decodeUtf8 $ toStrict $ encode $ Object $
+                KM.insert "alternate_front" (String $ unCardCode $ unInvestigatorId stableIid) metadata
+            _ -> original.meta
+        }
+      snapshot = campaignDeckSnapshot captured cards story invalid side taboo
   in case Map.lookup (campaignDeckOverlayKey iid) store of
     Just proof -> withOverlayProvenance (Just proof) snapshot
     Nothing -> withoutExportedOverlay snapshot

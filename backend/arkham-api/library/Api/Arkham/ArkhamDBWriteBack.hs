@@ -352,7 +352,7 @@ queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ game
                 when (campaignAdmissionAllowed games related key) do
                   when (isNothing association) $ insert_ $ ArkhamDBCampaignDeck key deckId uid 0
                   let story = Map.findWithDefault [] deckIid $ campaignStoryCards attrs
-                      list = campaignWriteBackSnapshot (campaignStore attrs) deckIid (arkhamDeckList deck) cards story (case campaign of Campaign c -> invalidCards c) (investigatorSideDeck ia) (investigatorTaboo ia)
+                      list = campaignWriteBackSnapshot (campaignStore attrs) deckIid stableIid (arkhamDeckList deck) cards story (case campaign of Campaign c -> invalidCards c) (investigatorSideDeck ia) (investigatorTaboo ia)
                       event = boundaryEventKey gameId step stableIid (entityKey history)
                   void $ insertUnique $ ArkhamDBPush deckId uid generationId event key (encodePushDeck list) (investigatorXp ia)
                     "pending" "ready" Nothing Nothing (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link)

@@ -235,7 +235,9 @@ newHarnessWithKey pushKey = do
             pure $ Right "125"
         , saveDeck = \_ target deck -> do
             record $ "save/" <> target
-            modifyIORef' remotes $ Map.adjust (\value -> value {deck = deck.deck, dateUpdate = Just "saved"}) target
+            -- The real save form has no investigator parameter.
+            modifyIORef' remotes $ Map.adjust (\value -> value
+              {deck = deck.deck {Decklist.investigator_code = value.deck.investigator_code}, dateUpdate = Just "saved"}) target
             pure $ Right target
         }
       run retry = runWriteBack claimStore writes client Linking.settings Linking.now retry Linking.userId Linking.deckId
@@ -420,7 +422,7 @@ spec = describe "ArkhamDB campaign write-back" do
                 game <- readIORef gameRef
                 let attrs = maybe (error "Missing campaign") toAttrs $ modeCampaign game.gameMode
                     cards = maybe [] unDeck $ Map.lookup "01001" $ campaignDecks attrs
-                pure $ campaignWriteBackSnapshot (campaignStore attrs) "01001" base cards [] [] Nothing Nothing
+                pure $ campaignWriteBackSnapshot (campaignStore attrs) "01001" "01001" base cards [] [] Nothing Nothing
               adopt h target = do
                 if adoption == "upgrade" then do
                   saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
@@ -779,7 +781,7 @@ spec = describe "ArkhamDB campaign write-back" do
           let attrs = maybe (error "Missing campaign") toAttrs $ modeCampaign game.gameMode
               cards = maybe [] unDeck $ Map.lookup deckId $ campaignDecks attrs
               storyCards = Map.findWithDefault [] deckId $ campaignStoryCards attrs
-              snapshot = campaignWriteBackSnapshot (campaignStore attrs) deckId base cards storyCards [] Nothing Nothing
+              snapshot = campaignWriteBackSnapshot (campaignStore attrs) deckId stableId base cards storyCards [] Nothing Nothing
               investigator = fromMaybe (error "Missing live investigator") $ Map.lookup liveId $ gameInvestigators game
           key <- maybe (fail "Missing campaign key") pure $ campaignWriteBackKey identityGameId game liveId
           exportedOverlay snapshot `shouldBe` Just (toJSON overlay)
@@ -2078,12 +2080,16 @@ spec = describe "ArkhamDB campaign write-back" do
         replaced <- readIORef gameRef
         let attrs = maybe (error "Missing replaced campaign") toAttrs $ modeCampaign replaced.gameMode
             cards = maybe [] unDeck $ Map.lookup nextIid $ campaignDecks attrs
-            snapshot = campaignWriteBackSnapshot (campaignStore attrs) nextIid upgraded cards [] [] Nothing Nothing
+            snapshot = campaignWriteBackSnapshot (campaignStore attrs) nextIid nextIid upgraded cards [] [] Nothing Nothing
         map toCardCode cards `shouldBe` ["01006"]
         exportedOverlay snapshot `shouldBe` Just Null
         when (replacement == "replace") $
           Map.lookup (campaignDeckOverlayKey "01001") (campaignStore attrs) `shouldBe` Nothing
         modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck snapshot}
+        -- This provenance control uses a matching remote investigator. The
+        -- mismatched-lineage regression separately asserts refusal.
+        modifyIORef' h.remotes $ Map.adjust (\remote -> remote
+          {deck = remote.deck {Decklist.investigator_code = nextIid}}) "123"
         h.run False
         assertState h "succeeded"
         replicateM_ 2 do
@@ -2093,6 +2099,55 @@ spec = describe "ArkhamDB campaign write-back" do
             >>= either (fail . show) pure
           arkhamDeckOverlay (entityVal result) `shouldBe` Just overlay
           Decklist.slots (arkhamDeckPlayList $ entityVal result) `shouldBe` Map.fromList [("01006", 1), ("01007", 1)]
+
+  for_ ["normal", "overwrite"] \mode ->
+    it ("captures an overlay-replaced investigator and refuses the original remote lineage: " <> toString mode) do
+      h <- newHarness
+      (gameRef, pid, drain) <- newCampaignMessages
+      let overlay = DeckOverlay (Just "01002") mempty mempty mempty
+          base = Linking.remote.deck {Decklist.slots = Map.singleton "01016" 1, Decklist.meta = Nothing}
+          saved = attachDeckOverlay UUID.nil overlay $
+            ArkhamDeck Linking.userId Nothing "Deck" "Roland" base Nothing Nothing Nothing
+      initial <- readIORef gameRef
+      drain $ deckChosenWithAttachment initial pid (Just UUID.nil) (Just overlay) $ arkhamDeckPlayList saved
+      game <- readIORef gameRef
+      Map.keys (gameInvestigators game) `shouldBe` ["01002"]
+      (deckIid, stableIid) <- maybe (fail "Missing captured identity") pure $ campaignWriteBackSeatIdentity game "01002"
+      let attrs = maybe (error "Missing campaign") toAttrs $ modeCampaign game.gameMode
+          cards = maybe [] unDeck $ Map.lookup deckIid $ campaignDecks attrs
+          snapshot = campaignWriteBackSnapshot (campaignStore attrs) deckIid stableIid base cards [] [] Nothing Nothing
+      base.investigator_code `shouldBe` "01001"
+      snapshot.investigator_code `shouldBe` "01002"
+      modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck snapshot, arkhamDBPushMode = mode}
+      h.run False
+      assertState h "failed"
+      arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "validationFailed"
+      assertNoPush h
+      h.writes.resolvePush Linking.now Linking.userId Linking.deckId "new" `shouldReturn` True
+      h.run False
+      assertState h "succeeded"
+      target <- Map.lookup "125" <$> readIORef h.remotes >>= maybe (fail "Missing independent target") pure
+      target.deck.investigator_code `shouldBe` "01002"
+      target.deck.slots `shouldBe` snapshot.slots
+      fmap (.deck.investigator_code) . Map.lookup "123" <$> readIORef h.remotes `shouldReturn` Just "01001"
+
+  for_ [False, True] \lostReply ->
+    it ("refuses to save into a created/recovered target with the wrong investigator, lostReply=" <> show lostReply) do
+      h <- newHarness
+      let captured = currentDeck {Decklist.investigator_code = "01002", Decklist.meta = Nothing}
+          client = h.client {createDeck = \token deck -> do
+            result <- h.client.createDeck token deck
+            modifyIORef' h.remotes $ Map.adjust (\remote -> remote
+              {deck = remote.deck {Decklist.investigator_code = "01001"}}) "125"
+            pure $ if lostReply then Left (ArkhamDBRemoteError "lost creation reply") else result}
+      modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck captured, arkhamDBPushMode = "new"}
+      runWith h client False
+      when lostReply $ h.run True
+      assertState h "failed"
+      arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "validationFailed"
+      filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` []
+      filter (== "new") <$> readIORef h.calls `shouldReturn` ["new"]
+      readIORef h.baseline `shouldReturn` 0
 
   for_ [False, True] \viaImport ->
     it ("records actual alternate-front seating identity before export and " <> if viaImport then "re-import" else "sync") do
@@ -2110,10 +2165,14 @@ spec = describe "ArkhamDB campaign write-back" do
       Map.keys (gameInvestigators seated) `shouldBe` ["01002"]
       let attrs = maybe (error "Missing seated campaign") toAttrs $ modeCampaign seated.gameMode
           cards = maybe [] unDeck $ Map.lookup "01002" $ campaignDecks attrs
-          snapshot = campaignWriteBackSnapshot (campaignStore attrs) "01002" base cards [] [] Nothing Nothing
+          snapshot = campaignWriteBackSnapshot (campaignStore attrs) "01002" "01002" base cards [] [] Nothing Nothing
       Map.lookup (campaignDeckOverlayKey "01001") (campaignStore attrs) `shouldBe` Nothing
       Map.lookup (campaignDeckOverlayKey "01002") (campaignStore attrs) `shouldBe` Just (overlayAttachmentProvenance (Just UUID.nil) $ Just overlay)
       exportedOverlay snapshot `shouldBe` Just (overlayAttachmentProvenance (Just UUID.nil) $ Just overlay)
+      snapshot.investigator_code `shouldBe` "01002"
+      -- A base code with this same alternate front is the same investigator,
+      -- even though ArkhamDB cannot rewrite the immutable base code on save.
+      modifyIORef' h.remotes $ Map.adjust (\remote -> remote {deck = base}) "123"
       modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck snapshot}
       h.run False
       assertState h "succeeded"
@@ -2160,7 +2219,7 @@ spec = describe "ArkhamDB campaign write-back" do
         modifyIORef' h.linked \state -> state
           { Linking.storedDecks = Map.adjust (attachDeckOverlay (UUID.fromWords 0 0 0 1) replacement) Linking.deckId state.storedDecks }
         saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
-        let snapshot = campaignWriteBackSnapshot store "01001" (arkhamDeckList saved) campaignCards [] [] Nothing Nothing
+        let snapshot = campaignWriteBackSnapshot store "01001" "01001" (arkhamDeckList saved) campaignCards [] [] Nothing Nothing
         exportedOverlay snapshot `shouldBe` Just (overlayAttachmentProvenance (Just UUID.nil) $ if hadOverlay then Just seated else Nothing)
         modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck snapshot}
         h.run False
@@ -2181,7 +2240,7 @@ spec = describe "ArkhamDB campaign write-back" do
           card n = MkPlayerCard (unsafeMakeCardId $ UUID.fromWords 0 0 0 n) Nothing "01006" "01006" mempty Nothing Nothing Nothing Nothing Nothing
           -- A legacy campaign has no seating provenance. Even an inherited
           -- metadata claim on the current saved list is not trusted.
-          snapshot = campaignWriteBackSnapshot mempty "01001" (withExportedOverlay (Just overlay) currentDeck) [card 1, card 2] [] [] Nothing Nothing
+          snapshot = campaignWriteBackSnapshot mempty "01001" "01001" (withExportedOverlay (Just overlay) currentDeck) [card 1, card 2] [] [] Nothing Nothing
       exportedOverlay snapshot `shouldBe` Nothing
       modifyIORef' h.linked \state -> state
         { Linking.storedDecks = Map.adjust (attachDeckOverlay UUID.nil overlay) Linking.deckId state.storedDecks }
@@ -2340,7 +2399,7 @@ spec = describe "ArkhamDB campaign write-back" do
                 _ -> error "Expected campaign provenance"
               card n code = MkPlayerCard (unsafeMakeCardId $ UUID.fromWords 0 0 0 n) Nothing code code mempty Nothing Nothing Nothing Nothing Nothing
               cards = [card 1 "01006", card 2 "01100", card 3 "01007"]
-              snapshot = campaignWriteBackSnapshot store "01001" currentDeck cards [] [] Nothing Nothing
+              snapshot = campaignWriteBackSnapshot store "01001" "01001" currentDeck cards [] [] Nothing Nothing
           modifyIORef' h.job \job -> job
             {arkhamDBPushPayload = encodePushDeck snapshot}
           h.run False

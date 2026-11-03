@@ -472,10 +472,15 @@ unmarkedDeck deck = deck {Decklist.meta = case deck.meta >>= decodeStrict' . enc
     in if KM.null clean then Nothing else Just $ decodeUtf8 $ toStrict $ encode $ Object clean
   _ -> deck.meta}
 
+-- The captured code is the materialized seat, while ArkhamDB may represent
+-- that same investigator as a base code plus alternate_front metadata.
+samePushInvestigator :: ArkhamDBDecklist -> ArkhamDBRemoteDeck -> Bool
+samePushInvestigator desired remote = desired.investigator_code == remote.deck.investigator
+
 samePushedDeck :: ArkhamDBDecklist -> ArkhamDBRemoteDeck -> Bool
 samePushedDeck desired remote =
   desired.slots == remote.deck.slots && desired.sideSlots == remote.deck.sideSlots
-    && desired.taboo_id == remote.deck.taboo_id && desired.investigator_code == remote.deck.investigator_code
+    && desired.taboo_id == remote.deck.taboo_id && samePushInvestigator desired remote
     && (decodeStrict' . encodeUtf8 =<< desired.meta :: Maybe Value) == (decodeStrict' . encodeUtf8 =<< remote.deck.meta)
     && maybe True (\name -> Just name == remote.deck.decklist_name) desired.decklist_name
 
@@ -533,6 +538,9 @@ runWriteBackWithClock clock store writes client settings now retry userId deckId
           renew
           either throwError pure result
         load job remoteId = request job (\token -> client.loadDeck token remoteId)
+        requireInvestigator desired remote =
+          unless (samePushInvestigator desired remote) $
+            throwError $ ArkhamDBError "validationFailed" "Deck contains unsupported cards"
         conflict entity remote why = void $ checkpoint entity (entityVal entity)
           { arkhamDBPushStatus = "conflict"
           , arkhamDBPushError = Just why
@@ -605,6 +613,7 @@ runWriteBackWithClock clock store writes client settings now retry userId deckId
           let job = entityVal entity
           target <- maybe (throwError $ ArkhamDBError "storageFailure" "Missing push target") pure $ arkhamDBPushTargetId job
           remote <- load job target
+          requireInvestigator desired remote
           campaignTarget <- lift $ writes.campaignOwnsTarget (arkhamDBPushCampaignKey job) remote
           if (not (hasPushMarker (entityKey entity) remote) && not campaignTarget) || isJust remote.nextDeckId
             then conflict entity remote "remoteChanged"
@@ -623,6 +632,9 @@ runWriteBackWithClock clock store writes client settings now retry userId deckId
                     then finish next verified
                     else conflict next verified "remoteChanged"
         createVersion entity desired source xp = do
+          -- deck/upgrade and deck/save cannot change a lineage's investigator.
+          -- A mismatched seat must use an explicit independent save-as-new.
+          traverse_ (requireInvestigator desired) source
           next <- checkpoint entity (entityVal entity)
             { arkhamDBPushStage = "creating"
             , arkhamDBPushPayload = encodePreparedPushDeck desired
@@ -683,6 +695,7 @@ runWriteBackWithClock clock store writes client settings now retry userId deckId
               (source, lineage) <- if arkhamDBPushMode job == "overwrite"
                 then latestVersionWithLineage (entityVal ready) [original.remoteDeckId] original
                 else pure (original, [original.remoteDeckId])
+              requireInvestigator desired source
               sourceOwnedElsewhere <- ownedElsewhere (entityVal ready) lineage
               let otherCampaign = maybe False (/= arkhamDBPushCampaignKey job) $ arkhamDBDeckLinkCampaignKey link
               if otherCampaign || sourceOwnedElsewhere
