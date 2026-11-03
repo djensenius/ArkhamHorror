@@ -21,7 +21,7 @@ import Data.Map.Strict qualified as Map
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
 import Data.UUID qualified as UUID
 import Database.Persist qualified as P
-import Database.Persist.Sql (Single (..), rawSql, rawExecute, updateWhereCount)
+import Database.Persist.Sql (Single (..), SqlBackend, rawSql, rawExecute, updateWhereCount)
 import Import hiding (state)
 import Entity.Arkham.Step
 import Control.Monad.Logger (logWarnN)
@@ -29,8 +29,11 @@ import Control.Monad.Except (throwError)
 import UnliftIO.Exception (try)
 
 writeBackStore :: ArkhamDBWriteBackStore Handler
-writeBackStore = ArkhamDBWriteBackStore
-  { claimPush = \now retry uid deckId -> runDB do
+writeBackStore = writeBackStoreWith runDB
+
+writeBackStoreWith :: (forall a. ReaderT SqlBackend Handler a -> Handler a) -> ArkhamDBWriteBackStore Handler
+writeBackStoreWith database = ArkhamDBWriteBackStore
+  { claimPush = \now retry uid deckId -> database do
       -- A busy user's remote request must not attract pool-sized lock waiters.
       rawExecute "SET LOCAL lock_timeout = '5s'" []
       available <- rawSql "SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE SKIP LOCKED" [toPersistValue uid] :: DB [Single Int64]
@@ -53,7 +56,7 @@ writeBackStore = ArkhamDBWriteBackStore
                     pure $ Just $ Entity key claimed
                 _ -> pure Nothing
           _ -> pure Nothing
-  , requestPushRetry = \now uid deckId -> runDB do
+  , requestPushRetry = \now uid deckId -> database do
       rawExecute "SET LOCAL lock_timeout = '5s'" []
       available <- rawSql "SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE SKIP LOCKED" [toPersistValue uid] :: DB [Single Int64]
       unless (null available) do
@@ -69,14 +72,14 @@ writeBackStore = ArkhamDBWriteBackStore
                 safe <- if owned then admitPersistentCampaignPush key job else pure False
                 when safe $ P.update key [ArkhamDBPushStatus P.=. "pending"]
           _ -> pure ()
-  , checkpointPush = \previous updated -> runDB do
+  , checkpointPush = \previous updated -> database do
       active <- activePush previous
       if not active then pure False else do
         affected <- updateWhereCount (pushClaim previous) $ pushUpdates updated
         when (affected == 1 && arkhamDBPushStatus updated == "failed") $
           P.update (arkhamDBPushGeneration updated) [ArkhamDBAccountWriteBackFailures P.+=. 1]
         pure $ affected == 1
-  , finishPush = \previous remote -> runDB do
+  , finishPush = \previous remote -> database do
       active <- activePush previous
       available <- if active then checkPushTarget previous remote else pure False
       if not available then pure Nothing else do
@@ -124,7 +127,7 @@ writeBackStore = ArkhamDBWriteBackStore
             pruneCompletedPushes deckId
             pure $ Just result
           _ -> pure Nothing
-  , keepRemoteDeck = \previous remote -> runDB do
+  , keepRemoteDeck = \previous remote -> database do
       active <- activePush previous
       available <- if active then checkPushTarget previous remote else pure False
       if not available then pure False else do
@@ -148,7 +151,7 @@ writeBackStore = ArkhamDBWriteBackStore
           P.update associationId [ArkhamDBCampaignDeckLastPushedXp P.=. acknowledgedCampaignXp job (arkhamDBCampaignDeckLastPushedXp campaign)]
         pruneCompletedPushes deckId
         pure True
-  , resolvePush = \now uid deckId mode -> runDB do
+  , resolvePush = \now uid deckId mode -> database do
       lockArkhamDBUser uid
       mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
       pending <- oldestPush deckId
@@ -170,7 +173,7 @@ writeBackStore = ArkhamDBWriteBackStore
                 pruneCompletedPushes deckId
                 pure True
         _ -> pure False
-  , toggleWriteBack = \now uid deckId enabled -> runDB do
+  , toggleWriteBack = \now uid deckId enabled -> database do
       lockArkhamDBUser uid
       affected <- updateWhereCount [ArkhamDBDeckLinkDeckId P.==. deckId, ArkhamDBDeckLinkUserId P.==. uid]
         [ArkhamDBDeckLinkWriteBack P.=. enabled, ArkhamDBDeckLinkUpdatedAt P.=. now]
@@ -181,7 +184,7 @@ writeBackStore = ArkhamDBWriteBackStore
         for_ outstanding \(Entity key job) -> replace key $ disabledCampaignPush games job
       pruneCompletedPushes deckId
       pure $ affected == 1
-  , deckWriteBackStatus = \uid -> runDB do
+  , deckWriteBackStatus = \uid -> database do
       links <- selectList [ArkhamDBDeckLinkUserId P.==. uid] [Asc ArkhamDBDeckLinkDeckId]
       forM links \(Entity _ link) -> do
         let deckId = arkhamDBDeckLinkDeckId link
@@ -193,12 +196,12 @@ writeBackStore = ArkhamDBWriteBackStore
           Nothing -> pure Nothing
           Just (Entity _ job) -> fmap (arkhamDBCampaignDeckDeckId . entityVal) <$> getBy (UniqueArkhamDBCampaignDeck $ arkhamDBPushCampaignKey job)
         pure $ pushStatus deckId link recent resulting
-  , campaignOwnsTarget = \campaign remote -> runDB do
+  , campaignOwnsTarget = \campaign remote -> database do
       previous <- selectFirst
         [ArkhamDBPushCampaignKey P.==. campaign, ArkhamDBPushStatus P.==. "succeeded", ArkhamDBPushTargetId P.==. Just remote.remoteDeckId]
         [Desc ArkhamDBPushCreatedAt, Desc ArkhamDBPushId]
       pure $ maybe False (\(Entity key _) -> hasPushMarker key remote) previous
-  , campaignXpBaseline = \key -> runDB $ maybe 0 (arkhamDBCampaignDeckLastPushedXp . entityVal) <$> getBy (UniqueArkhamDBCampaignDeck key)
+  , campaignXpBaseline = \key -> database $ maybe 0 (arkhamDBCampaignDeckLastPushedXp . entityVal) <$> getBy (UniqueArkhamDBCampaignDeck key)
   }
 
 -- Do not load/decode a saved list just to rule out a missing or foreign deck
@@ -310,7 +313,12 @@ pushUpdates job =
 -- Snapshot the durable campaign decks, not the investigator's shuffled draw pile.
 -- The association is resolved once by owner + URL and survives later remote syncs.
 queueCampaignWriteBack :: ArkhamGameId -> Int -> UTCTime -> Text -> Game -> DB ()
-queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ gameMode game) \campaign -> do
+queueCampaignWriteBack = queueCampaignWriteBackWith $ pure ()
+
+-- A lookup barrier permits deterministic separate-connection race tests. The
+-- production entry point never pauses or substitutes persistence.
+queueCampaignWriteBackWith :: IO () -> ArkhamGameId -> Int -> UTCTime -> Text -> Game -> DB ()
+queueCampaignWriteBackWith afterLookup gameId step now boundary game = for_ (modeCampaign $ gameMode game) \campaign -> do
   history <- getBy404 $ UniqueStep gameId step
   players <- selectList [ArkhamPlayerArkhamGameId P.==. gameId] []
   let owner playerId = arkhamPlayerUserId . entityVal <$> find ((== playerId) . PlayerId . coerce . entityKey) players
@@ -319,44 +327,55 @@ queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ game
   for_ (Map.toList $ gameInvestigators game) \(iid, investigator) -> do
     let ia = toAttrs investigator
     for_ ((,,) <$> owner (investigatorPlayerId ia) <*> campaignWriteBackSeatIdentity game iid <*> campaignWriteBackKey gameId game iid) \(uid, (deckIid, stableIid), key) -> do
-      association <- getBy $ UniqueArkhamDBCampaignDeck key
-      saved <- case association of
-        Just (Entity _ value) -> P.get (arkhamDBCampaignDeckDeckId value) <&> fmap (Entity $ arkhamDBCampaignDeckDeckId value)
-        Nothing -> case investigatorDeckUrl ia of
-          Nothing -> pure Nothing
-          Just url -> do
-            links <- selectList [ArkhamDBDeckLinkUserId P.==. uid, ArkhamDBDeckLinkWriteBack P.==. True] []
-            selectFirst [ArkhamDeckUserId P.==. uid, ArkhamDeckUrl P.==. Just url, ArkhamDeckId P.<-. map (arkhamDBDeckLinkDeckId . entityVal) links] [Asc ArkhamDeckId]
-      for_ saved \(Entity deckId _) -> do
-        -- Fence deletion without waiting behind a concurrent DELETE. Re-read
-        -- under the key lock: the earlier URL/association lookup is only a hint.
-        decks <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? FOR KEY SHARE SKIP LOCKED" [toPersistValue deckId]
-        for_ (decks :: [Entity ArkhamDeck]) \(Entity _ deck) -> do
-          -- FOR SHARE (not KEY SHARE) conflicts with opt-out's flag UPDATE.
-          -- Skip a busy link rather than delaying the game transaction.
-          mappings <- rawSql "SELECT ?? FROM arkhamdb_deck_links WHERE deck_id = ? FOR SHARE SKIP LOCKED" [toPersistValue deckId]
-          let mapping = viaNonEmpty head (mappings :: [Entity ArkhamDBDeckLink])
-          -- Lock only the generation's key, not the user/refresh lock. An unlink
-          -- either wins first (skip obsolete work) or waits until this INSERT's
-          -- transaction commits; it cannot turn gameplay into a FK violation.
-          generations <- rawSql "SELECT ?? FROM arkhamdb_accounts WHERE user_id = ? FOR KEY SHARE SKIP LOCKED" [toPersistValue uid]
-          let generation = viaNonEmpty head (generations :: [Entity ArkhamDBAccount])
-          case (mapping, generation, Map.lookup deckIid $ campaignDecks attrs) of
-            (Just (Entity _ link), Just (Entity generationId _), Just (Deck cards)) | ownsCampaignDeck uid deck link -> do
-              -- Missing/busy generations, absent campaign decks and opted-out
-              -- links never pay for identity admission inside the game lock.
-              fenced <- hasAccountAccountingFence deckId
-              unless fenced do
-                (games, related) <- writeBackCampaignIdentities known deckId key
-                when (campaignAdmissionAllowed games related key) do
-                  when (isNothing association) $ insert_ $ ArkhamDBCampaignDeck key deckId uid 0
-                  let story = Map.findWithDefault [] deckIid $ campaignStoryCards attrs
-                      list = campaignWriteBackSnapshot (campaignStore attrs) deckIid stableIid (arkhamDeckList deck) cards story (case campaign of Campaign c -> invalidCards c) (investigatorSideDeck ia) (investigatorTaboo ia)
-                      event = boundaryEventKey gameId step stableIid (entityKey history)
-                  void $ insertUnique $ ArkhamDBPush deckId uid generationId event key (encodePushDeck list) (investigatorXp ia)
-                    "pending" "ready" Nothing Nothing (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link)
-                    Nothing Nothing Nothing "normal" now now boundary
-            _ -> pure ()
+      hint <- getBy $ UniqueArkhamDBCampaignDeck key
+      liftIO afterLookup
+      -- A campaign copy repoints this row and moves committed pending work.
+      -- Hold SHARE through enqueue, or re-read the already-repointed row.
+      -- A busy existing association is skipped, never treated as absent and
+      -- resolved again using the investigator's obsolete original URL.
+      associations <- case hint of
+        Nothing -> pure [Nothing]
+        Just (Entity associationId _) -> map Just <$> rawSql
+          "SELECT ?? FROM arkhamdb_campaign_decks WHERE id = ? FOR SHARE SKIP LOCKED"
+          [toPersistValue associationId]
+      for_ (associations :: [Maybe (Entity ArkhamDBCampaignDeck)]) \association -> do
+        saved <- case association of
+          Just (Entity _ value) -> P.get (arkhamDBCampaignDeckDeckId value) <&> fmap (Entity $ arkhamDBCampaignDeckDeckId value)
+          Nothing -> case investigatorDeckUrl ia of
+            Nothing -> pure Nothing
+            Just url -> do
+              links <- selectList [ArkhamDBDeckLinkUserId P.==. uid, ArkhamDBDeckLinkWriteBack P.==. True] []
+              selectFirst [ArkhamDeckUserId P.==. uid, ArkhamDeckUrl P.==. Just url, ArkhamDeckId P.<-. map (arkhamDBDeckLinkDeckId . entityVal) links] [Asc ArkhamDeckId]
+        for_ saved \(Entity deckId _) -> do
+          -- Fence deletion without waiting behind a concurrent DELETE. Re-read
+          -- under the key lock: the earlier URL/association lookup is only a hint.
+          decks <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? FOR KEY SHARE SKIP LOCKED" [toPersistValue deckId]
+          for_ (decks :: [Entity ArkhamDeck]) \(Entity _ deck) -> do
+            -- FOR SHARE (not KEY SHARE) conflicts with opt-out's flag UPDATE.
+            -- Skip a busy link rather than delaying the game transaction.
+            mappings <- rawSql "SELECT ?? FROM arkhamdb_deck_links WHERE deck_id = ? FOR SHARE SKIP LOCKED" [toPersistValue deckId]
+            let mapping = viaNonEmpty head (mappings :: [Entity ArkhamDBDeckLink])
+            -- Lock only the generation's key, not the user/refresh lock. An unlink
+            -- either wins first (skip obsolete work) or waits until this INSERT's
+            -- transaction commits; it cannot turn gameplay into a FK violation.
+            generations <- rawSql "SELECT ?? FROM arkhamdb_accounts WHERE user_id = ? FOR KEY SHARE SKIP LOCKED" [toPersistValue uid]
+            let generation = viaNonEmpty head (generations :: [Entity ArkhamDBAccount])
+            case (mapping, generation, Map.lookup deckIid $ campaignDecks attrs) of
+              (Just (Entity _ link), Just (Entity generationId _), Just (Deck cards)) | ownsCampaignDeck uid deck link -> do
+                -- Missing/busy generations, absent campaign decks and opted-out
+                -- links never pay for identity admission inside the game lock.
+                fenced <- hasAccountAccountingFence deckId
+                unless fenced do
+                  (games, related) <- writeBackCampaignIdentities known deckId key
+                  when (campaignAdmissionAllowed games related key) do
+                    when (isNothing association) $ insert_ $ ArkhamDBCampaignDeck key deckId uid 0
+                    let story = Map.findWithDefault [] deckIid $ campaignStoryCards attrs
+                        list = campaignWriteBackSnapshot (campaignStore attrs) deckIid stableIid (arkhamDeckList deck) cards story (case campaign of Campaign c -> invalidCards c) (investigatorSideDeck ia) (investigatorTaboo ia)
+                        event = boundaryEventKey gameId step stableIid (entityKey history)
+                    void $ insertUnique $ ArkhamDBPush deckId uid generationId event key (encodePushDeck list) (investigatorXp ia)
+                      "pending" "ready" Nothing Nothing (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link)
+                      Nothing Nothing Nothing "normal" now now boundary
+              _ -> pure ()
 
 -- Undo holds the game lock. Retire only outstanding intents, preserving any
 -- transmitted checkpoint for inspection. Share the request's user lock so
