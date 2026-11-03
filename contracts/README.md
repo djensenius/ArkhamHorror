@@ -1148,7 +1148,8 @@ not purge the global backlog, deadline-bounded progress amid 200,000 active
 authorizations, and skipping a locked expired row until its transaction ends.
 Deck sync coverage drops an unchanged 404 mapping and falls back to the public
 URL exactly once, refuses a delayed 404 or sync result once a write-back has
-retargeted or re-marked the mapping or the mapping row was replaced, and
+retargeted or re-marked the mapping or the mapping row was replaced, refuses a
+delayed 404 after a retarget that changed only the remote deck ID, and
 serializes public and linked sync before and after an overlay add, replace,
 removal or invalid change on the deck row they lock FOR NO KEY UPDATE (the
 delete check alone locks FOR UPDATE). Tests show an overlay save and an
@@ -1175,7 +1176,7 @@ sessions and observe real PostgreSQL lock waits rather than timing sleeps. The
 unit `spec` suite still uses the in-memory transactional store and
 HTTP-connection stubs; callback response tests dispatch the production callback
 body through Yesod/WAI. The logging probe covers both the production request
-logger's `Detailed True` and Apache modes, including encoded-separator and
+logger's `Detailed True` and Apache modes, including encoded-separator, empty-segment and
 case-variant ArkhamDB paths. The cleanup worker's retry, timeout and shutdown
 lifecycle is unit-tested. The refresh lock-deadline (`remoteUnavailable`) and
 refresh-failure paths are not yet covered against PostgreSQL; that is tracked
