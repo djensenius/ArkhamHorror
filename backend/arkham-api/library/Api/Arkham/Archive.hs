@@ -68,7 +68,7 @@ import Amazonka.S3 (
  )
 import Amazonka.S3.GetObject (getObjectResponse_body)
 import Amazonka.S3.PutObject (putObject_contentType)
-import Api.Arkham.Helpers (ApiResponse (..), publishFromApp)
+import Api.Arkham.Helpers (ApiResponse (GameUnarchiveFailed, GameUnarchived), publishFromApp)
 import Codec.Compression.GZip qualified as GZip
 import Conduit (sinkFile)
 import Control.Concurrent (forkIO, threadDelay)

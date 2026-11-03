@@ -737,10 +737,10 @@ saveAdoptedDeck extraUpdates userId deckId decklist = lockDeck deckId >>= \case
       Right adopted -> do
         lift $ validatePlayableDecklist $ arkhamDeckPlayList adopted
         P.update deckId
-          [ ArkhamDeckList P.=. arkhamDeckList adopted
-          , ArkhamDeckOverlay P.=. arkhamDeckOverlay adopted
-          , ArkhamDeckOverlayAttachmentId P.=. arkhamDeckOverlayAttachmentId adopted
-          ]
+          $ [ ArkhamDeckList P.=. arkhamDeckList adopted
+            , ArkhamDeckOverlay P.=. arkhamDeckOverlay adopted
+            , ArkhamDeckOverlayAttachmentId P.=. arkhamDeckOverlayAttachmentId adopted
+            ]
           <> extraUpdates
         Right . Entity deckId <$> getJust deckId
 

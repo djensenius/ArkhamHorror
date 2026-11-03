@@ -20,7 +20,7 @@ import Arkham.Random
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar
 import Control.Concurrent.MVar qualified as MVar
-import Control.Exception (throwIO)
+import Control.Exception (throwIO, try)
 import Control.Lens hiding (from)
 import Control.Monad.Catch (MonadCatch, MonadMask, MonadThrow)
 import Control.Monad.Random (MonadRandom (..), StdGen)

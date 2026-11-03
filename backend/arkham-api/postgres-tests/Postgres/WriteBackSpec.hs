@@ -82,7 +82,7 @@ fixture seed app connection label = do
         mainCards = [card "01006" 1, card "01100" 2, card "01007" 3]
         story = card "01007" 4
     P.update deckId [ArkhamDeckList P.=. base]
-    gameId <- P.insert $ ArkhamGame label initial 2 Solo now now
+    gameId <- P.insert $ ArkhamGame label initial 2 Solo now now False
     player <- P.insert $ ArkhamPlayer uid gameId "01001"
     let investigator = overAttrs (\attrs -> attrs
           { investigatorXp = 5, investigatorDeckUrl = arkhamDeckUrl saved
@@ -98,7 +98,7 @@ fixture seed app connection label = do
               }) $ lookupCampaign "01" Easy
           }
         campaign = UUID.toText (coerce gameId) <> "/01001"
-    P.replace gameId $ ArkhamGame label game 2 Solo now now
+    P.replace gameId $ ArkhamGame label game 2 Solo now now False
     for_ [1, 2] \step -> P.insert_ $ ArkhamStep gameId (Choice (Patch []) []) step (ActionDiff [])
     pure Fixture {..}
 
@@ -110,7 +110,7 @@ queue f connection step = transaction connection $
 -- ordinary campaign game; a key that cannot prove its game is fenced.
 seedCampaignGame :: SqlBackend -> Text -> UTCTime -> IO ArkhamGameId
 seedCampaignGame connection label now = transaction connection $
-  P.insert $ ArkhamGame label (Game.newCampaign "01" Nothing 1 1 Easy False) 2 Solo now now
+  P.insert $ ArkhamGame label (Game.newCampaign "01" Nothing 1 1 Easy False) 2 Solo now now False
 
 -- Undo passes the stored pre-undo game JSON, read in its own transaction.
 undoCampaignWriteBack :: ArkhamGameId -> Int -> ReaderT SqlBackend IO ()
@@ -432,7 +432,7 @@ spec harness app remote seed relinkImport = describe "Production write-back queu
   it "batch-loads legacy campaign identities by uuid, through These modes, and That-only games as malformed" $
     withConnection harness \connection -> do
       now <- getCurrentTime
-      let insertGame label game = transaction connection $ P.insert $ ArkhamGame label game 2 Solo now now
+      let insertGame label game = transaction connection $ P.insert $ ArkhamGame label game 2 Solo now now False
           legacyKey gid = UUID.toText (coerce gid) <> "/01001"
           missing :: ArkhamGameId
           missing = coerce missingGame

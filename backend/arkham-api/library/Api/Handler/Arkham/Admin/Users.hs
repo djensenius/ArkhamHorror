@@ -26,11 +26,8 @@ module Api.Handler.Arkham.Admin.Users (
   putApiV1AdminUserFeaturesR,
 ) where
 
-import Api.Handler.Arkham.Games.Shared (
-  GameDetails (..),
-  GameDetailsEntry (..),
-  tryGameDetailsEntry,
- )
+import Api.Arkham.Types.Game (GameDetails (..), GameDetailsEntry (..))
+import Api.Handler.Arkham.Games.Shared (tryGameDetailsEntry)
 import Arkham.Game.State (GameState (IsOver))
 import Auth.Feature qualified as Feature
 import Data.Map.Strict qualified as Map

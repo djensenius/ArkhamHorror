@@ -33,7 +33,7 @@ module Api.Handler.Arkham.Games.Summary (
 ) where
 
 import Api.Arkham.Types.MultiplayerVariant
-import Api.Handler.Arkham.Games.Shared (
+import Api.Arkham.Types.Game (
   CampaignDetails (..),
   GameDetails (..),
   GameDetailsEntry (..),

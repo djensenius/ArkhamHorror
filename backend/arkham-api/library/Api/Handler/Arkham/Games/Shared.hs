@@ -54,7 +54,6 @@ import Arkham.Epic.Types (
 import Arkham.Event.Types (eventController)
 import Arkham.Game
 import Arkham.Game.Diff
-import Arkham.Game.Outcome (GameOutcome)
 import Arkham.Game.State
 import Arkham.Game.Utils (gameOutcomeOf)
 import Arkham.GameEnv

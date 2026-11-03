@@ -13,7 +13,7 @@ import Data.UUID (fromWords64)
 import Data.UUID qualified as UUID
 import Entity.Answer (Answer (..), Reply (..), handleAnswerPure)
 import Entity.Arkham.Game qualified as ArkhamGame
-import Foundation (Room, Subscriber (..), broadcastToRoom, newRoom, subscribeToRoom)
+import Foundation (Room, Subscriber (..), anonymousSubscriber, broadcastToRoom, newRoom, subscribeToRoom)
 import TestImport
 
 validAnswer :: ByteString
@@ -22,6 +22,10 @@ validAnswer =
 
 testGameId :: ArkhamGame.ArkhamGameId
 testGameId = ArkhamGame.ArkhamGameKey $ fromWords64 0 21
+
+-- | Join a room the way any socket does; who is on the other end is irrelevant here.
+subscribeTestSocket :: Room -> IO (Int, Subscriber)
+subscribeTestSocket room = anonymousSubscriber >>= (`subscribeToRoom` room)
 
 drainSubscriber :: Subscriber -> IO [BSL.ByteString]
 drainSubscriber Subscriber {subQueue} = STM.atomically $ go []
@@ -34,9 +38,9 @@ drainSubscriber Subscriber {subQueue} = STM.atomically $ go []
 withRoomSubscribers :: (Room -> Subscriber -> Subscriber -> Subscriber -> IO ()) -> IO ()
 withRoomSubscribers body = do
   room <- newRoom "game-stream-test"
-  (_, sender) <- subscribeToRoom room
-  (_, otherParticipant) <- subscribeToRoom room
-  (_, spectator) <- subscribeToRoom room
+  (_, sender) <- subscribeTestSocket room
+  (_, otherParticipant) <- subscribeTestSocket room
+  (_, spectator) <- subscribeTestSocket room
   body room sender otherParticipant spectator
 
 questionAnswerFrame :: Int -> PlayerId -> Int -> ByteString
@@ -164,9 +168,9 @@ spec = do
 
       liftIO $ do
         room <- newRoom "game-stream-test-stale"
-        (_, sender) <- subscribeToRoom room
-        (_, otherParticipant) <- subscribeToRoom room
-        (_, spectator) <- subscribeToRoom room
+        (_, sender) <- subscribeTestSocket room
+        (_, otherParticipant) <- subscribeTestSocket room
+        (_, spectator) <- subscribeTestSocket room
         let update answer = do
               reply <- handleAnswerPure game pid answer
               case reply of
@@ -192,9 +196,9 @@ spec = do
 
       liftIO $ do
         room <- newRoom "game-stream-test-accepted"
-        (_, sender) <- subscribeToRoom room
-        (_, otherParticipant) <- subscribeToRoom room
-        (_, spectator) <- subscribeToRoom room
+        (_, sender) <- subscribeTestSocket room
+        (_, otherParticipant) <- subscribeTestSocket room
+        (_, spectator) <- subscribeTestSocket room
         let update answer = do
               reply <- handleAnswerPure game pid answer
               case reply of
