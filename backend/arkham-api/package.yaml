@@ -216,6 +216,33 @@ flags:
     default: false
 
 tests:
+  arkhamdb-postgres:
+    main: Main.hs
+    source-dirs: postgres-tests
+    ghc-options: -threaded -rtsopts -O0
+    dependencies:
+      - aeson
+      - aeson-diff
+      - arkham-api
+      - bugsnag
+      - containers
+      - directory
+      - fast-logger
+      - filepath
+      - hspec
+      - http-client
+      - http-types
+      - monad-logger
+      - persistent
+      - persistent-postgresql
+      - relude
+      - resource-pool
+      - text
+      - time
+      - unliftio
+      - uuid
+      - wai
+      - yesod-core
   spec:
     main: Spec.hs
     source-dirs: tests

@@ -45,9 +45,17 @@ jobs:
           ${{ runner.os }}-build-
           ${{ runner.os }}-
 
-    - name: Install pcre
+    - name: Install pcre and PostgreSQL server tools
       run: |
-        sudo apt-get install -y libpcre3 libpcre3-dev
+        sudo apt-get install -y libpcre3 libpcre3-dev postgresql
+    - name: Check disposable PostgreSQL launcher
+      working-directory: ${{ github.workspace }}
+      env:
+        ARKHAM_TEST_LOG_DIR: ${{ runner.temp }}/ahpg
+      run: |
+        ARKHAM_TEST_PG_BIN="$(pg_config --bindir)"
+        export ARKHAM_TEST_PG_BIN
+        python3 -B -m unittest discover -s backend/arkham-api/postgres-tests -p 'test_arkhamdb_postgres.py' -v
     - name: Install dependencies
       run: |
         stack build --system-ghc --test --no-run-tests --bench --no-run-benchmarks --only-dependencies
@@ -77,7 +85,13 @@ jobs:
         IDENTITY="${server_identity}" python3 -c \
           'import json, os; value=json.loads(os.environ["IDENTITY"]); assert value["attestation"] == "git-clean", value'
     - name: Run tests
-      run: stack test --system-ghc
+      env:
+        ARKHAM_TEST_LOG_DIR: ${{ runner.temp }}/ahpg
+      run: |
+        ARKHAM_TEST_PG_BIN="$(pg_config --bindir)"
+        export ARKHAM_TEST_PG_BIN
+        python3 -B arkham-api/postgres-tests/with-arkhamdb-postgres.py \
+          --log-dir "${ARKHAM_TEST_LOG_DIR}" --timeout 600 -- stack test --system-ghc
     - name: Run executable replay harness
       run: /bin/sh scripts/test-replay-harness.sh
       working-directory: ${{ github.workspace }}
