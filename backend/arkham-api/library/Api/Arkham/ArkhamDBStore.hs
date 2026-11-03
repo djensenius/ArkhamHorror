@@ -175,11 +175,18 @@ writeBackCampaignIdentities
   -> ReaderT SqlBackend m (Map ArkhamGameId CampaignGameIdentity, [Text])
 writeBackCampaignIdentities known deckId own = do
   let legacy = T.intercalate "/" $ take 2 $ T.splitOn "/" own
+      gameIdText = T.takeWhile (/= '/') own
+  -- Separate equality branches use the deck/campaign lookup indexes. The
+  -- legacy push branch also matches the existing per-game undo expression.
   rows <- rawSql
-    ("SELECT campaign_key FROM arkhamdb_campaign_decks WHERE deck_id = ? OR campaign_key = ? " <>
-     "UNION SELECT campaign_key FROM arkhamdb_deck_links WHERE (deck_id = ? OR campaign_key = ?) AND campaign_key IS NOT NULL " <>
-     "UNION SELECT campaign_key FROM arkhamdb_pushes WHERE (deck_id = ? OR campaign_key = ?) AND status NOT IN ('succeeded', 'cancelled')")
-    (concat $ replicate 3 [toPersistValue deckId, toPersistValue legacy]) :: ReaderT SqlBackend m [Single Text]
+    ("SELECT campaign_key FROM arkhamdb_campaign_decks WHERE deck_id = ? " <>
+     "UNION SELECT campaign_key FROM arkhamdb_campaign_decks WHERE campaign_key = ? " <>
+     "UNION SELECT campaign_key FROM arkhamdb_deck_links WHERE deck_id = ? AND campaign_key IS NOT NULL " <>
+     "UNION SELECT campaign_key FROM arkhamdb_deck_links WHERE campaign_key = ? " <>
+     "UNION SELECT campaign_key FROM arkhamdb_pushes WHERE deck_id = ? AND status NOT IN ('succeeded', 'cancelled') " <>
+     "UNION SELECT campaign_key FROM arkhamdb_pushes WHERE split_part(campaign_key, '/', 1) = ? AND campaign_key = ? AND status NOT IN ('succeeded', 'cancelled')")
+    [toPersistValue deckId, toPersistValue legacy, toPersistValue deckId, toPersistValue legacy,
+     toPersistValue deckId, toPersistValue gameIdText, toPersistValue legacy] :: ReaderT SqlBackend m [Single Text]
   let related = [key | Single key <- rows]
   games <- loadCampaignIdentities known $ own : related
   pure (games, related)

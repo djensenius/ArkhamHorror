@@ -45,7 +45,8 @@ writeBackStore = ArkhamDBWriteBackStore
               pending <- oldestPush deckId
               case pending of
                 Just (Entity key job) | pushCanRun now retry job && generation == arkhamDBPushGeneration job -> do
-                  safe <- admitPersistentCampaignPush key job
+                  owned <- ownsWriteBackDeck uid deckId
+                  safe <- if owned then admitPersistentCampaignPush key job else pure False
                   if not safe then pure Nothing else do
                     let claimed = job {arkhamDBPushStatus = "running", arkhamDBPushError = Nothing, arkhamDBPushUpdatedAt = now}
                     replace key claimed
@@ -57,13 +58,16 @@ writeBackStore = ArkhamDBWriteBackStore
       rawExecute "SET LOCAL lock_timeout = '5s'" []
       available <- rawSql "SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE SKIP LOCKED" [toPersistValue uid] :: DB [Single Int64]
       unless (null available) do
+        mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
         account <- getBy $ UniqueArkhamDBAccountUser uid
         pending <- oldestPush deckId
-        case (account, pending) of
-          (Just (Entity generation value), Just (Entity key job))
-            | arkhamDBPushUserId job == uid && arkhamDBPushGeneration job == generation
+        case (mapping, account, pending) of
+          (Just (Entity _ link), Just (Entity generation value), Just (Entity key job))
+            | arkhamDBDeckLinkUserId link == uid && arkhamDBDeckLinkWriteBack link
+            , arkhamDBPushUserId job == uid && arkhamDBPushGeneration job == generation
             , writeBackAdmissionReady now value, pushCanRun now True job -> do
-                safe <- admitPersistentCampaignPush key job
+                owned <- ownsWriteBackDeck uid deckId
+                safe <- if owned then admitPersistentCampaignPush key job else pure False
                 when safe $ P.update key [ArkhamDBPushStatus P.=. "pending"]
           _ -> pure ()
   , checkpointPush = \previous updated -> runDB do
@@ -155,7 +159,8 @@ writeBackStore = ArkhamDBWriteBackStore
           | not fenced, arkhamDBDeckLinkUserId link == uid && arkhamDBDeckLinkWriteBack link
           , canResolvePush mode job -> do
               active <- sameAccountGeneration uid $ arkhamDBPushGeneration job
-              safe <- if active then admitPersistentCampaignPush key job else pure False
+              owned <- if active then ownsWriteBackDeck uid deckId else pure False
+              safe <- if owned then admitPersistentCampaignPush key job else pure False
               if not safe then pure False else do
                 -- Never discard an uncertain creation intent and create again.
                 -- Explicit save-as-new starts a fresh, independently identified push.
@@ -196,6 +201,11 @@ writeBackStore = ArkhamDBWriteBackStore
       pure $ maybe False (\(Entity key _) -> hasPushMarker key remote) previous
   , campaignXpBaseline = \key -> runDB $ maybe 0 (arkhamDBCampaignDeckLastPushedXp . entityVal) <$> getBy (UniqueArkhamDBCampaignDeck key)
   }
+
+-- Do not load/decode a saved list just to rule out a missing or foreign deck
+-- before the more expensive campaign-identity admission.
+ownsWriteBackDeck :: UserId -> ArkhamDeckId -> DB Bool
+ownsWriteBackDeck uid deckId = (> 0) <$> P.count [ArkhamDeckId P.==. deckId, ArkhamDeckUserId P.==. uid]
 
 admitPersistentCampaignPush :: ArkhamDBPushId -> ArkhamDBPush -> DB Bool
 admitPersistentCampaignPush key job = do
@@ -328,18 +338,21 @@ queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ game
           -- transaction commits; it cannot turn gameplay into a FK violation.
           generations <- rawSql "SELECT ?? FROM arkhamdb_accounts WHERE user_id = ? FOR KEY SHARE SKIP LOCKED" [toPersistValue uid]
           let generation = viaNonEmpty head (generations :: [Entity ArkhamDBAccount])
-          fenced <- hasAccountAccountingFence deckId
-          (games, related) <- writeBackCampaignIdentities known deckId key
-          let safe = campaignAdmissionAllowed games related key
           case (mapping, generation, Map.lookup deckIid $ campaignDecks attrs) of
-            (Just (Entity _ link), Just (Entity generationId _), Just (Deck cards)) | safe && not fenced, ownsCampaignDeck uid deck link -> do
-              when (isNothing association) $ insert_ $ ArkhamDBCampaignDeck key deckId uid 0
-              let story = Map.findWithDefault [] deckIid $ campaignStoryCards attrs
-                  list = campaignWriteBackSnapshot (campaignStore attrs) deckIid (arkhamDeckList deck) cards story (case campaign of Campaign c -> invalidCards c) (investigatorSideDeck ia) (investigatorTaboo ia)
-                  event = boundaryEventKey gameId step stableIid (entityKey history)
-              void $ insertUnique $ ArkhamDBPush deckId uid generationId event key (encodePushDeck list) (investigatorXp ia)
-                "pending" "ready" Nothing Nothing (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link)
-                Nothing Nothing Nothing "normal" now now boundary
+            (Just (Entity _ link), Just (Entity generationId _), Just (Deck cards)) | ownsCampaignDeck uid deck link -> do
+              -- Missing/busy generations, absent campaign decks and opted-out
+              -- links never pay for identity admission inside the game lock.
+              fenced <- hasAccountAccountingFence deckId
+              unless fenced do
+                (games, related) <- writeBackCampaignIdentities known deckId key
+                when (campaignAdmissionAllowed games related key) do
+                  when (isNothing association) $ insert_ $ ArkhamDBCampaignDeck key deckId uid 0
+                  let story = Map.findWithDefault [] deckIid $ campaignStoryCards attrs
+                      list = campaignWriteBackSnapshot (campaignStore attrs) deckIid (arkhamDeckList deck) cards story (case campaign of Campaign c -> invalidCards c) (investigatorSideDeck ia) (investigatorTaboo ia)
+                      event = boundaryEventKey gameId step stableIid (entityKey history)
+                  void $ insertUnique $ ArkhamDBPush deckId uid generationId event key (encodePushDeck list) (investigatorXp ia)
+                    "pending" "ready" Nothing Nothing (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link)
+                    Nothing Nothing Nothing "normal" now now boundary
             _ -> pure ()
 
 -- Undo holds the game lock. Retire only outstanding intents, preserving any
