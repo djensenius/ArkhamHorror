@@ -3,7 +3,7 @@
 module Arkham.Api.ArkhamDBWriteBackSpec where
 
 import Api.Arkham.Helpers (GameApp (..), runGameApp)
-import Api.Arkham.Deck (toDeckErrors)
+import Api.Arkham.Deck (toDeckErrors, validateDeckUpgrade)
 import Api.Arkham.ArkhamDBWriteBack qualified as PersistentWriteBack
 import Arkham.Campaign (lookupCampaign)
 import Arkham.Campaign.Types (campaignStep, campaignDecks, campaignStoryCards, campaignStore, campaignMeta)
@@ -425,7 +425,7 @@ spec = describe "ArkhamDB campaign write-back" do
                 if adoption == "upgrade" then do
                   saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
                   remote <- Map.lookup target <$> readIORef h.remotes >>= maybe (fail "Missing remote") pure
-                  updates <- either (fail . show) pure $ savedDeckUpgradeUpdates Linking.now saved remote.deck
+                  updates <- either (fail . show) pure $ savedDeckUpgradeUpdates validateDeckUpgrade Linking.now saved remote.deck
                   let persisted = applyDeckUpdates updates saved
                   modifyIORef' h.linked \state -> state {Linking.storedDecks = Map.insert Linking.deckId persisted state.storedDecks}
                   pure persisted
@@ -1116,7 +1116,7 @@ spec = describe "ArkhamDB campaign write-back" do
       drain [UpgradeDecklist "01001" remote.deck]
       -- This exact builder is used by the UPGRADE endpoint before any game or
       -- saved-deck write, not a test-only overlay edit or intervening sync.
-      updates <- either (fail . show) pure $ savedDeckUpgradeUpdates Linking.now saved remote.deck
+      updates <- either (fail . show) pure $ savedDeckUpgradeUpdates validateDeckUpgrade Linking.now saved remote.deck
       let adopted = applyDeckUpdates updates saved
           expected = Map.fromList $ [("01006", 1), ("01007", 1)] <> [("01008", 1) | changedOverlay]
       Decklist.slots (arkhamDeckPlayList adopted) `shouldBe` expected
@@ -1138,7 +1138,7 @@ spec = describe "ArkhamDB campaign write-back" do
     saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
     let overlay = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
         incoming = currentDeck {Decklist.meta = Just "{\"ahn_push\":\"legacy\"}"}
-    case savedDeckUpgradeUpdates Linking.now saved {arkhamDeckOverlay = Just overlay} incoming of
+    case savedDeckUpgradeUpdates validateDeckUpgrade Linking.now saved {arkhamDeckOverlay = Just overlay} incoming of
       Left err -> arkhamDBErrorCode err `shouldBe` "validationFailed"
       Right _ -> expectationFailure "Ambiguous upgrade must not persist"
 
@@ -1151,7 +1151,7 @@ spec = describe "ArkhamDB campaign write-back" do
           incoming = Linking.remote.deck {Decklist.slots = Map.singleton "01016" 1}
       toDeckErrors (arkhamDeckPlayList locked) `shouldBe` []
       toDeckErrors incoming `shouldBe` []
-      case savedDeckUpgradeUpdates Linking.now locked incoming of
+      case savedDeckUpgradeUpdates validateDeckUpgrade Linking.now locked incoming of
         Left err -> do
           target `shouldBe` "unimplemented-card"
           arkhamDBErrorCode err `shouldBe` "validationFailed"
@@ -1168,7 +1168,7 @@ spec = describe "ArkhamDB campaign write-back" do
         locked = attachDeckOverlay UUID.nil overlay saved
     incoming <- either (fail . show) pure $ markedDeck pushKey $ withExportedAttachment (Just UUID.nil) (Just overlay)
       Linking.remote.deck {Decklist.slots = Map.singleton "01016" 1}
-    updates <- either (fail . show) pure $ savedDeckUpgradeUpdates Linking.now locked incoming
+    updates <- either (fail . show) pure $ savedDeckUpgradeUpdates validateDeckUpgrade Linking.now locked incoming
     let adopted = applyDeckUpdates updates locked
     arkhamDeckOverlay adopted `shouldBe` Nothing
     arkhamDeckOverlayAttachmentId adopted `shouldBe` Nothing

@@ -23,7 +23,7 @@ import Import qualified as P
 
 import Api.Arkham.ArkhamDBWriteBack (queueCampaignWriteBack, dispatchCampaignWriteBack)
 import Api.Arkham.ArkhamDBStore (campaignKeyIsSafe, writeBackCampaignsSafe)
-import Api.Arkham.Deck (DeckError (..), toDeckErrors)
+import Api.Arkham.Deck (DeckError (..), toDeckErrors, validateDeckUpgrade)
 import Api.Arkham.Helpers
 import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
 import Api.Handler.Arkham.Games.Shared (publishToRoom, requireGameAccess)
@@ -315,7 +315,7 @@ putApiV1ArkhamGameDecksR gameId = do
                           [toPersistValue deckId] :: DB [Entity ArkhamDeck]
                         pure $ case viaNonEmpty head locked of
                           Nothing -> Left $ ArkhamDBError "notFound" "Saved deck no longer exists"
-                          Just (Entity _ deck) -> (deckId,) <$> savedDeckUpgradeUpdates now deck decklist
+                          Just (Entity _ deck) -> (deckId,) <$> savedDeckUpgradeUpdates validateDeckUpgrade now deck decklist
                     _ -> pure $ Right []
 
                   case (prepared, upgraded) of

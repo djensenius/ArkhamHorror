@@ -3,10 +3,12 @@ module Api.Arkham.Deck (
   DeckError (..),
   toDeckErrors,
   toDeckErrorsWith,
+  validateDeckUpgrade,
 ) where
 
 import Api.Arkham.Types.Deck (CreateDeckRequest (..))
 import Arkham.Card.CardCode (CardCode)
+import Arkham.ArkhamDB.Service (ArkhamDBError (..))
 import Arkham.Card.CustomCard (lookupCustomCardDef)
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Arkham.PlayerCard (allPlayerCards)
@@ -37,6 +39,11 @@ instance ToJSON DeckError where
 
 toDeckErrors :: ArkhamDBDecklist -> [DeckError]
 toDeckErrors = toDeckErrorsWith (isJust . lookupCustomCardDef)
+
+validateDeckUpgrade :: ArkhamDBDecklist -> Either ArkhamDBError ()
+validateDeckUpgrade deck =
+  unless (null $ toDeckErrors deck) $
+    Left $ ArkhamDBError "validationFailed" "Deck contains unsupported cards"
 
 -- Background work must resolve custom cards from the queued owner's library,
 -- not another user's definitions left in the process-wide engine registry.

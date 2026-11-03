@@ -3,7 +3,6 @@
 
 module Arkham.ArkhamDB.WriteBack where
 
-import Api.Arkham.Deck (toDeckErrors)
 import Arkham.ArkhamDB
 import Arkham.ArkhamDB.Service
 import Arkham.Decklist (ArkhamDBDecklist)
@@ -172,6 +171,7 @@ boundaryWasUndone restoredStep event = case T.splitOn "/" event of
 -- Shared by single- and multi-step undo. Durable work outlives OAuth settings:
 -- local cancellation must still run while remote dispatch is unconfigured.
 -- Ordinary games need only an indexed existence check, never job reads.
+-- Keep the intentionally ignored flag to avoid changing both undo call chains.
 cancelCampaignWriteBackIfNeeded :: Monad m => Bool -> m Bool -> (Int -> m ()) -> Int -> m ()
 cancelCampaignWriteBackIfNeeded _configured participates cancel restoredStep = do
   outstanding <- participates
@@ -211,11 +211,12 @@ savedDeckUpgradeTargets getDeck findByUrl uid association oldUrl = case associat
     decks <- maybe (pure []) findByUrl oldUrl
     pure [key | Entity key deck <- decks, arkhamDeckUserId deck == uid]
 
-savedDeckUpgradeUpdates :: UTCTime -> ArkhamDeck -> ArkhamDBDecklist -> Either ArkhamDBError [Update ArkhamDeck]
-savedDeckUpgradeUpdates now deck incoming = do
+savedDeckUpgradeUpdates
+  :: (ArkhamDBDecklist -> Either ArkhamDBError ())
+  -> UTCTime -> ArkhamDeck -> ArkhamDBDecklist -> Either ArkhamDBError [Update ArkhamDeck]
+savedDeckUpgradeUpdates validate now deck incoming = do
   adopted <- adoptDecklist deck incoming
-  unless (null $ toDeckErrors $ arkhamDeckPlayList adopted) $
-    Left $ ArkhamDBError "validationFailed" "Deck contains unsupported cards"
+  validate $ arkhamDeckPlayList adopted
   pure $
     [ ArkhamDeckList =. arkhamDeckList adopted
     , ArkhamDeckOverlay =. arkhamDeckOverlay adopted
