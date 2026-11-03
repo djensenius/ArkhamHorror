@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0.0",
-  "catalogRevision": "1.28c9c83c2336c0051e214111db8268d4",
+  "catalogRevision": "1.78fb7c320fe41270991a9ebb9c8a249e",
   "endpoint": "/api/v1/arkham/campaign-catalog",
   "digestAlgorithm": "sha256",
   "campaigns": [
@@ -6175,6 +6175,19 @@
       "nameKey": "catalogNames.sideStories.72001.name"
     },
     {
+      "id": "73001",
+      "group": "chapter2",
+      "beta": true,
+      "standaloneDifficulties": [
+        "Easy",
+        "Standard",
+        "Hard",
+        "Expert"
+      ],
+      "xp": 2,
+      "nameKey": "catalogNames.sideStories.73001.name"
+    },
+    {
       "id": "90004",
       "requiredInvestigator": "Daisy Walker",
       "deckRequirements": [
@@ -6948,10 +6961,10 @@
     "generator": "arkham-campaign-catalog",
     "generatorVersion": "1.0.0",
     "schemaVersion": "1.0.0",
-    "dataSourcesSha256": "8befb2556f3277166b6c43d8d7918da7326141385419d1c354d486865016a5a1",
+    "dataSourcesSha256": "ab4732b62cc56addf1cfc482f023cbb60528d193a28d1a0e4fd21050be09ea76",
     "generatorSha256": "bc8fa53f3f692deb4b9a4eadc115a5c4d0b7b181106126f51ed82e3ccbeb6feb",
     "schemasSha256": "276ae5c0f46dcf6ac18f2257284153e11b2fb58d3098b410207fc653be65a80c",
-    "sha256": "28c9c83c2336c0051e214111db8268d4c55d8c97830d938605969ab27b36c8d5",
+    "sha256": "78fb7c320fe41270991a9ebb9c8a249e53270966e4a2f5056d0f7abf63c4c332",
     "sources": [
       {
         "path": "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToNightOfTheZealot.hs",
@@ -6963,7 +6976,7 @@
       },
       {
         "path": "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToTheDunwichLegacy.hs",
-        "sha256": "1dfb5004b4eb75eac409e6b8f572378df7dcbec3a7b058f774b789f8eccc0fb6"
+        "sha256": "777af91a3a243ae9839c8dfe2d7f66fe160d6fd75d9268501d2008ada6f43cca"
       },
       {
         "path": "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToTheForgottenAge.hs",
@@ -6999,7 +7012,7 @@
       },
       {
         "path": "frontend/src/arkham/data/side-stories.json",
-        "sha256": "4b2a278807051a23e1fd8ab8d55b0488af0c28ea307cd9e05520e8abdbc07a34"
+        "sha256": "d6a285567c68427c94bf0c6169841406d8b5f229922907ebe27c2146c529d4ba"
       },
       {
         "path": "frontend/src/arkham/data/theCircleUndone.json",
@@ -7042,6 +7055,6 @@
         "sha256": "544cd7eafbad5f4497e09b5fb3b2ed55e6e1ed27c4f20ccf891746beb2c3c702"
       }
     ],
-    "outputSha256": "f3b2280073360b943ceb8b37fcd9679eee34a350bbbc2ef557c51860c19aacf6"
+    "outputSha256": "2e21f5b5c13d699f7d22798d473fb667d4dcb8fc01d5adf9b3ed40e656a3d636"
   }
 }
