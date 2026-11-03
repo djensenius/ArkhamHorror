@@ -361,12 +361,19 @@ startCampaignWriteBack foundation =
     for_ rows \(Single uid, Single deckId, _) -> do
       now <- liftIO getCurrentTime
       void $ try @_ @SomeException do
-        cards <- userCustomCards uid
-        runWriteBack (persistentStore $ validateWriteBackDeck cards) writeBackStore
+        runWriteBack (persistentStore $ validateWriteBackDeckFor userCustomCards uid) writeBackStore
           (hoistArkhamDBClient liftIO transport) settings now False uid deckId
     case viaNonEmpty last rows of
       Just (_, _, Single key) | length rows == 32 -> sweep settings transport $ Just key
       _ -> pure ()
+
+-- Loading/deserializing a whole custom library is validation work, not sweep
+-- admission work. In particular, blocked/throttled claims never run this action.
+validateWriteBackDeckFor
+  :: Monad m => (UserId -> m (Map CardCode CustomCard)) -> UserId -> ArkhamDBDecklist -> ArkhamDBAction m ()
+validateWriteBackDeckFor loadCards uid deck = do
+  cards <- lift $ loadCards uid
+  validateWriteBackDeck cards deck
 
 validateWriteBackDeck :: Monad m => Map CardCode CustomCard -> ArkhamDBDecklist -> ArkhamDBAction m ()
 validateWriteBackDeck cards deck =

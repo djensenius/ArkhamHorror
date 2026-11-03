@@ -1211,6 +1211,30 @@ spec = describe "ArkhamDB campaign write-back" do
     writeBackAdmissionReady (addUTCTime 59 Linking.now) attempted {arkhamDBAccountWriteBackFailures = 1} `shouldBe` False
     map writeBackRetryDelay [0,1,2,3,4,10] `shouldBe` [30,60,120,240,300,300]
 
+  for_ ["throttled", "failed", "conflict", "running", "disabled"] \blocked ->
+    it ("does not load the owner custom library for repeated " <> toString blocked <> " claims") do
+      h <- newHarness
+      loads <- newIORef ([] :: [Text])
+      account <- h.store.findAccount Linking.userId >>= maybe (fail "Missing account") pure
+      let attempted = account {arkhamDBAccountLastWriteBackAttemptAt = Just Linking.now}
+          store = h.store {validateDeck = PersistentWriteBack.validateWriteBackDeckFor
+            (\uid -> do
+              uid `shouldBe` Linking.userId
+              modifyIORef' loads (<> ["load"])
+              pure mempty) Linking.userId}
+          writes = h.writes {claimPush = \now retry uid deckId ->
+            if blocked == "throttled" && not (writeBackAdmissionReady now attempted)
+              then pure Nothing else h.writes.claimPush now retry uid deckId}
+      modifyIORef' h.job \job -> job
+        { arkhamDBPushMode = "keep"
+        , arkhamDBPushStatus = if blocked `elem` ["failed", "conflict", "running"] then blocked else "pending"
+        }
+      when (blocked == "disabled") $
+        void $ h.writes.toggleWriteBack Linking.now Linking.userId Linking.deckId False
+      replicateM_ 100 $ runWriteBack store writes h.client Linking.settings Linking.now False Linking.userId Linking.deckId
+      readIORef loads `shouldReturn` []
+      readIORef h.calls `shouldReturn` []
+
   it "automatically recovers an expired running claim after a crash before processing" do
     h <- newHarness
     claimed <- h.writes.claimPush Linking.now False Linking.userId Linking.deckId
@@ -1587,16 +1611,22 @@ spec = describe "ArkhamDB campaign write-back" do
   for_ [False, True] \owned ->
     it ("validates keep-remote custom cards against the owner library, " <> if owned then "accepting owned cards" else "rejecting globally registered foreign cards") do
       h <- newHarness
+      loads <- newIORef ([] :: [Text])
       let code = if owned then "*write-back-owned-validation" else "*write-back-foreign-validation"
           cards = Map.singleton code $ CustomCard (missingCustomCardDef AssetType code) Nothing
           incoming = Linking.remote {deck = Linking.remote.deck
             {Decklist.slots = Map.fromList [("01006", 1), (code, 1)]}, dateUpdate = Just "edited"}
-          store = h.store {validateDeck = PersistentWriteBack.validateWriteBackDeck $ if owned then cards else mempty}
+          store = h.store {validateDeck = PersistentWriteBack.validateWriteBackDeckFor
+            (\uid -> do
+              uid `shouldBe` Linking.userId
+              modifyIORef' loads (<> ["load"])
+              pure $ if owned then cards else mempty) Linking.userId}
       unless owned $ registerCustomCards cards
       writeIORef h.remotes $ Map.singleton "123" incoming
       h.run False
       h.writes.resolvePush Linking.now Linking.userId Linking.deckId "keep" `shouldReturn` True
       runWriteBack store h.writes h.client Linking.settings Linking.now False Linking.userId Linking.deckId
+      readIORef loads `shouldReturn` ["load"]
       assertState h $ if owned then "cancelled" else "failed"
       assertNoPush h
       state <- readIORef h.linked
