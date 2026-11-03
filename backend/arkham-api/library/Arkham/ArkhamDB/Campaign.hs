@@ -83,26 +83,79 @@ campaignWriteBackKey gameId game iid = do
   pure $ UUID.toText (coerce gameId) <> "/" <> unCardCode (unInvestigatorId stable)
     <> if T.null namespace then "" else "/" <> namespace
 
--- Persisted dispatch checks mode, never attributes a legacy key to the CURRENT
--- part. A part-qualified job remains valid when play switches to the other part.
--- Missing/malformed game metadata also fails closed. The legacy lookup includes
--- associations, links and outstanding pushes, not the live investigator URL.
-campaignKeyIsSafeWith
+data CampaignKeyIdentity
+  = LegacyCampaignKey ArkhamGameId
+  | PartCampaignKey ArkhamGameId Dream.CampaignPart
+  | InvalidCampaignKey
+  deriving stock (Eq, Show)
+
+data CampaignGameIdentity
+  = MissingCampaignGame
+  | OrdinaryCampaignGame
+  | FullDreamEatersGame Dream.CampaignPart
+  | MalformedCampaignGame
+  deriving stock (Eq, Show)
+
+-- New keys prove their part without consulting the current game/roster.
+classifyCampaignKey :: Text -> CampaignKeyIdentity
+classifyCampaignKey key = case T.splitOn "/" key of
+  game : iid : suffix | not (T.null iid), Just uuid <- UUID.fromText game ->
+    case suffix of
+      [] -> LegacyCampaignKey $ coerce uuid
+      ["dreamQuest"] -> PartCampaignKey (coerce uuid) Dream.TheDreamQuest
+      ["webOfDreams"] -> PartCampaignKey (coerce uuid) Dream.TheWebOfDreams
+      _ -> InvalidCampaignKey
+  _ -> InvalidCampaignKey
+
+campaignGameIdentity :: CampaignId -> Value -> CampaignGameIdentity
+campaignGameIdentity cid metadata = case campaignWriteBackNamespace cid metadata of
+  Just "" -> OrdinaryCampaignGame
+  Just "dreamQuest" -> FullDreamEatersGame Dream.TheDreamQuest
+  Just "webOfDreams" -> FullDreamEatersGame Dream.TheWebOfDreams
+  _ -> MalformedCampaignGame
+
+-- A present row with invalid metadata is NOT a deleted game.
+campaignGameIdentityFromJSON :: Value -> CampaignGameIdentity
+campaignGameIdentityFromJSON value = fromMaybe MalformedCampaignGame do
+  (cid, metadata) <- parseMaybe (withObject "Campaign identity" \o -> (,) <$> o .: "id" <*> o .: "meta") value
+  pure $ campaignGameIdentity cid metadata
+
+legacyCampaignGameIds :: [Text] -> [ArkhamGameId]
+legacyCampaignGameIds keys = ordNub [gid | LegacyCampaignKey gid <- map classifyCampaignKey keys]
+
+-- Exactly one batch for deduplicated legacy candidates; new/invalid formats
+-- and the already-captured game's identity never require another game read.
+loadCampaignIdentitiesWith
   :: Monad m
-  => (ArkhamGameId -> m (Maybe Text))
-  -> (Text -> m Bool)
-  -> Text
-  -> m Bool
-campaignKeyIsSafeWith loadNamespace hasLegacy key = case T.splitOn "/" key of
-  game : iid : suffix | not (T.null iid), Just uuid <- UUID.fromText game -> do
-    namespace <- loadNamespace $ coerce uuid
-    case namespace of
-      Just "" -> pure $ null suffix
-      Just part | part `elem` ["dreamQuest", "webOfDreams"]
-        , suffix `elem` [["dreamQuest"], ["webOfDreams"]] ->
-          not <$> hasLegacy (game <> "/" <> iid)
-      _ -> pure False
-  _ -> pure False
+  => ([ArkhamGameId] -> m (Map ArkhamGameId CampaignGameIdentity))
+  -> Map ArkhamGameId CampaignGameIdentity
+  -> [Text]
+  -> m (Map ArkhamGameId CampaignGameIdentity)
+loadCampaignIdentitiesWith loadGames known keys = do
+  let needed = filter (`Map.notMember` known) $ legacyCampaignGameIds keys
+  if null needed then pure known else Map.union known <$> loadGames needed
+
+-- A deleted game's leftover association/link is inert. Only a legacy key
+-- belonging to an EXISTING full (or malformed) game can taint another intent.
+campaignKeyAmbiguous :: Map ArkhamGameId CampaignGameIdentity -> Text -> Bool
+campaignKeyAmbiguous games key = case classifyCampaignKey key of
+  LegacyCampaignKey gid -> case Map.findWithDefault MissingCampaignGame gid games of
+    FullDreamEatersGame _ -> True
+    MalformedCampaignGame -> True
+    _ -> False
+  _ -> False
+
+campaignJobKeySafe :: Map ArkhamGameId CampaignGameIdentity -> Text -> Bool
+campaignJobKeySafe games key = case classifyCampaignKey key of
+  PartCampaignKey {} -> True
+  LegacyCampaignKey gid -> Map.lookup gid games == Just OrdinaryCampaignGame
+  InvalidCampaignKey -> False
+
+-- Missing OWN legacy games cannot prove a part. Fence that job, not other
+-- campaigns using the deck; unlike missing history, it would itself dispatch.
+campaignAdmissionAllowed :: Map ArkhamGameId CampaignGameIdentity -> [Text] -> Text -> Bool
+campaignAdmissionAllowed games related own =
+  campaignJobKeySafe games own && not (any (campaignKeyAmbiguous games) related)
 
 isWriteBackBoundary :: Message -> Bool
 isWriteBackBoundary = \case

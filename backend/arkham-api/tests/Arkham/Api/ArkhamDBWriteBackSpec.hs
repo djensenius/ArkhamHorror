@@ -890,14 +890,14 @@ spec = describe "ArkhamDB campaign write-back" do
     it ("preserves partial Dream-Eaters keys and refuses legacy full keys in " <> show part) do
       campaignWriteBackKey identityGameId (dreamIdentityGame (Dream.PartialMode part) Nothing) "01001"
         `shouldBe` Just legacyIdentityKey
-      let full = campaignWriteBackNamespace (CampaignId "06") $ toJSON $ Dream.Metadata Dream.FullMode (Just part) Nothing mempty mempty
-          safe = campaignKeyIsSafeWith (const $ pure full) (const $ pure False)
-      safe legacyIdentityKey `shouldReturn` False
-      safe (legacyIdentityKey <> "/dreamQuest") `shouldReturn` True
-      safe (legacyIdentityKey <> "/webOfDreams") `shouldReturn` True
-      safe (legacyIdentityKey <> "/unknown") `shouldReturn` False
-      campaignKeyIsSafeWith (const $ pure $ Just "") (const $ fail "No legacy probe for ordinary campaigns")
-        legacyIdentityKey `shouldReturn` True
+      let full = campaignGameIdentity (CampaignId "06") $ toJSON $ Dream.Metadata Dream.FullMode (Just part) Nothing mempty mempty
+          games = Map.singleton identityGameId full
+      full `shouldBe` FullDreamEatersGame part
+      campaignJobKeySafe games legacyIdentityKey `shouldBe` False
+      campaignJobKeySafe games (legacyIdentityKey <> "/dreamQuest") `shouldBe` True
+      campaignJobKeySafe games (legacyIdentityKey <> "/webOfDreams") `shouldBe` True
+      campaignJobKeySafe games (legacyIdentityKey <> "/unknown") `shouldBe` False
+      campaignJobKeySafe (Map.singleton identityGameId OrdinaryCampaignGame) legacyIdentityKey `shouldBe` True
 
   it "keeps the game-first undo index, numeric boundary step and replacement ancestry for both parts" do
     h <- newHarness
@@ -921,50 +921,132 @@ spec = describe "ArkhamDB campaign write-back" do
           scope = campaignWriteBackNamespace (CampaignId "06") metadata
       scope `shouldBe` Nothing
       campaignWriteBackKey identityGameId malformed "01001" `shouldBe` Nothing
-      for_ [legacyIdentityKey, legacyIdentityKey <> "/dreamQuest"] \key ->
-        campaignKeyIsSafeWith (const $ pure scope) (const $ pure False) key `shouldReturn` False
+      let games = Map.singleton identityGameId $ campaignGameIdentity (CampaignId "06") metadata
+      Map.lookup identityGameId games `shouldBe` Just MalformedCampaignGame
+      campaignJobKeySafe games legacyIdentityKey `shouldBe` False
+      campaignKeyAmbiguous games legacyIdentityKey `shouldBe` True
+      -- A previously captured part-qualified identity does not depend on the
+      -- current roster/metadata. Malformed snapshots cannot create a new key.
+      campaignJobKeySafe games (legacyIdentityKey <> "/dreamQuest") `shouldBe` True
 
   for_ ["ready", "creating", "saving"] \stage ->
-    it ("fences already-queued ambiguous legacy " <> toString stage <> " work before dispatch without discarding accounting") do
+    it ("rejects ambiguous legacy " <> toString stage <> " work in the production admission decision without discarding checkpoints") do
       h <- newHarness
-      writeIORef h.baseline 4
       modifyIORef' h.job \job -> job
         { arkhamDBPushCampaignKey = legacyIdentityKey, arkhamDBPushStage = stage
         , arkhamDBPushSourceId = if stage == "ready" then Nothing else Just "123"
         , arkhamDBPushTargetId = if stage == "saving" then Just "124" else Nothing
         }
       original <- readIORef h.job
-      before <- readIORef h.linked
-      let safeKey = campaignKeyIsSafeWith (const $ pure $ Just "webOfDreams") (const $ pure True)
-          safeDeck _ keys = and <$> traverse safeKey keys
-          writes = h.writes {claimPush = \time retry uid deckId -> do
-            job <- readIORef h.job
-            safe <- admitCampaignPush safeDeck (writeIORef h.job) job
-            if safe then h.writes.claimPush time retry uid deckId else pure Nothing}
-      replicateM_ 2 $ runWriteBack h.store writes h.client Linking.settings Linking.now True Linking.userId Linking.deckId
-      retained <- readIORef h.job
+      let games = Map.singleton identityGameId $ FullDreamEatersGame Dream.TheWebOfDreams
+      retained <- case admitCampaignPush games [] original of
+        Left fenced -> pure fenced
+        Right () -> expectationFailure "Legacy full-DE job was admitted" >> fail "admitted"
       arkhamDBPushStatus retained `shouldBe` "failed"
       arkhamDBPushError retained `shouldBe` Just "validationFailed"
       let persisted value = map toPersistValue $ toPersistFields value
       persisted retained {arkhamDBPushStatus = arkhamDBPushStatus original, arkhamDBPushError = arkhamDBPushError original}
         `shouldBe` persisted original
-      let undone = undoneAmbiguousCampaignPush retained
+      let undone = undoneCampaignPush games retained
       arkhamDBPushStatus undone `shouldBe` "conflict"
       arkhamDBPushError undone `shouldBe` Just "boundaryUndone"
       persisted undone {arkhamDBPushStatus = arkhamDBPushStatus original, arkhamDBPushError = arkhamDBPushError original}
         `shouldBe` persisted original
       persisted (ambiguousCampaignPush undone) `shouldBe` persisted undone
+      persisted (disabledCampaignPush games retained) `shouldBe` persisted retained
       pushCanRun Linking.now True undone `shouldBe` False
       for_ ["keep", "overwrite", "new"] \mode -> canResolvePush mode undone `shouldBe` False
-      readIORef h.baseline `shouldReturn` 4
-      after <- readIORef h.linked
-      fmap persisted after.storedDecks `shouldBe` fmap persisted before.storedDecks
-      fmap persisted after.storedLinks `shouldBe` fmap persisted before.storedLinks
-      readIORef h.calls `shouldReturn` []
       -- Even a new part-aware intent cannot bypass a legacy association/link/
       -- pending-job fence; the legacy row is not reused for either team.
       for_ ["/dreamQuest", "/webOfDreams"] \part ->
-        safeKey (legacyIdentityKey <> part) `shouldReturn` False
+        campaignAdmissionAllowed games [legacyIdentityKey] (legacyIdentityKey <> part) `shouldBe` False
+
+  it "classifies key formats without a game lookup" do
+    classifyCampaignKey legacyIdentityKey `shouldBe` LegacyCampaignKey identityGameId
+    classifyCampaignKey (legacyIdentityKey <> "/dreamQuest") `shouldBe` PartCampaignKey identityGameId Dream.TheDreamQuest
+    classifyCampaignKey (legacyIdentityKey <> "/webOfDreams") `shouldBe` PartCampaignKey identityGameId Dream.TheWebOfDreams
+    for_ ["not-a-game/01001", UUID.toText UUID.nil <> "/", legacyIdentityKey <> "/unknown"] \key ->
+      classifyCampaignKey key `shouldBe` InvalidCampaignKey
+
+  for_ [MissingCampaignGame, OrdinaryCampaignGame, FullDreamEatersGame Dream.TheDreamQuest,
+        FullDreamEatersGame Dream.TheWebOfDreams, MalformedCampaignGame] \identity ->
+    it ("distinguishes legacy own-job safety from inert history: " <> show identity) do
+      let games = Map.singleton identityGameId identity
+          ambiguous = identity `notElem` [MissingCampaignGame, OrdinaryCampaignGame]
+      campaignKeyAmbiguous games legacyIdentityKey `shouldBe` ambiguous
+      campaignJobKeySafe games legacyIdentityKey `shouldBe` (identity == OrdinaryCampaignGame)
+      campaignAdmissionAllowed games [legacyIdentityKey] (legacyIdentityKey <> "/dreamQuest")
+        `shouldBe` not ambiguous
+
+  it "decodes the production identity projection without confusing malformed rows with deletion" do
+    for_ [Dream.FullMode, Dream.PartialMode Dream.TheDreamQuest] \mode -> do
+      let metadata = toJSON $ Dream.Metadata mode (Just Dream.TheDreamQuest) Nothing mempty mempty
+          encoded = object ["id" .= CampaignId "06", "meta" .= metadata]
+      campaignGameIdentityFromJSON encoded `shouldBe` if mode == Dream.FullMode
+        then FullDreamEatersGame Dream.TheDreamQuest else OrdinaryCampaignGame
+    campaignGameIdentityFromJSON (object ["id" .= CampaignId "01", "meta" .= Null])
+      `shouldBe` OrdinaryCampaignGame
+    campaignGameIdentityFromJSON (object ["id" .= CampaignId "06", "meta" .= Null])
+      `shouldBe` MalformedCampaignGame
+    campaignGameIdentityFromJSON Null `shouldBe` MalformedCampaignGame
+
+  it "batches only deduplicated unknown legacy game ids once per admission decision" do
+    calls <- newIORef ([] :: [[ArkhamGameId]])
+    let other = ArkhamGameKey $ UUID.fromWords 0 0 0 987
+        otherKey = UUID.toText (coerce other) <> "/01002"
+        load ids = modifyIORef' calls (<> [ids]) >> pure mempty
+        keys = [legacyIdentityKey, UUID.toText UUID.nil <> "/01002", otherKey, otherKey,
+          legacyIdentityKey <> "/dreamQuest", "invalid"]
+    games <- loadCampaignIdentitiesWith load mempty keys
+    readIORef calls `shouldReturn` [[identityGameId, other]]
+    campaignKeyAmbiguous games legacyIdentityKey `shouldBe` False
+    campaignJobKeySafe games legacyIdentityKey `shouldBe` False
+    writeIORef calls []
+    _ <- loadCampaignIdentitiesWith load (Map.singleton identityGameId OrdinaryCampaignGame)
+      [legacyIdentityKey, legacyIdentityKey <> "/webOfDreams", "invalid"]
+    readIORef calls `shouldReturn` []
+    _ <- loadCampaignIdentitiesWith load mempty [legacyIdentityKey <> "/dreamQuest", "invalid"]
+    readIORef calls `shouldReturn` []
+
+  it "keeps deleted-game associations inert for enqueue, claim, retry, resolve, saved upgrades and undo" do
+    h <- newHarness
+    original <- readIORef h.job
+    saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
+    let currentId = ArkhamGameKey $ UUID.fromWords 0 0 0 988
+        currentKey = UUID.toText (coerce currentId) <> "/01001"
+        games = Map.singleton currentId OrdinaryCampaignGame -- old game was deleted
+        related = [legacyIdentityKey]
+        job = original {arkhamDBPushCampaignKey = currentKey}
+        association = ArkhamDBCampaignDeck currentKey Linking.deckId Linking.userId 7
+    -- These are the production enqueue and claim/retry/resolve decisions,
+    -- not a replacement claimPush implementation in a test store.
+    campaignAdmissionAllowed games related currentKey `shouldBe` True
+    for_ ["pending", "failed", "conflict"] \status -> do
+      let pending = job {arkhamDBPushStatus = status}
+      admitCampaignPush games related pending `shouldSatisfy` isRight
+      if status == "conflict" then canResolvePush "keep" pending `shouldBe` True
+        else pushCanRun Linking.now True pending `shouldBe` True
+    for_ ["keep", "overwrite", "new"] \mode ->
+      canResolvePush mode job {arkhamDBPushStatus = "failed"} `shouldBe` True
+    savedDeckUpgradeTargets (const $ pure $ Just saved) (const $ fail "Wrong URL fallback")
+      Linking.userId (Just association) (Just "unchanged-live-url") `shouldReturn` [Linking.deckId]
+    arkhamDBCampaignDeckLastPushedXp association `shouldBe` 7
+    arkhamDBPushStatus (undoneCampaignPush games job) `shouldBe` "cancelled"
+    arkhamDBPushStatus (disabledCampaignPush games job) `shouldBe` "cancelled"
+    -- The orphan's own legacy job is unprovable, but is not a deck-wide fence.
+    admitCampaignPush games [] job {arkhamDBPushCampaignKey = legacyIdentityKey} `shouldSatisfy` isLeft
+
+  it "does not gate ordinary saved upgrades on even an existing unrelated full-DE write-back fence" do
+    h <- newHarness
+    saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
+    let currentId = ArkhamGameKey $ UUID.fromWords 0 0 0 989
+        currentKey = UUID.toText (coerce currentId) <> "/01001"
+        games = Map.fromList [(currentId, OrdinaryCampaignGame), (identityGameId, FullDreamEatersGame Dream.TheDreamQuest)]
+        association = ArkhamDBCampaignDeck currentKey Linking.deckId Linking.userId 3
+    campaignAdmissionAllowed games [legacyIdentityKey] currentKey `shouldBe` False
+    savedDeckUpgradeTargets (const $ pure $ Just saved) (const $ fail "Wrong URL fallback")
+      Linking.userId (Just association) Nothing `shouldReturn` [Linking.deckId]
+    savedDeckUpgradeUpdates validateDeckUpgrade Linking.now saved currentDeck `shouldSatisfy` isRight
 
   it "refuses unknown or colliding transformed write-back identities without guessing a fresh lineage" do
     campaignWriteBackIdentity mempty ["11068b"] "11068b" True `shouldBe` Nothing

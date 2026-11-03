@@ -4,6 +4,7 @@
 module Arkham.ArkhamDB.WriteBack where
 
 import Arkham.ArkhamDB
+import Arkham.ArkhamDB.Campaign (CampaignGameIdentity, campaignAdmissionAllowed, campaignJobKeySafe)
 import Arkham.ArkhamDB.Service
 import Arkham.Decklist (ArkhamDBDecklist)
 import Arkham.Decklist qualified as Decklist
@@ -252,22 +253,18 @@ accountingFencedPush :: ArkhamDBPush -> Bool
 accountingFencedPush job = arkhamDBPushError job `elem` [Just "boundaryUndone", Just "accountChanged"]
 
 -- Identity cannot be repaired by retry/keep/overwrite/save-as-new. Keep the
--- complete intent for explicit repair; validationFailed is an existing typed
--- failure, not a new public conflict reason. Preserve stronger accounting fences.
+-- complete intent for explicit repair. This is identity fencing reusing the
+-- existing validationFailed reason, not a new public reason. Preserve stronger
+-- accounting fences.
 ambiguousCampaignPush :: ArkhamDBPush -> ArkhamDBPush
 ambiguousCampaignPush job | accountingFencedPush job = job
 ambiguousCampaignPush job = job {arkhamDBPushStatus = "failed", arkhamDBPushError = Just "validationFailed"}
 
 admitCampaignPush
-  :: Monad m
-  => (ArkhamDeckId -> [Text] -> m Bool)
-  -> (ArkhamDBPush -> m ())
-  -> ArkhamDBPush
-  -> m Bool
-admitCampaignPush isSafe save job = do
-  safe <- isSafe (arkhamDBPushDeckId job) [arkhamDBPushCampaignKey job]
-  unless safe $ save $ ambiguousCampaignPush job
-  pure safe
+  :: Map ArkhamGameId CampaignGameIdentity -> [Text] -> ArkhamDBPush -> Either ArkhamDBPush ()
+admitCampaignPush games related job
+  | campaignAdmissionAllowed games related (arkhamDBPushCampaignKey job) = Right ()
+  | otherwise = Left $ ambiguousCampaignPush job
 
 -- Disabling fences in-flight requests, but an already transmitted creation
 -- remains the oldest outstanding job until explicitly reconciled on re-enable.
@@ -277,6 +274,11 @@ disabledPush job = job
   { arkhamDBPushStatus = if hasCreationIntent job then "failed" else "cancelled"
   , arkhamDBPushError = if hasCreationIntent job then Just "writeBackDisabled" else Nothing
   }
+
+disabledCampaignPush :: Map ArkhamGameId CampaignGameIdentity -> ArkhamDBPush -> ArkhamDBPush
+disabledCampaignPush games job
+  | campaignJobKeySafe games (arkhamDBPushCampaignKey job) = disabledPush job
+  | otherwise = ambiguousCampaignPush job
 
 -- An upgrade may already have credited XP even when its reply/save was lost.
 -- Keep this non-runnable oldest intent durably, rather than allowing a fresh
@@ -298,6 +300,11 @@ undoneAmbiguousCampaignPush job =
   in if arkhamDBPushStatus retired == "cancelled"
     then retired {arkhamDBPushStatus = "conflict", arkhamDBPushError = Just "boundaryUndone"}
     else retired
+
+undoneCampaignPush :: Map ArkhamGameId CampaignGameIdentity -> ArkhamDBPush -> ArkhamDBPush
+undoneCampaignPush games job
+  | campaignJobKeySafe games (arkhamDBPushCampaignKey job) = undonePush job
+  | otherwise = undoneAmbiguousCampaignPush job
 
 -- Called under the same user lock as imports and completion. Return a durable
 -- conflict instead of attempting a UNIQUE(user_id, remote_deck_id) violation.

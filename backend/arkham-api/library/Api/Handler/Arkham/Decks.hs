@@ -22,7 +22,6 @@ import Import hiding (delete, on, update, (=.), (==.))
 import Import qualified as P
 
 import Api.Arkham.ArkhamDBWriteBack (queueCampaignWriteBack, dispatchCampaignWriteBack)
-import Api.Arkham.ArkhamDBStore (campaignKeyIsSafe, writeBackCampaignsSafe)
 import Api.Arkham.Deck (DeckError (..), toDeckErrors, validateDeckUpgrade)
 import Api.Arkham.Helpers
 import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
@@ -299,15 +298,13 @@ putApiV1ArkhamGameDecksR gameId = do
                     Just decklist
                       | sameInvestigator investigatorId decklist
                       , Just campaignKey <- campaignWriteBackKey gameId arkhamGameCurrentData investigatorId -> do
-                      safe <- if isNothing (modeCampaign arkhamGameCurrentData.gameMode)
-                        then pure True else campaignKeyIsSafe campaignKey
                       association <- fmap entityVal <$> getBy (UniqueArkhamDBCampaignDeck campaignKey)
-                      candidates <- if not safe then pure [] else savedDeckUpgradeTargets Persist.get
+                      -- Write-back history must never suppress ordinary saved
+                      -- upgrades. The part-aware key cannot select a legacy
+                      -- full-DE association; optional enqueue has its own fence.
+                      targets <- savedDeckUpgradeTargets Persist.get
                         (\url -> P.selectList [ArkhamDeckUserId P.==. userId, ArkhamDeckUrl P.==. Just url] [])
                         userId association (attr investigatorDeckUrl investigatorEntity)
-                      -- Refusing optional persistence must not block gameplay
-                      -- or silently attribute legacy full-campaign accounting.
-                      targets <- filterM (\deckId -> writeBackCampaignsSafe deckId []) candidates
                       fmap sequence $ for (sort targets) \deckId -> do
                         -- Overlay editing writes this row too. Read under its
                         -- lock so consumption cannot erase a concurrent edit.
