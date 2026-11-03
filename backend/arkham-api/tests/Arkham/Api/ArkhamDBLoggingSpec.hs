@@ -23,7 +23,7 @@ spec = for_ [True, False] \detailed ->
     for_ ordinaryPaths \path ->
       it ("continues logging ordinary route " <> toString (decodeUtf8 path :: Text)) do
         output <- captureLog detailed path
-        output `shouldSatisfy` BS.isInfixOf path
+        output `shouldSatisfy` BS.isInfixOf (loggedPath path)
         when detailed $ output `shouldSatisfy` BS.isInfixOf "probe-completion-secret"
 
 protectedPaths :: [ByteString]
@@ -130,6 +130,11 @@ ordinaryPaths =
   , "/api/auth/./arkham-build-other/callback"
   , "/api/v1/arkham-builder;x/../verify"
   ]
+
+-- WaiTest.setPath re-encodes the decoded segments into rawPathInfo, which the
+-- logger prints, so a literal ';' in a probe path is logged as "%3B".
+loggedPath :: ByteString -> ByteString
+loggedPath = BS.intercalate "%3B" . BS.split 59
 
 -- Use the production middleware, including its body-capture path, for both
 -- formats. No separately implemented exclusion predicate participates here.
