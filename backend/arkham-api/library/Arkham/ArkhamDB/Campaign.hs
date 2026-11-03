@@ -120,6 +120,14 @@ campaignGameIdentityFromJSON value = fromMaybe MalformedCampaignGame do
   (cid, metadata) <- parseMaybe (withObject "Campaign identity" \o -> (,) <$> o .: "id" <*> o .: "meta") value
   pure $ campaignGameIdentity cid metadata
 
+-- Undo already has this raw game value. Read only its campaign projection;
+-- neither fetch/detoast it again nor serialize/deserialize the whole Game.
+campaignGameIdentityFromGameJSON :: Value -> CampaignGameIdentity
+campaignGameIdentityFromGameJSON value = maybe MalformedCampaignGame campaignGameIdentityFromJSON $
+  parseMaybe (withObject "Game identity" \o -> do
+    mode <- o .: "gameMode"
+    withObject "Game mode identity" (.: "This") mode) value
+
 legacyCampaignGameIds :: [Text] -> [ArkhamGameId]
 legacyCampaignGameIds keys = ordNub [gid | LegacyCampaignKey gid <- map classifyCampaignKey keys]
 

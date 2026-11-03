@@ -9,7 +9,7 @@ import Arkham.Card.CardCode (CardCode)
 import Arkham.Card.CustomCard (CustomCard)
 import Arkham.Decklist (ArkhamDBDecklist)
 import Arkham.Id (PlayerId (..))
-import Arkham.ArkhamDB.Campaign (campaignWriteBackSnapshot, campaignWriteBackSeatIdentity, campaignWriteBackKey, campaignGameIdentity, campaignAdmissionAllowed)
+import Arkham.ArkhamDB.Campaign (campaignWriteBackSnapshot, campaignWriteBackSeatIdentity, campaignWriteBackKey, campaignGameIdentity, campaignGameIdentityFromGameJSON, campaignAdmissionAllowed)
 import Arkham.ArkhamDB.WriteBack
 import Arkham.Campaign.Types (Campaign (..), CampaignAttrs (..), invalidCards)
 import Arkham.Classes.Entity (toAttrs)
@@ -359,10 +359,11 @@ queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ game
 -- transmitted checkpoint for inspection. Share the request's user lock so
 -- cancellation cannot race between its claim check and transport call. Lock
 -- users in a consistent order for multiplayer undo. In-flight IO is irreversible.
-cancelCampaignWriteBack :: Bool -> ArkhamGameId -> Int -> DB ()
-cancelCampaignWriteBack configured gameId restoredStep = cancelCampaignWriteBackIfNeeded configured participates (\step -> cancel step) restoredStep
+cancelCampaignWriteBack :: Bool -> ArkhamGameId -> Value -> Int -> DB ()
+cancelCampaignWriteBack configured gameId knownGame restoredStep = cancelCampaignWriteBackIfNeeded configured participates (\step -> cancel step) restoredStep
  where
   parameters = [PersistText $ UUID.toText $ coerce gameId]
+  known = Map.singleton gameId $ campaignGameIdentityFromGameJSON knownGame
   participates :: DB Bool
   participates = do
     rows <- rawSql
@@ -374,7 +375,7 @@ cancelCampaignWriteBack configured gameId restoredStep = cancelCampaignWriteBack
     rows <- rawSql
       "SELECT id, event_key, user_id, campaign_key FROM arkhamdb_pushes WHERE split_part(campaign_key, '/', 1) = ? AND status NOT IN ('succeeded', 'cancelled') ORDER BY user_id, id"
       parameters :: DB [(Single ArkhamDBPushId, Single Text, Single UserId, Single Text)]
-    games <- loadCampaignIdentities mempty [campaign | (_, _, _, Single campaign) <- rows]
+    games <- loadCampaignIdentities known [campaign | (_, _, _, Single campaign) <- rows]
     cancelUndoneCampaignPushes [(key, event, uid) | (Single key, Single event, Single uid, _) <- rows]
       (\users action -> traverse_ lockArkhamDBUser users >> action)
       (\key -> do

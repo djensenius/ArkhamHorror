@@ -133,7 +133,7 @@ stepBack configured isDebug userId gameId = do
             set g [ArkhamGameStep =. val (n - 1)]
             where_ $ g.id ==. val gameId
           trimLogFrom gameId (n - 1)
-          cancelCampaignWriteBack configured gameId (n - 1)
+          cancelCampaignWriteBack configured gameId rawGame.currentData (n - 1)
           deleteKey stepId
           revertShared
         pure
@@ -179,7 +179,7 @@ stepBack configured isDebug userId gameId = do
                   rawGame.createdAt
                   now
               trimLogFrom gameId (n - 1)
-              cancelCampaignWriteBack configured gameId (n - 1)
+              cancelCampaignWriteBack configured gameId finalValue (n - 1)
               deleteKey stepId
               plan <- revertShared
 
@@ -488,7 +488,7 @@ stepBackToRawStep configured userId gameId rawGame requestedStep = runExceptT do
     -- drop the log of the first undone action (the one that landed at toStep+1), not
     -- just > toStep.
     trimLogFrom gameId toStep
-    cancelCampaignWriteBack configured gameId toStep
+    cancelCampaignWriteBack configured gameId rawGame.currentData toStep
 
   -- Epic Multiplayer: multi-step undo must ALSO revert the shared-counter deltas
   -- recorded on every undone step (single-step 'stepBack' already does), deleting
