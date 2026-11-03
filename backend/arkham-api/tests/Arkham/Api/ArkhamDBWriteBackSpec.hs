@@ -1759,9 +1759,42 @@ spec = describe "ArkhamDB campaign write-back" do
     let encounter = MkEncounterCard (unsafeMakeCardId $ UUID.fromWords 0 0 0 21) "01116" "01116" Nothing Nothing False Nothing
     (campaignDeckSnapshot currentDeck [] [EncounterCard encounter] [] Nothing Nothing).slots `shouldBe` mempty
 
-  it "retains an original unknown remote taboo rather than clearing it" do
-    let original = currentDeck {Decklist.taboo_id = Just 99}
-    (campaignDeckSnapshot original [] [] [] Nothing Nothing).taboo_id `shouldBe` Just 99
+  for_ [(Nothing, Nothing), (Just 8, Nothing), (Just 11, Just 11), (Just 99, Just 99)] \(originalId, expected) ->
+    it ("captures no campaign taboo without adopting a known saved taboo: " <> show originalId) do
+      let original = currentDeck {Decklist.taboo_id = originalId}
+      (campaignDeckSnapshot original [] [] [] Nothing Nothing).taboo_id `shouldBe` expected
+
+  it "uses the known campaign taboo instead of a different saved taboo" do
+    let original = currentDeck {Decklist.taboo_id = Just 8}
+    (campaignDeckSnapshot original [] [] [] Nothing (Just TabooList25)).taboo_id `shouldBe` Just 10
+
+  for_ [False, True] \retainsRemoteTaboo ->
+    it ("saves the campaign's absent taboo and verifies it exactly, remote retains old taboo=" <> show retainsRemoteTaboo) do
+      h <- newHarness
+      submitted <- newIORef ([] :: [Maybe Int])
+      let original = currentDeck {Decklist.taboo_id = Just 8}
+          snapshot = campaignDeckSnapshot original [] [] [] Nothing Nothing
+          source = sourceWithNotes {deck = original}
+          client = h.client {saveDeck = \token target remote -> do
+            modifyIORef' submitted (<> [remote.deck.taboo_id])
+            result <- h.client.saveDeck token target remote
+            when retainsRemoteTaboo $ modifyIORef' h.remotes $ Map.adjust (\saved -> saved
+              {deck = saved.deck {Decklist.taboo_id = Just 8}}) target
+            pure result}
+      modifyIORef' h.remotes $ Map.insert "123" source
+      modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck snapshot}
+      runWith h client False
+      assertState h $ if retainsRemoteTaboo then "conflict" else "succeeded"
+      readIORef submitted `shouldReturn` [Nothing]
+      readIORef h.baseline `shouldReturn` if retainsRemoteTaboo then 0 else 5
+      target <- Map.lookup "124" <$> readIORef h.remotes >>= maybe (fail "Missing target") pure
+      pushRemoteFields target `shouldBe` pushRemoteFields source
+      payload <- arkhamDBPushPayload <$> readIORef h.job
+      case decodePushPreparation payload of
+        Right (True, desired, fields) -> do
+          desired.taboo_id `shouldBe` Nothing
+          samePreparedPushDeck fields desired target `shouldBe` not retainsRemoteTaboo
+        _ -> expectationFailure "Missing prepared taboo snapshot"
 
   it "writes at scenario-end and completed-upgrade boundaries, not temporary per-card mutations" do
     isWriteBackBoundary (ForTarget GameTarget $ EndOfScenario Nothing) `shouldBe` True
