@@ -13,4 +13,7 @@ SELECT 1 / count(*) FROM pg_indexes
   WHERE schemaname = current_schema() AND tablename = 'arkhamdb_pushes'
     AND indexname = 'idx_arkhamdb_pushes_dispatch_active'
     AND indexdef LIKE '% USING btree (id) WHERE ((status)::text = ANY ((ARRAY[''pending''::character varying, ''running''::character varying])::text[]))';
+SELECT 1 / (1 - count(*)) FROM pg_indexes
+  WHERE schemaname = current_schema()
+    AND indexname = 'idx_arkhamdb_pushes_dispatch';
 ROLLBACK;
