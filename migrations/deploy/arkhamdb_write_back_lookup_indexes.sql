@@ -7,4 +7,7 @@ CREATE INDEX IF NOT EXISTS idx_arkhamdb_campaign_decks_deck
 -- deck_links has UNIQUE(deck_id), but no index starting with campaign_key.
 CREATE INDEX IF NOT EXISTS idx_arkhamdb_deck_links_campaign
   ON arkhamdb_deck_links (campaign_key);
+CREATE INDEX IF NOT EXISTS idx_arkhamdb_pushes_campaign_outstanding
+  ON arkhamdb_pushes (campaign_key)
+  WHERE status NOT IN ('succeeded', 'cancelled');
 COMMIT;

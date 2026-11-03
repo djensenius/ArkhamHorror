@@ -6,4 +6,7 @@ SELECT 1 / count(*) FROM pg_indexes
 SELECT 1 / count(*) FROM pg_indexes
   WHERE schemaname = current_schema() AND tablename = 'arkhamdb_deck_links'
     AND indexname = 'idx_arkhamdb_deck_links_campaign';
+SELECT 1 / count(*) FROM pg_indexes
+  WHERE schemaname = current_schema() AND tablename = 'arkhamdb_pushes'
+    AND indexname = 'idx_arkhamdb_pushes_campaign_outstanding';
 ROLLBACK;
