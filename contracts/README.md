@@ -1207,13 +1207,20 @@ unstarted queued work and prevents subsequent requests; a remote request already
 in flight may finish. Already-created or uncertain creation intents are retained
 as `failed`/`writeBackDisabled`, not cancelled: after re-enabling, explicitly
 retry, keep remote, or save as new to reconcile them before later snapshots can
-run. Their overwrite fence and cumulative XP accounting survive opt-out. Relink/unlink generations guard every checkpoint and completion, and
-unlink/relink cascades old-generation outbox intents. Enqueue key-shares the
-account generation through insertion, skipping a concurrently deleted/locked
-account rather than rolling back gameplay. It cannot revoke an
-already transmitted remote request. The existing ten-second request deadline,
-1 MiB decoded-body cap, bearer-token refresh and sanitized error rules apply to
-writes too. The request logger's ArkhamDB path exclusion includes these routes.
+run. Their overwrite fence and cumulative XP accounting survive opt-out.
+Account generations guard every checkpoint and completion. Generation deletion
+(unlink, relink/generation replacement, or revocation) cancels unstarted intents
+and retains creation-bearing or uncertain in-flight intents as non-runnable
+`conflict/accountChanged`. Relinking does not clear these rows: retry and every
+resolution are refused, and they can block later write-back for that deck. There
+is currently no reconciliation API; see the
+[account-generation retention details](#task-246-required-production-store-and-gameplay-integration-coverage)
+below. Enqueue key-shares the account generation through insertion, skipping a
+concurrently deleted/locked account rather than rolling back gameplay. It cannot
+revoke an already transmitted remote request. The existing ten-second request
+deadline, 1 MiB decoded-body cap, bearer-token refresh and sanitized error rules
+apply to writes too. The request logger's ArkhamDB path exclusion includes these
+routes.
 
 Undo (single-step and all multi-step variants) cancels outstanding pushes for
 that game at or after the restored step, fencing their next request and local
