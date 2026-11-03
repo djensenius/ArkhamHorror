@@ -214,16 +214,18 @@ campaignDeckSnapshot original cards story invalid _side taboo = original
 -- their source lineage. The store follows ordinary persistence and undo.
 campaignWriteBackSnapshot :: Map Text Value -> InvestigatorId -> InvestigatorId -> Decklist.ArkhamDBDecklist -> [PlayerCard] -> [Card] -> [CardCode] -> Maybe [PlayerCard] -> Maybe TabooList -> Decklist.ArkhamDBDecklist
 campaignWriteBackSnapshot store iid stableIid original cards story invalid side taboo =
-  -- Use the captured seat, not the mutable saved base/overlay. Homunculus
-  -- keeps its recorded origin; alternate fronts keep the materialized front.
-  let captured = original
-        { Decklist.investigator_code = stableIid
-        , Decklist.meta = case original.meta >>= decodeStrict' . encodeUtf8 of
-            Just (Object metadata) | Just (String front) <- KM.lookup "alternate_front" metadata, not (T.null front) ->
-              Just $ decodeUtf8 $ toStrict $ encode $ Object $
-                KM.insert "alternate_front" (String $ unCardCode $ unInvestigatorId stableIid) metadata
-            _ -> original.meta
-        }
+  -- Preserve ArkhamDB's base-code/parallel-face representation when it already
+  -- resolves to the captured seat (including a Homunculus's recorded origin).
+  -- A genuinely replaced investigator must not inherit either old face.
+  let captured
+        | original.investigator == stableIid = original
+        | otherwise = original
+            { Decklist.investigator_code = stableIid
+            , Decklist.meta = case original.meta >>= decodeStrict' . encodeUtf8 of
+                Just (Object metadata) -> Just $ decodeUtf8 $ toStrict $ encode $ Object $
+                  KM.delete "alternate_back" $ KM.delete "alternate_front" metadata
+                _ -> original.meta
+            }
       snapshot = campaignDeckSnapshot captured cards story invalid side taboo
   in case Map.lookup (campaignDeckOverlayKey iid) store of
     Just proof -> withOverlayProvenance (Just proof) snapshot

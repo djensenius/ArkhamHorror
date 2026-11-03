@@ -512,14 +512,14 @@ unmarkedDeck deck = deck {Decklist.meta = case deck.meta >>= decodeStrict' . enc
     in if KM.null clean then Nothing else Just $ decodeUtf8 $ toStrict $ encode $ Object clean
   _ -> deck.meta}
 
--- The captured code is the materialized seat, while ArkhamDB may represent
--- that same investigator as a base code plus alternate_front metadata.
+-- Both decks resolve the materialized seat from the same base-code/front
+-- representation. The immutable base code alone is not the played identity.
 samePushInvestigator :: ArkhamDBDecklist -> ArkhamDBRemoteDeck -> Bool
-samePushInvestigator desired remote = desired.investigator_code == remote.deck.investigator
+samePushInvestigator desired remote = desired.investigator == remote.deck.investigator
 
--- Old payloads may still carry a base code contradicted by their captured
--- overlay/front. Refuse that evidence of stale identity, never reinterpret it
--- as permission to mutate another lineage (including via save-as-new).
+-- Old payloads may still resolve to a seat contradicted by their captured
+-- overlay. A normal alternate front is not itself contradictory evidence.
+-- Never reinterpret a mismatch as permission to mutate another lineage.
 capturedPushInvestigatorConsistent :: ArkhamDBDecklist -> Bool
 capturedPushInvestigatorConsistent deck =
   let overlay = case exportedOverlay deck of
@@ -527,7 +527,7 @@ capturedPushInvestigatorConsistent deck =
         _ -> Nothing
       effective = deck {Decklist.investigator_code =
         fromMaybe deck.investigator_code $ overlay >>= overlayInvestigator}
-  in deck.investigator_code == effective.investigator
+  in deck.investigator == effective.investigator
 
 -- The admitted key also captured the stable seat, even if an old payload has
 -- no overlay proof. Compare only; never repair/repoint a row from this evidence.
@@ -535,7 +535,7 @@ capturedPushInvestigatorConsistent deck =
 campaignKeyContradictsPushInvestigator :: Text -> ArkhamDBDecklist -> Bool
 campaignKeyContradictsPushInvestigator key deck = case classifyCampaignKey key of
   InvalidCampaignKey -> False
-  _ -> take 1 (drop 1 $ T.splitOn "/" key) /= [unCardCode $ unInvestigatorId deck.investigator_code]
+  _ -> take 1 (drop 1 $ T.splitOn "/" key) /= [unCardCode $ unInvestigatorId deck.investigator]
 
 samePushedDeck :: ArkhamDBDecklist -> ArkhamDBRemoteDeck -> Bool
 samePushedDeck desired remote =
