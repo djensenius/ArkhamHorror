@@ -9315,6 +9315,7 @@ test-suite arkhamdb-postgres
       Postgres.Harness
       Postgres.HarnessSpec
       Postgres.Production
+      Postgres.WriteBackSpec
       Paths_arkham_api
   hs-source-dirs:
       postgres-tests

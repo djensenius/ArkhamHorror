@@ -115,7 +115,7 @@ handlerStore store = ArkhamDBStore
   , saveImportedDeck = \generation deck remoteDeck time -> liftIO $ store.saveImportedDeck generation deck remoteDeck time
   , saveSyncedDeck = \generation key expected remoteDeck time adopt -> withRunInIO \run ->
       store.saveSyncedDeck generation key expected remoteDeck time (run . adopt)
-  , dropDeckLink = \generation uid key -> liftIO $ store.dropDeckLink generation uid key
+  , dropDeckLink = \generation uid key expected -> liftIO $ store.dropDeckLink generation uid key expected
   , validateDeck = ExceptT . liftIO . runExceptT . store.validateDeck
   }
 
@@ -246,7 +246,7 @@ newStore = do
         s <- readIORef ref
         pure do
           deck <- Map.lookup key s.storedDecks
-          pure (deck, Map.lookup key s.storedLinks)
+          pure (deck, Entity (coerce key) <$> Map.lookup key s.storedLinks)
       saveImportedDeck generation deck remoteDeck time = atomicModifyIORef' ref \s ->
         if Map.lookup (arkhamDeckUserId deck) s.storedGenerations /= Just generation then (s, Nothing) else
         case find (\(_, link) -> arkhamDBDeckLinkUserId link == arkhamDeckUserId deck && arkhamDBDeckLinkRemoteDeckId link == remoteDeck.remoteDeckId) $ Map.toList s.storedLinks of
@@ -255,7 +255,7 @@ newStore = do
             let key = ArkhamDeckKey $ UUID.fromWords 0 0 0 s.storedNextDeck
                 link = ArkhamDBDeckLink key (arkhamDeckUserId deck) remoteDeck.remoteDeckId remoteDeck.dateUpdate remoteDeck.deckVersion False Nothing Nothing time time
              in (s {storedNextDeck = s.storedNextDeck + 1, storedDecks = Map.insert key deck s.storedDecks, storedLinks = Map.insert key link s.storedLinks}, Just $ Entity key deck)
-      saveSyncedDeck generation key expected remoteDeck time adopt = withRefreshLock (arkhamDBDeckLinkUserId expected) \_ -> do
+      saveSyncedDeck generation key (Entity _ expected) remoteDeck time adopt = withRefreshLock (arkhamDBDeckLinkUserId expected) \_ -> do
         let uid = arkhamDBDeckLinkUserId expected
         s <- readIORef ref
         case (Map.lookup key s.storedDecks, Map.lookup key s.storedLinks) of
@@ -274,8 +274,10 @@ newStore = do
                       , storedLinks = Map.adjust (\value -> value {arkhamDBDeckLinkLastSyncedDateUpdate = remoteDeck.dateUpdate, arkhamDBDeckLinkLastSyncedVersion = remoteDeck.deckVersion, arkhamDBDeckLinkUpdatedAt = time}) key latest.storedLinks
                       }, Right $ Entity key persisted)
           _ -> pure $ Left linkChanged
-      dropDeckLink generation uid key = atomicModifyIORef' ref \s ->
-        if Map.lookup uid s.storedGenerations /= Just generation then (s, False) else (s {storedLinks = Map.delete key s.storedLinks}, True)
+      dropDeckLink generation uid key (Entity _ expected) = atomicModifyIORef' ref \s ->
+        if Map.lookup uid s.storedGenerations /= Just generation
+          || maybe True (not . sameSyncedDeckLink expected) (Map.lookup key s.storedLinks)
+          then (s, False) else (s {storedLinks = Map.delete key s.storedLinks}, True)
       validateDeck _ = pure ()
   pure (store, ref)
  where
@@ -422,7 +424,7 @@ spec = describe "ArkhamDB account linking and private decks" do
     runExceptT (importRemoteDeck store stubClient settings now userId "123" forbiddenPublic) >>= (`shouldSatisfy` isRight)
     generation <- store.findAccountGeneration userId >>= maybe (fail "Missing generation") pure
     expected <- Map.lookup deckId . storedLinks <$> readIORef ref >>= maybe (fail "Missing mapping") pure
-    saved <- store.saveSyncedDeck generation deckId expected remote now $
+    saved <- store.saveSyncedDeck generation deckId (Entity (coerce deckId) expected) remote now $
       \current -> pure $ Right current {arkhamDeckName = "Updated", arkhamDeckLastUsedAt = Just now}
     result <- either (fail . show) pure saved
     persisted <- Map.lookup deckId . storedDecks <$> readIORef ref >>= maybe (fail "Missing saved row") pure
