@@ -33,7 +33,7 @@ import Arkham.ArkhamDB.Overlay (campaignDeckIdentityKey, moveCampaignDeckIdentit
 import Arkham.ArkhamDB.Service
 import Arkham.ArkhamDB.WriteBack
 import Arkham.CampaignStep (CampaignStep (..))
-import Arkham.Custom.Overlay (DeckOverlay (..))
+import Arkham.Custom.Overlay (DeckOverlay (..), applyOverlay)
 import Arkham.Card (Card (..), toCardCode)
 import Arkham.Card.CustomCard (CustomCard (..), missingCustomCardDef, registerCustomCards)
 import Arkham.Card.CardType (CardType (AssetType))
@@ -416,6 +416,37 @@ newCampaignMessages = do
         runGameApp (GameApp gameRef queue gen (pure . const ()) Nothing) $
           Game.runMessages "write-back-overlay-materialization" Game.noRunObservers
   pure (gameRef, pid, drain)
+
+-- The same two-stage materialization as DeckAnswer: saved overlay first,
+-- per-game overlay second, but only the saved attachment proves adoption.
+doubleOverlaySnapshot :: IO (ArkhamDeck, Decklist.ArkhamDBDecklist)
+doubleOverlaySnapshot = do
+  (gameRef, pid, drain) <- newCampaignMessages
+  let overlay = DeckOverlay (Just "01002") mempty mempty mempty
+      perGame = DeckOverlay (Just "01003") mempty mempty mempty
+      base = Linking.remote.deck {Decklist.slots = Map.singleton "01016" 1, Decklist.meta = Nothing}
+      saved = attachDeckOverlay UUID.nil overlay $
+        ArkhamDeck Linking.userId base.url "Deck" "Roland" base Nothing Nothing Nothing
+      chosen = applyOverlay perGame $ arkhamDeckPlayList saved
+  (arkhamDeckPlayList saved).investigator `shouldBe` "01002"
+  chosen.investigator `shouldBe` "01003"
+  initial <- readIORef gameRef
+  drain $ deckChosenWithAttachment initial pid (arkhamDeckOverlayAttachmentId saved) (arkhamDeckOverlay saved) chosen
+  game <- readIORef gameRef
+  Map.keys (gameInvestigators game) `shouldBe` ["01003"]
+  (deckIid, stableIid) <- maybe (fail "Missing double-overlay seat") pure $
+    campaignWriteBackSeatIdentity game "01003"
+  let attrs = maybe (error "Missing campaign") toAttrs $ modeCampaign game.gameMode
+      cards = maybe [] unDeck $ Map.lookup deckIid $ campaignDecks attrs
+      snapshot = campaignWriteBackSnapshot (campaignStore attrs) deckIid stableIid base cards [] [] Nothing Nothing
+  snapshot.investigator_code `shouldBe` "01003"
+  snapshot.investigator `shouldBe` "01003"
+  case exportedOverlay snapshot of
+    Just (Object proof) -> do
+      KM.lookup "attachmentId" proof `shouldBe` Just (toJSON UUID.nil)
+      KM.lookup "overlay" proof `shouldBe` Just (toJSON overlay)
+    _ -> expectationFailure "Missing saved attachment proof"
+  pure (saved, snapshot)
 
 applyDeckUpdates :: [Update ArkhamDeck] -> ArkhamDeck -> ArkhamDeck
 applyDeckUpdates updates deck = entityVal $ foldl' apply (Entity Linking.deckId deck) updates
@@ -2251,6 +2282,59 @@ spec = describe "ArkhamDB campaign write-back" do
       target.deck.investigator_code `shouldBe` "01002"
       target.deck.slots `shouldBe` snapshot.slots
       fmap (.deck.investigator_code) . Map.lookup "123" <$> readIORef h.remotes `shouldReturn` Just "01001"
+
+  for_ [False, True] \prepared ->
+    for_ ["new", "normal", "overwrite"] \mode ->
+      it ("saves the double-overlay seat independently without changing the source lineage: " <> show (prepared, mode)) do
+        h <- newHarness
+        (saved, snapshot) <- doubleOverlaySnapshot
+        let payload = if prepared then encodePreparedPushDeck snapshot Nothing else encodePushDeck snapshot
+            key = UUID.toText UUID.nil <> "/01003"
+        modifyIORef' h.job \job -> job
+          { arkhamDBPushCampaignKey = key, arkhamDBPushPayload = payload, arkhamDBPushMode = mode }
+        h.run False
+        when (mode /= "new") do
+          assertState h "failed"
+          arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "validationFailed"
+          -- Admission must reach the remote identity check, not reject the
+          -- valid final seat merely because the saved overlay names Daisy.
+          readIORef h.calls `shouldReturn` ["load/123"]
+          assertNoPush h
+          h.writes.resolvePush Linking.now Linking.userId Linking.deckId "new" `shouldReturn` True
+          h.run False
+        assertState h "succeeded"
+        arkhamDBPushError <$> readIORef h.job `shouldReturn` Nothing
+        filter (== "new") <$> readIORef h.calls `shouldReturn` ["new"]
+        filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` []
+        target <- Map.lookup "125" <$> readIORef h.remotes >>= maybe (fail "Missing independent target") pure
+        target.deck.investigator `shouldBe` "01003"
+        target.deck.slots `shouldBe` snapshot.slots
+        fmap (.deck.investigator) . Map.lookup "123" <$> readIORef h.remotes `shouldReturn` Just "01001"
+        -- The new identity evidence must not replace the saved attachment's
+        -- investigator with Skids or consume a later reattachment.
+        arkhamDeckOverlay <$> adoptDecklist saved target.deck `shouldBe` Right Nothing
+        let reattached = attachDeckOverlay (UUID.fromWords 0 0 0 1)
+              (DeckOverlay (Just "01002") mempty mempty mempty) saved
+        arkhamDeckOverlay <$> adoptDecklist reattached target.deck `shouldBe` Right (arkhamDeckOverlay reattached)
+
+  for_ [False, True] \prepared ->
+    it ("refuses a double-overlay payload that contradicts the captured final seat: " <> show prepared) do
+      h <- newHarness
+      (_, snapshot) <- doubleOverlaySnapshot
+      -- Even matching the saved Daisy proof and campaign key cannot override
+      -- the independently captured Skids seat.
+      let stale = snapshot {Decklist.investigator_code = "01002"}
+          payload = if prepared then encodePreparedPushDeck stale Nothing else encodePushDeck stale
+      modifyIORef' h.job \job -> job
+        { arkhamDBPushCampaignKey = UUID.toText UUID.nil <> "/01002"
+        , arkhamDBPushPayload = payload, arkhamDBPushMode = "new"
+        }
+      h.run False
+      assertState h "failed"
+      arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "validationFailed"
+      arkhamDBPushPayload <$> readIORef h.job `shouldReturn` payload
+      readIORef h.calls `shouldReturn` []
+      readIORef h.baseline `shouldReturn` 0
 
   for_ [False, True] \prepared ->
     for_ ["normal", "new"] \mode ->
