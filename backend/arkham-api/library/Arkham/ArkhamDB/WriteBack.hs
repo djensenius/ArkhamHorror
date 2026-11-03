@@ -517,17 +517,21 @@ unmarkedDeck deck = deck {Decklist.meta = case deck.meta >>= decodeStrict' . enc
 samePushInvestigator :: ArkhamDBDecklist -> ArkhamDBRemoteDeck -> Bool
 samePushInvestigator desired remote = desired.investigator == remote.deck.investigator
 
--- Old payloads may still resolve to a seat contradicted by their captured
--- overlay. A normal alternate front is not itself contradictory evidence.
--- Never reinterpret a mismatch as permission to mutate another lineage.
+-- New materializations record the final seat separately from the saved overlay:
+-- a per-game overlay may have replaced its investigator again. Old payloads
+-- retain the conservative overlay check; malformed new evidence fails closed.
+-- Neither permits mutation of a remote lineage with a different investigator.
 capturedPushInvestigatorConsistent :: ArkhamDBDecklist -> Bool
-capturedPushInvestigatorConsistent deck =
-  let overlay = case exportedOverlay deck of
-        Just (Object proof) -> parseMaybe parseJSON $ fromMaybe (Object proof) $ KM.lookup "overlay" proof
-        _ -> Nothing
-      effective = deck {Decklist.investigator_code =
-        fromMaybe deck.investigator_code $ overlay >>= overlayInvestigator}
-  in deck.investigator == effective.investigator
+capturedPushInvestigatorConsistent deck = case exportedOverlay deck of
+  Just (Object proof) | Just captured <- KM.lookup "materializedInvestigator" proof ->
+    parseMaybe parseJSON captured == Just deck.investigator
+  provenance ->
+    let overlay = case provenance of
+          Just (Object proof) -> parseMaybe parseJSON $ fromMaybe (Object proof) $ KM.lookup "overlay" proof
+          _ -> Nothing
+        effective = deck {Decklist.investigator_code =
+          fromMaybe deck.investigator_code $ overlay >>= overlayInvestigator}
+    in deck.investigator == effective.investigator
 
 -- The admitted key also captured the stable seat, even if an old payload has
 -- no overlay proof. Compare only; never repair/repoint a row from this evidence.

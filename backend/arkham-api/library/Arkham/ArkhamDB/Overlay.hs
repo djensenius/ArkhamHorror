@@ -1,12 +1,13 @@
 module Arkham.ArkhamDB.Overlay where
 
 import Arkham.Card.CardCode (unCardCode)
-import Arkham.Custom.Overlay (DeckOverlay)
+import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Id (InvestigatorId (..))
 import Arkham.Message (Message (SetGlobal))
 import Arkham.Target (Target (CampaignTarget))
-import Data.Aeson (Value, toJSON, parseJSON, object, (.=))
+import Data.Aeson (Value (..), toJSON, parseJSON, object, (.=))
 import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KM
 import Data.Aeson.Types (parseMaybe)
 import Data.Map.Strict qualified as Map
 import Data.UUID (UUID)
@@ -28,8 +29,13 @@ overlayAttachmentProvenance attachment overlay = case (attachment, overlay) of
 
 recordCampaignDeckAttachment :: InvestigatorId -> Maybe UUID -> Maybe DeckOverlay -> Message
 recordCampaignDeckAttachment iid attachment overlay =
+  -- A per-game overlay can supersede the saved overlay's investigator. Capture
+  -- the final resolved seat alongside (not in place of) its attachment proof.
+  -- Keeping both in the materialization record gives them the same lifecycle.
   SetGlobal CampaignTarget (Key.fromText $ campaignDeckOverlayKey iid) $
-    overlayAttachmentProvenance attachment overlay
+    case (overlay >>= overlayInvestigator, overlayAttachmentProvenance attachment overlay) of
+      (Just _, Object proof) -> Object $ KM.insert "materializedInvestigator" (toJSON iid) proof
+      (_, proof) -> proof
 
 campaignDeckIdentityKey :: InvestigatorId -> Text
 campaignDeckIdentityKey iid = "ahn_write_back_identity/" <> unCardCode (unInvestigatorId iid)

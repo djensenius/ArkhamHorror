@@ -2336,6 +2336,23 @@ spec = describe "ArkhamDB campaign write-back" do
       readIORef h.calls `shouldReturn` []
       readIORef h.baseline `shouldReturn` 0
 
+  for_ [Null, object []] \invalidSeat ->
+    it ("refuses malformed materialized identity rather than falling back to the saved overlay: " <> show invalidSeat) do
+      h <- newHarness
+      let overlay = DeckOverlay (Just "01002") mempty mempty mempty
+          proof = object ["attachmentId" .= UUID.nil, "overlay" .= overlay, "materializedInvestigator" .= invalidSeat]
+          stale = withOverlayProvenance (Just proof) currentDeck
+            {Decklist.investigator_code = "01002", Decklist.meta = Nothing}
+      modifyIORef' h.job \job -> job
+        { arkhamDBPushCampaignKey = UUID.toText UUID.nil <> "/01002"
+        , arkhamDBPushPayload = encodePushDeck stale, arkhamDBPushMode = "new"
+        }
+      h.run False
+      assertState h "failed"
+      arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "validationFailed"
+      readIORef h.calls `shouldReturn` []
+      readIORef h.baseline `shouldReturn` 0
+
   for_ [False, True] \prepared ->
     for_ ["normal", "new"] \mode ->
       it ("fences an old payload whose overlay proves its base investigator is stale: " <> show (prepared, mode)) do
