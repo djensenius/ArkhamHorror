@@ -13,6 +13,7 @@ import Arkham.Decklist (ArkhamDBDecklist)
 import Config (makeYesodLogger)
 import Control.Concurrent.MVar qualified as MVar
 import Control.Exception (bracket)
+import Data.Aeson.Encoding (encodingToLazyByteString, unsafeToEncoding)
 import Data.Bugsnag.Settings qualified as Bugsnag
 import Data.Time.Clock (getCurrentTime)
 import Database.Persist.Postgresql (pgConnStr, pgPoolSize)
@@ -27,7 +28,7 @@ import Settings (AppSettings (..), compileTimeAppSettings)
 import System.Log.FastLogger (defaultBufSize, newStderrLoggerSet, rmLoggerSet)
 import ThirdEdition.Store qualified as ThirdEdition
 import UnliftIO.Exception qualified as Exception
-import Yesod.Core.Types (ErrorResponse (NotAuthenticated), HandlerContents (..), HandlerFor (..), HandlerData (..), YesodRequest (..))
+import Yesod.Core.Types (Content (ContentBuilder), ErrorResponse (NotAuthenticated), HandlerContents (..), HandlerFor (..), HandlerData (..), TypedContent (..), YesodRequest (..))
 
 withProductionApp :: Harness -> (App -> IO a) -> IO a
 withProductionApp harness action =
@@ -92,6 +93,16 @@ runHandlerResponse app action = unsafeHandler app $
   (Right <$> action) `Exception.catch` \response -> case response of
     HCContent status _ -> pure $ Left status
     HCError NotAuthenticated -> pure $ Left status401
+    _ -> Exception.throwIO response
+
+-- Like runHandlerResponse, but also returns the rendered body so callers can
+-- assert an error code (many ArkhamDB codes share the default 502 status).
+-- Only built responses (e.g. sendStatusJSON) are captured; others rethrow.
+runHandlerResponseBody :: App -> Handler a -> IO (Either (Status, LByteString) a)
+runHandlerResponseBody app action = unsafeHandler app $
+  (Right <$> action) `Exception.catch` \response -> case response of
+    HCContent status (TypedContent _ (ContentBuilder body _)) ->
+      pure $ Left (status, encodingToLazyByteString $ unsafeToEncoding body)
     _ -> Exception.throwIO response
 
 -- Supply an actual request to the existing fake-Handler runner. Authentication

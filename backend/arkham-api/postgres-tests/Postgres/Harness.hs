@@ -11,6 +11,7 @@ import Control.Exception (bracket)
 import Control.Monad.Logger (runNoLoggingT)
 import Data.Pool (destroyAllResources)
 import Data.Text qualified as T
+import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime, picosecondsToDiffTime)
 import Database.Persist.Postgresql (ConnectionString, createPostgresqlPool, withPostgresqlConn)
 import Database.Persist.Sql (ConnectionPool, Single (..), SqlBackend, rawSql, runSqlConn)
 import Database.Persist.Types (PersistValue (..))
@@ -62,6 +63,15 @@ backendPid connection = transaction connection do
   case rows of
     [Single pid] -> pure pid
     _ -> liftIO $ fail "Expected one PostgreSQL backend PID"
+
+-- PostgreSQL timestamptz keeps whole microseconds, but Linux clocks return
+-- nanoseconds. Tests use this `now` so persisted timestamps round-trip exactly.
+currentTimeMicros :: IO UTCTime
+currentTimeMicros = truncateToMicros <$> getCurrentTime
+
+truncateToMicros :: UTCTime -> UTCTime
+truncateToMicros time = time
+  {utctDayTime = picosecondsToDiffTime $ diffTimeToPicoseconds (utctDayTime time) `div` 1000000 * 1000000}
 
 within :: Text -> IO a -> IO a
 within label action =
