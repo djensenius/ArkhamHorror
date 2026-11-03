@@ -9307,6 +9307,70 @@ executable arkham-replay
   if flag(library-only)
     buildable: False
 
+test-suite arkhamdb-postgres
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  other-modules:
+      Postgres.Harness
+      Postgres.HarnessSpec
+      Postgres.Production
+      Paths_arkham_api
+  hs-source-dirs:
+      postgres-tests
+  default-extensions:
+      AllowAmbiguousTypes
+      BlockArguments
+      DataKinds
+      DeriveAnyClass
+      DerivingStrategies
+      DerivingVia
+      ExtendedDefaultRules
+      FunctionalDependencies
+      GADTs
+      LambdaCase
+      MultiWayIf
+      NoImplicitPrelude
+      NoMonomorphismRestriction
+      OverloadedLabels
+      OverloadedRecordDot
+      OverloadedStrings
+      PatternSynonyms
+      RecordWildCards
+      StrictData
+      TypeFamilies
+      TypeFamilyDependencies
+      TypeOperators
+      UndecidableInstances
+      ViewPatterns
+  ghc-options: -threaded -rtsopts -O0
+  build-tool-depends:
+      cards-discover:cards-discover
+  build-depends:
+      aeson
+    , aeson-diff
+    , arkham-api
+    , base
+    , bugsnag
+    , containers
+    , directory
+    , fast-logger
+    , filepath
+    , hspec
+    , http-client
+    , http-types
+    , monad-logger
+    , persistent
+    , persistent-postgresql
+    , relude
+    , resource-pool
+    , text
+    , time
+    , unliftio
+    , uuid
+    , wai
+    , yesod-core
+  default-language: GHC2021
+
 test-suite spec
   type: exitcode-stdio-1.0
   main-is: Spec.hs
