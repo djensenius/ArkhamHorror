@@ -39,7 +39,7 @@ import Arkham.Taboo.Types (TabooList (TabooList25))
 import Data.Aeson.Diff (Patch (..))
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
-import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
+import Data.Time.Clock (UTCTime, addUTCTime)
 import Data.UUID qualified as UUID
 import Database.Persist (Entity (..), toPersistValue)
 import Database.Persist qualified as P
@@ -69,7 +69,7 @@ data Fixture = Fixture
 fixture :: Seed -> App -> SqlBackend -> Text -> IO Fixture
 fixture seed app connection label = do
   (uid, generation, deckId) <- seed connection label
-  now <- getCurrentTime
+  now <- currentTimeMicros
   unsafeHandler app (writeBackStore.toggleWriteBack now uid deckId True) `shouldReturn` True
   transaction connection do
     saved <- P.getJust deckId
@@ -471,7 +471,7 @@ spec harness app remote seed relinkImport = describe "Production write-back queu
 
   it "batch-loads legacy campaign identities by uuid, through These modes, and That-only games as malformed" $
     withConnection harness \connection -> do
-      now <- getCurrentTime
+      now <- currentTimeMicros
       let insertGame label game = transaction connection $ P.insert $ ArkhamGame label game 2 Solo now now
           legacyKey gid = UUID.toText (coerce gid) <> "/01001"
           missing :: ArkhamGameId

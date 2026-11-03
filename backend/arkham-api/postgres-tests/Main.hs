@@ -23,7 +23,7 @@ import Control.Exception (throwIO)
 import Data.Aeson (Value, decode, encode, object, toJSON, (.=))
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
-import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
+import Data.Time.Clock (UTCTime, addUTCTime)
 import Data.UUID qualified as UUID
 import Database.Persist (Entity (..), entityKey, toPersistValue)
 import Database.Persist qualified as P
@@ -61,7 +61,7 @@ main = withHarness \harness -> withProductionApp harness \app ->
     spec harness app
     WriteBackSQL.spec harness app remote (writeBackSeed app)
       (\connection uid label -> do
-        now <- getCurrentTime
+        now <- currentTimeMicros
         encrypted <- encryptedAccount settings now uid $ tokens now
         void $ seedAccount app connection now uid label encrypted
         let client = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right remote}
@@ -74,7 +74,7 @@ main = withHarness \harness -> withProductionApp harness \app ->
 
 writeBackSeed :: App -> WriteBackSQL.Seed
 writeBackSeed app connection label = do
-  now <- getCurrentTime
+  now <- currentTimeMicros
   uid <- seedUser connection label
   encrypted <- encryptedAccount settings now uid $ tokens now
   generation <- seedAccount app connection now uid label encrypted
@@ -87,7 +87,7 @@ spec :: Harness -> App -> Spec
 spec harness app = describe "ArkhamDB production PostgreSQL stores" do
   it "claims and finalizes a nonce exactly once using migrated tables" $
     withConnection harness \connection -> do
-      now <- getCurrentTime
+      now <- currentTimeMicros
       uid <- seedUser connection "finalize"
       runStore app connection (\store -> store.saveLinkState $ linkState now uid "finalize")
       claimed <- runStore app connection (\store -> store.claimLinkState now "finalize")
@@ -104,7 +104,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
       firstPid <- backendPid first
       secondPid <- backendPid second
       firstPid `shouldNotBe` secondPid
-      now <- getCurrentTime
+      now <- currentTimeMicros
       uid <- seedUser first "race"
       runStore app first (\store -> store.saveLinkState $ linkState now uid "race")
       barrier <- newBarrier
@@ -125,7 +125,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
 
   it "rolls back nonce consumption and account creation together after an exception" $
     withConnection harness \connection -> do
-      now <- getCurrentTime
+      now <- currentTimeMicros
       uid <- seedUser connection "rollback"
       runStore app connection (\store -> store.saveLinkState $ linkState now uid "rollback")
       let abort = runStore app connection \store -> do
@@ -149,7 +149,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
 
   it "compares the old access credential before persisting a refresh" $
     withConnection harness \connection -> do
-      now <- getCurrentTime
+      now <- currentTimeMicros
       uid <- seedUser connection "compare-refresh"
       let previous = account now uid
           refreshed = previous {arkhamDBAccountEncryptedAccessToken = "encrypted-new-access"}
@@ -161,7 +161,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
 
   it "holds the production refresh lock through remote refresh and concurrent unlink" $
     withConnection harness \refreshing -> withConnection harness \unlinking -> withConnection harness \observer -> do
-      now <- getCurrentTime
+      now <- currentTimeMicros
       uid <- seedUser refreshing "unlink-refresh"
       previous <- encryptedAccount settings now uid $
         (tokens now) {tokenExpiresAt = Just $ addUTCTime (-60) now}
@@ -192,7 +192,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
 
   it "turns production refresh lock contention into remoteUnavailable at the lock deadline" $
     withConnection harness \holding -> withConnection harness \refreshing -> withConnection harness \observer -> do
-      now <- getCurrentTime
+      now <- currentTimeMicros
       uid <- seedUser holding "refresh-deadline"
       previous <- encryptedAccount settings now uid (tokens now)
       generation <- seedAccount app holding now uid "refresh-deadline" previous
@@ -265,7 +265,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
 
   it "does not stage callback credentials when unlink commits during OAuth exchange" $
     withConnection harness \callback -> withConnection harness \unlinking -> do
-      now <- getCurrentTime
+      now <- currentTimeMicros
       uid <- seedUser callback "unlink-exchange"
       runStoreActions app callback (\store -> store.saveLinkState $ linkState now uid "unlink-exchange")
       barrier <- newBarrier
@@ -293,7 +293,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
 
   it "refuses callback finalization queued behind a committed unlink" $
     withConnection harness \unlinking -> withConnection harness \finalizing -> withConnection harness \observer -> do
-      now <- getCurrentTime
+      now <- currentTimeMicros
       uid <- seedUser unlinking "unlink-finalize"
       runStore app unlinking \store -> do
         store.saveLinkState $ linkState now uid "unlink-finalize"
@@ -320,7 +320,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
 
   it "does not resurrect an import loaded before unlink and relink to a new generation" $
     withConnection harness \importing -> withConnection harness \unlinking -> do
-      now <- getCurrentTime
+      now <- currentTimeMicros
       uid <- seedUser importing "unlink-import"
       previous <- encryptedAccount settings now uid $ tokens now
       oldGeneration <- seedAccount app importing now uid "unlink-import" previous
@@ -349,7 +349,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
 
   it "serializes competing imports into one local deck and user/remote mapping" $
     withConnection harness \first -> withConnection harness \second -> withConnection harness \observer -> do
-      now <- getCurrentTime
+      now <- currentTimeMicros
       uid <- seedUser first "duplicate-import"
       previous <- encryptedAccount settings now uid $ tokens now
       void $ seedAccount app first now uid "duplicate-import" previous
@@ -379,7 +379,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
   for_ [False, True] \markers ->
     it ("removes an unchanged 404 mapping and falls back exactly once with " <> if markers then "non-null markers" else "null markers") $
       withConnection harness \connection -> do
-        now <- getCurrentTime
+        now <- currentTimeMicros
         let label = if markers then "404-current-markers" else "404-current-null"
             original = if markers then remote else remote {dateUpdate = Nothing, deckVersion = Nothing}
             initialClient = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right original}
@@ -404,7 +404,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
     for_ ["retarget", "markers", "identity"] \change ->
       it ("fences a delayed " <> (if missing then "404" else "sync") <> " after mapping " <> toString change) $
         withConnection harness \loading -> withConnection harness \writing -> do
-          now <- getCurrentTime
+          now <- currentTimeMicros
           let label = "stale-" <> change <> if missing then "-404" else "-sync"
           uid <- seedUser loading label
           encrypted <- encryptedAccount settings now uid $ tokens now
@@ -457,7 +457,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
 
   it "fences a delayed 404 after a remote-ID-only mapping retarget" $
     withConnection harness \loading -> withConnection harness \writing -> do
-      now <- getCurrentTime
+      now <- currentTimeMicros
       let label = "stale-remote-id-only-404"
       uid <- seedUser loading label
       encrypted <- encryptedAccount settings now uid $ tokens now
@@ -496,7 +496,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
         it ("serializes " <> (if public then "public" else "linked") <> " sync "
           <> (if syncFirst then "before" else "after") <> " overlay " <> toString change) $
           withConnection harness \first -> withConnection harness \second -> withConnection harness \observer -> do
-            now <- getCurrentTime
+            now <- currentTimeMicros
             let label = "overlay-" <> (if public then "public" else "linked")
                   <> (if syncFirst then "-first-" else "-last-") <> change
                 old = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
@@ -612,7 +612,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
     it ("keeps an actual overlay PUT's attachment id through a later provenance-free "
       <> (if public then "public" else "linked") <> " sync") $
       withConnection harness \connection -> do
-        now <- getCurrentTime
+        now <- currentTimeMicros
         let label = if public then "public-attachment-kept" else "linked-attachment-kept"
             overlay = DeckOverlay Nothing mempty (Map.singleton "01008" 1) mempty
             incoming = remote {deck = remote.deck {slots = Map.singleton "01016" 1}}
@@ -641,7 +641,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
   for_ [False, True] \public ->
     it ("consumes incorporated overlay provenance through actual " <> (if public then "public" else "linked") <> " sync") $
       withConnection harness \connection -> do
-        now <- getCurrentTime
+        now <- currentTimeMicros
         let label = if public then "public-provenance" else "linked-provenance"
             overlay = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
             attachment = UUID.fromWords 0 0 0 1
@@ -684,7 +684,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
       it ("retains production " <> toString checkpoint <> " accounting across "
         <> if unlink then "unlink/relink" else "callback generation replacement") $
         withConnection harness \connection -> do
-          now <- getCurrentTime
+          now <- currentTimeMicros
           let label = "accounting-" <> checkpoint <> if unlink then "-unlink" else "-replace"
               client = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right remote}
           uid <- seedUser connection label
@@ -771,7 +771,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
 
   it "purges expired nonces and staged credentials in bounded batches without changing the account" $
     withConnection harness \connection -> do
-      now <- getCurrentTime
+      now <- currentTimeMicros
       uid <- seedUser connection "expiry-batches"
       generation <- seedAccount app connection now uid "expiry-batches" $ account now uid
       let expired n = (linkState now uid $ "expired-" <> show n)
@@ -803,7 +803,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
 
   it "makes deadline-bounded expiry progress amid 200000 active nonces and staged credentials" $
     withConnection harness \connection -> do
-      now <- getCurrentTime
+      now <- currentTimeMicros
       let activeCount = 200000 :: Int
           expiredCount = 3 * cleanupBatchSize + 5
           -- One authorization per real migrated user, half already staged.
@@ -831,7 +831,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
 
   it "skips a locked expired authorization and makes progress after its transaction finishes" $
     withConnection harness \writer -> withConnection harness \cleaner -> do
-      now <- getCurrentTime
+      now <- currentTimeMicros
       uid <- seedUser writer "expiry-locked"
       key <- transaction writer $ P.insert $
         (linkState now uid "expiry-locked") {arkhamDBLinkStateExpiresAt = addUTCTime (-1) now}
@@ -926,7 +926,7 @@ linkedRows connection uid = transaction connection do
 refreshFailureCase :: Harness -> App -> Text -> Maybe Text -> Maybe ArkhamDBClientError -> Status -> Text -> Text -> IO ()
 refreshFailureCase harness app label credential outcome status code message =
   withConnection harness \connection -> do
-    now <- getCurrentTime
+    now <- currentTimeMicros
     uid <- seedUser connection label
     previous <- encryptedAccount settings now uid (tokens now) {refreshToken = credential}
     generation <- seedAccount app connection now uid label previous
