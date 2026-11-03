@@ -20,8 +20,9 @@ import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Control.Concurrent.MVar qualified as MVar
 import Control.Exception (throwIO)
-import Data.Aeson (decode, encode, toJSON)
+import Data.Aeson (Value, decode, encode, object, toJSON, (.=))
 import Data.Map.Strict qualified as Map
+import Data.Text qualified as T
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
 import Data.UUID qualified as UUID
 import Database.Persist (Entity (..), entityKey, toPersistValue)
@@ -238,7 +239,7 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
             link refresh
             awaitBlockedBy observer holdingPid refreshingPid
             (result, elapsed) <- wait refresh
-            result `shouldBe` Left (status502, Just "remoteUnavailable")
+            expectSanitizedError status502 "remoteUnavailable" "ArkhamDB request failed" result
             -- The 3s server default would fail here: the 5s SET LOCAL deadline fired.
             elapsed `shouldSatisfy` (>= 4.5)
         releaseBarrier barrier
@@ -252,14 +253,15 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
 
   it "keeps credentials, generation and mappings after a failed remote refresh" $
     refreshFailureCase harness app "refresh-remote-error" (Just "fixture-refresh")
-      (Just $ ArkhamDBRemoteError "ArkhamDB is down") status502 "remoteUnavailable"
+      (Just $ ArkhamDBRemoteError $ leakMarker <> " ArkhamDB is down") status502 "remoteUnavailable" "ArkhamDB request failed"
 
   it "keeps credentials, generation and mappings after a rejected remote refresh" $
     refreshFailureCase harness app "refresh-rejected" (Just "fixture-refresh")
-      (Just ArkhamDBUnauthorized) status409 "tokenExpired"
+      (Just ArkhamDBUnauthorized) status409 "tokenExpired" "ArkhamDB rejected the token; relink required"
 
   it "requires relinking without calling ArkhamDB when no refresh token is stored" $
     refreshFailureCase harness app "refresh-missing-token" Nothing Nothing status409 "tokenExpired"
+      "ArkhamDB token expired; relink required"
 
   it "does not stage callback credentials when unlink commits during OAuth exchange" $
     withConnection harness \callback -> withConnection harness \unlinking -> do
@@ -881,11 +883,27 @@ seedAccount app connection now uid nonce value = do
 
 -- The production handler boundary: each store action commits like runDB, and
 -- runArkhamDB maps failures (including the 55P03 lock timeout) to a JSON error.
-refreshResponse :: App -> SqlBackend -> ArkhamDBClient Handler -> UTCTime -> ArkhamDBAccount -> IO (Either (Status, Maybe Text) Text)
+-- An error is returned as its status, decoded JSON body and raw body text.
+refreshResponse :: App -> SqlBackend -> ArkhamDBClient Handler -> UTCTime -> ArkhamDBAccount -> IO (Either (Status, Maybe Value, Text) Text)
 refreshResponse app connection client now previous = do
   result <- runHandlerResponseBody app $ runArkhamDB $
     refreshAccount (persistentStoreWith (const $ pure ()) (`runSqlConn` connection)) client settings now previous
-  pure $ either (\(status, body) -> Left (status, Map.lookup "code" =<< (decode body :: Maybe (Map Text Text)))) Right result
+  pure $ either (\(status, body) -> Left (status, decode body, decodeUtf8 body)) Right result
+
+-- A recognizable secret carried by the fake remote error.
+leakMarker :: Text
+leakMarker = "LEAK-MARKER-55"
+
+-- The complete sanitized envelope (ToJSON ArkhamDBError: exactly code and
+-- error, with the fixed production message), and no upstream error text,
+-- fixture credential or SQL detail anywhere in the raw body.
+expectSanitizedError :: Status -> Text -> Text -> Either (Status, Maybe Value, Text) Text -> IO ()
+expectSanitizedError status code message result = case result of
+  Right value -> expectationFailure $ "Expected an error response, got " <> show value
+  Left (actual, body, raw) -> do
+    (actual, body) `shouldBe` (status, Just $ object ["code" .= code, "error" .= message])
+    for_ [leakMarker, "fixture-refresh", "fixture-access", "lock timeout", "55P03"] \secret ->
+      (secret, secret `T.isInfixOf` raw) `shouldBe` (secret, False)
 
 -- The session's effective lock_timeout, read in its own transaction.
 lockTimeout :: SqlBackend -> IO Text
@@ -905,8 +923,8 @@ linkedRows connection uid = transaction connection do
 
 -- A locked refresh that fails after taking the lock (remote error, remote
 -- rejection, or no stored refresh token) must leave every persisted row intact.
-refreshFailureCase :: Harness -> App -> Text -> Maybe Text -> Maybe ArkhamDBClientError -> Status -> Text -> IO ()
-refreshFailureCase harness app label credential outcome status code =
+refreshFailureCase :: Harness -> App -> Text -> Maybe Text -> Maybe ArkhamDBClientError -> Status -> Text -> Text -> IO ()
+refreshFailureCase harness app label credential outcome status code message =
   withConnection harness \connection -> do
     now <- getCurrentTime
     uid <- seedUser connection label
@@ -925,7 +943,7 @@ refreshFailureCase harness app label credential outcome status code =
               modifyIORef' calls (+ 1)
               maybe (fail "A missing refresh token reached ArkhamDB") (pure . Left) outcome
           }
-    within "failed refresh" (refreshResponse app connection client now stored) `shouldReturn` Left (status, Just code)
+    within "failed refresh" (refreshResponse app connection client now stored) >>= expectSanitizedError status code message
     readIORef calls `shouldReturn` (if isJust outcome then 1 else 0)
     linkedRows connection uid `shouldReturn` persisted
     runStore app connection (\store -> store.findAccountGeneration uid) `shouldReturn` Just generation
