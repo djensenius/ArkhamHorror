@@ -1155,6 +1155,15 @@ a byte-identical one, gets a fresh private attachment identity that DELETE
 clears and a later provenance-free sync keeps; incorporated overlay provenance
 is consumed through actual public and linked sync; and overlay removal that
 would expose unsupported base cards is rejected without changing the saved deck.
+Write-back coverage runs the production write-back store and the actual
+game-answer entry point. It covers campaign deck capture exactly once, never
+enqueueing onto an obsolete or busy campaign association, queue and opt-out
+serialization, rolling back an answer's XP, history and enqueued intent
+together, waking the executor only after the answer commits, keeping a
+committed answer when ArkhamDB is down, lease renewal, atomic creation payloads
+and their recovery without a second XP creation, checkpoint compare-and-set,
+save-as-new predecessor retention, legacy push handling, an unlink retiring an
+in-flight creation, and owned deck deletion that refuses decks with accounting.
 The launcher's checks also round-trip the expiry-index migration and refuse to
 adopt or drop a same-named foreign index. Lock-contention cases use separate
 sessions and observe real PostgreSQL lock waits rather than timing sleeps. The
@@ -1163,9 +1172,9 @@ HTTP-connection stubs; callback response tests dispatch the production callback
 body through Yesod/WAI. The logging probe covers both the production request
 logger's `Detailed True` and Apache modes, including encoded-separator and
 case-variant ArkhamDB paths. The cleanup worker's retry, timeout and shutdown
-lifecycle is unit-tested. Lock-deadline (`remoteUnavailable`) and
-refresh-failure paths and write-back SQL are not yet covered against
-PostgreSQL; that remains tracked in Backlog task-2.46.
+lifecycle is unit-tested. The refresh lock-deadline (`remoteUnavailable`) and
+refresh-failure paths are not yet covered against PostgreSQL; that is tracked
+in Backlog task-2.55.
 
 List, import and sync use the linked account's OAuth API, so private decks do
 not require public sharing. Expired tokens (including a 60-second safety window)
