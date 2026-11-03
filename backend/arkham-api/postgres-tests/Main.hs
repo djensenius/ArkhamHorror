@@ -7,11 +7,13 @@
 module Main where
 
 import Arkham.ArkhamDB
+import Api.Arkham.ArkhamDBCleanup (cleanupBatchSize, purgeExpiredLinks)
 import Arkham.ArkhamDB.Service
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Control.Exception (throwIO)
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
 import Database.Persist (Entity (..), entityKey, toPersistValue)
+import Database.Persist qualified as P
 import Database.Persist.Sql (Single (..), SqlBackend, rawExecute, rawSql, runSqlConn, toSqlKey)
 import Database.Persist.Types (PersistValue (..))
 import Entity.Arkham.ArkhamDBAccount
@@ -23,6 +25,7 @@ import Postgres.HarnessSpec qualified as Harness
 import Postgres.Production
 import Relude hiding (first, second)
 import Settings (ArkhamDBSettings (..))
+import System.Timeout (timeout)
 import Test.Hspec
 import UnliftIO.Async (link, wait, withAsync)
 
@@ -254,6 +257,86 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
             firstResult `shouldSatisfy` isRight
             fmap entityKey firstResult `shouldBe` fmap entityKey secondResult
       deckCounts observer uid `shouldReturn` (1, 1)
+
+  it "purges expired nonces and staged credentials in bounded batches without changing the account" $
+    withConnection harness \connection -> do
+      now <- getCurrentTime
+      uid <- seedUser connection "expiry-batches"
+      generation <- seedAccount app connection now uid "expiry-batches" $ account now uid
+      let expired n = (linkState now uid $ "expired-" <> show n)
+            { arkhamDBLinkStateExpiresAt = if n == (0 :: Int) then now else addUTCTime (-1) now
+            , arkhamDBLinkStateClaimedAt = if even n then Just now else Nothing
+            , arkhamDBLinkStateEncryptedPendingTokens = if even n then Just "encrypted-pending-secret" else Nothing
+            }
+          active = linkState now uid "active-nonce"
+          pendingLink = (linkState now uid "active-pending")
+            { arkhamDBLinkStateClaimedAt = Just now
+            , arkhamDBLinkStateEncryptedPendingTokens = Just "encrypted-active-secret"
+            }
+      transaction connection $
+        P.insertMany_ $ map expired [0 .. 2 * cleanupBatchSize + 4] <> [active, pendingLink]
+      -- Starting another user's link must not synchronously delete a global
+      -- backlog in that request's transaction. Only the scheduled batches do.
+      otherUser <- seedUser connection "expiry-unrelated-start"
+      runStoreActions app connection \store -> store.saveLinkState $ linkState now otherUser "unrelated-active"
+      transaction connection (purgeExpiredLinks now) `shouldReturn` cleanupBatchSize
+      transaction connection (purgeExpiredLinks now) `shouldReturn` cleanupBatchSize
+      transaction connection (purgeExpiredLinks now) `shouldReturn` 5
+      transaction connection (purgeExpiredLinks now) `shouldReturn` 0
+      remaining <- transaction connection $ P.selectList [ArkhamDBLinkStateUserId P.==. uid] []
+      sort (map (arkhamDBLinkStateNonce . P.entityVal) remaining) `shouldBe` ["active-nonce", "active-pending"]
+      runStoreActions app connection (\store -> store.findAccountGeneration uid) `shouldReturn` Just generation
+      limits <- transaction connection $ rawSql
+        "SELECT current_setting('statement_timeout'), current_setting('lock_timeout')" []
+      limits `shouldBe` [(Single ("8s" :: Text), Single ("3s" :: Text))]
+
+  it "makes deadline-bounded expiry progress amid 200000 active nonces and staged credentials" $
+    withConnection harness \connection -> do
+      now <- getCurrentTime
+      let activeCount = 200000 :: Int
+          expiredCount = 3 * cleanupBatchSize + 5
+          -- One authorization per real migrated user, half already staged.
+          -- Bounded fixture inserts retain the harness's normal SQL deadlines.
+          seed start count expires = transaction connection $ rawExecute
+            "WITH owners AS (INSERT INTO users (username, email, password_digest) SELECT 'expiry-large-' || n::text, 'expiry-large-' || n::text || '@postgres-test.invalid', 'not-a-real-password' FROM generate_series(?::integer, ?::integer) AS n RETURNING id) INSERT INTO arkhamdb_link_states (nonce, user_id, expires_at, created_at, claimed_at, completion_hash, encrypted_pending_tokens) SELECT 'expiry-large-' || id::text, id, ?, ?, CASE WHEN id % 2 = 0 THEN ?::timestamptz END, CASE WHEN id % 2 = 0 THEN 'completion-' || id::text END, CASE WHEN id % 2 = 0 THEN repeat('encrypted-pending-', 32) END FROM owners"
+            [ PersistInt64 $ fromIntegral start, PersistInt64 $ fromIntegral (start + count - 1)
+            , PersistUTCTime expires, PersistUTCTime $ addUTCTime (-60) now
+            , PersistUTCTime $ addUTCTime (-30) now
+            ]
+          activeRows = transaction connection $ rawSql
+            "SELECT count(*)::bigint, count(encrypted_pending_tokens)::bigint FROM arkhamdb_link_states AS states JOIN users ON users.id = states.user_id WHERE users.username LIKE 'expiry-large-%' AND states.expires_at > ?"
+            [PersistUTCTime now]
+          sweep = timeout 5000000 (transaction connection $ purgeExpiredLinks now)
+            >>= maybe (fail "Production cleanup exceeded its five-second budget") pure
+      for_ [0, 10000 .. activeCount - 1] \start -> seed start 10000 $ addUTCTime 600 now
+      seed activeCount expiredCount $ addUTCTime (-1) now
+      transaction connection $ rawExecute "ANALYZE arkhamdb_link_states" []
+      activeBefore <- activeRows
+      activeBefore `shouldBe` [(Single (200000 :: Int64), Single (100000 :: Int64))]
+      replicateM 3 sweep `shouldReturn` replicate 3 cleanupBatchSize
+      sweep `shouldReturn` 5
+      sweep `shouldReturn` 0
+      activeRows `shouldReturn` activeBefore
+
+  it "skips a locked expired authorization and makes progress after its transaction finishes" $
+    withConnection harness \writer -> withConnection harness \cleaner -> do
+      now <- getCurrentTime
+      uid <- seedUser writer "expiry-locked"
+      key <- transaction writer $ P.insert $
+        (linkState now uid "expiry-locked") {arkhamDBLinkStateExpiresAt = addUTCTime (-1) now}
+      barrier <- newBarrier
+      withAsync
+        (transaction writer do
+          P.update key [ArkhamDBLinkStateEncryptedPendingTokens P.=. Just "encrypted-pending-secret"]
+          liftIO $ pauseAt barrier)
+        \writing -> do
+          link writing
+          awaitBarrier barrier
+          transaction cleaner (purgeExpiredLinks now) `shouldReturn` 0
+          releaseBarrier barrier
+          within "expired authorization writer" $ wait writing
+      transaction cleaner (purgeExpiredLinks now) `shouldReturn` 1
+      transaction cleaner (P.get key) >>= (`shouldSatisfy` isNothing)
 
 -- Fixture SQL only; all lifecycle mutations above invoke persistentStoreWith.
 -- User's production entity currently includes an admin field not in Sqitch;

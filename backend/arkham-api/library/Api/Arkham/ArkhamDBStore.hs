@@ -51,7 +51,8 @@ persistentStoreWith validate database = ArkhamDBStore
       pure $ if affected == 1 then Just $ Entity key job {arkhamDBPushUpdatedAt = renewedAt} else Nothing
   , saveLinkState = \state -> database do
       lockArkhamDBUser $ arkhamDBLinkStateUserId state
-      deleteWhere [ArkhamDBLinkStateExpiresAt P.<=. arkhamDBLinkStateCreatedAt state]
+      -- Global expiry belongs to the bounded periodic sweep, not a request
+      -- transaction holding this user's lifecycle lock.
       deleteWhere [ArkhamDBLinkStateUserId P.==. arkhamDBLinkStateUserId state]
       insert_ state
   , claimLinkState = \now nonce -> database do

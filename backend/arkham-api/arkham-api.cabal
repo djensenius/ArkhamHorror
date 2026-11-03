@@ -24,6 +24,7 @@ flag library-only
 
 library
   exposed-modules:
+      Api.Arkham.ArkhamDBCleanup
       Api.Arkham.ArkhamDBStore
       Api.Arkham.ArkhamDBWriteBack
       Api.Arkham.Deck
@@ -9396,6 +9397,8 @@ test-suite spec
       Arkham.Agenda.Cards.TheDunwichLegacy.TheMiskatonicMuseum.ShadowsDeepenSpec
       Arkham.Agenda.Cards.TheScarletKeys.CongressOfTheKeys.TheWorldUnbiddenSpec
       Arkham.Agenda.Cards.TheScarletKeys.DeadHeat.EmptyStreetsSpec
+      Arkham.Api.ArkhamDBCleanupSpec
+      Arkham.Api.ArkhamDBLoggingSpec
       Arkham.Api.ArkhamDBSpec
       Arkham.Api.ArkhamDBWriteBackSpec
       Arkham.Api.CampaignCatalogSpec
