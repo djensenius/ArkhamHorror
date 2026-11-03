@@ -16637,7 +16637,7 @@
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
     "contracts/manifest.json": "9d5b1b8ab8373b1726ab20ca65c3b35a49ebd5ecb13d6ee9ed5f47ceac173e40",
     "contracts/openapi.yaml": "782f14b7f13c0308cb5b1e2c136a491f9922e5b599bf59049bb06d89ee467eb5",
-    "contracts/route-inventory.json": "1dc766c6e8650278d14d28ba53cae72a36f4165c3fb33bb4aa8fb3a1a5e4a85d",
+    "contracts/route-inventory.json": "43bc0301f4849df7c5d84fae4dd6a34126db756843c4ef7da408dc5ceea2f0b7",
     "contracts/schemas/account.schema.json": "2c5ab4f223e76f6dbbad4766b60867610ae52edcc222db6eb850505f7f81fc29",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
