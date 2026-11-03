@@ -64,6 +64,14 @@
     "cardCode": {
       "type": "string"
     },
+    "labelCards": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "string"
+      },
+      "description": "Every card a QuestionLabel is about, present only when there is more than one; cardCode is always the first of them."
+    },
     "payCost": {
       "$ref": "#/$defs/cost"
     },
@@ -619,6 +627,7 @@
         "chooseAmounts",
         "chooseDeck",
         "chooseExchangeAmounts",
+        "chooseFromCollection",
         "chooseJoinDeck",
         "chooseN",
         "chooseOne",

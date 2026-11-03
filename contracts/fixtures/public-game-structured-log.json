@@ -101,6 +101,7 @@
     "settingsAbilitiesCannotReactToThemselves": true,
     "settingsAchievementsEnabled": true,
     "settingsAsIfRuling": "chapter1",
+    "settingsCustomRandomWeaknessPools": {},
     "settingsRolledUltimatumOrBoon": null,
     "settingsScreamedAllies": [],
     "settingsStrictAsIfAt": false,
@@ -129,10 +130,13 @@
       "assignedSanityHeal": [],
       "beganRoundAt": "782de537-8f5d-4eda-b849-2362e28402e5",
       "bondedCards": [],
+      "cannotDiscoverClues": null,
+      "cannotSpendClues": null,
       "cardCode": "c01001",
       "cardsUnderneath": [],
       "class": "Guardian",
       "combat": 4,
+      "commitProhibitions": [],
       "connectedLocations": [],
       "deck": [],
       "deckBuildingAdjustments": [],
@@ -188,6 +192,7 @@
         "contents": "782de537-8f5d-4eda-b849-2362e28402e5",
         "tag": "AtLocation"
       },
+      "playProhibitions": [],
       "playerId": "00000000-0000-0000-0000-000000000001",
       "previousLocation": null,
       "remainingActions": 3,
@@ -741,6 +746,7 @@
           }
         ],
         "choice": null,
+        "debugRevealedChaosTokens": [],
         "forceDraw": [],
         "pendingRequests": [],
         "revealedChaosTokens": [],
@@ -1339,6 +1345,7 @@
       "resignedCardCodes": [],
       "resolvedStories": [],
       "scope": "theGathering",
+      "sealedChaosTokens": [],
       "search": null,
       "setAsideCards": [
         {
@@ -1445,8 +1452,35 @@
   "modifiers": [],
   "name": "Contract fixture game",
   "otherInvestigators": {},
+  "outcome": null,
   "phase": "InvestigationPhase",
-  "phaseHistory": {},
+  "phaseHistory": {
+    "c01001": {
+      "historyActionsCompleted": 0,
+      "historyActionsSpent": 0,
+      "historyAttacksOfOpportunity": 0,
+      "historyCardsDrawn": 0,
+      "historyCluesDiscovered": {},
+      "historyDealtDamageTo": [],
+      "historyEnemiesAttackedBy": [],
+      "historyEnemiesDefeated": [],
+      "historyEnemiesDrawn": [],
+      "historyLocationsRevealed": [
+        "782de537-8f5d-4eda-b849-2362e28402e5"
+      ],
+      "historyLocationsSuccessfullyInvestigated": [],
+      "historyMoved": 0,
+      "historyMovedTo": [],
+      "historyPlayedCards": [],
+      "historyResourcesGained": 0,
+      "historySkillTestsPerformed": [],
+      "historySuccessfulAttacks": 0,
+      "historySuccessfulEvasions": 0,
+      "historySuccessfulExplore": false,
+      "historySuccessfulInvestigations": 0,
+      "historyTreacheriesDrawn": []
+    }
+  },
   "phaseStep": {
     "contents": "InvestigatorTakesActionStep",
     "tag": "InvestigationPhaseStep"
@@ -1711,6 +1745,7 @@
     "settingsAbilitiesCannotReactToThemselves": true,
     "settingsAchievementsEnabled": true,
     "settingsAsIfRuling": "chapter1",
+    "settingsCustomRandomWeaknessPools": {},
     "settingsRolledUltimatumOrBoon": null,
     "settingsScreamedAllies": [],
     "settingsStrictAsIfAt": false,
@@ -1726,7 +1761,33 @@
   "totalClues": 0,
   "totalDoom": 0,
   "treacheries": {},
-  "turnHistory": {},
+  "turnHistory": {
+    "c01001": {
+      "historyActionsCompleted": 0,
+      "historyActionsSpent": 0,
+      "historyAttacksOfOpportunity": 0,
+      "historyCardsDrawn": 0,
+      "historyCluesDiscovered": {},
+      "historyDealtDamageTo": [],
+      "historyEnemiesAttackedBy": [],
+      "historyEnemiesDefeated": [],
+      "historyEnemiesDrawn": [],
+      "historyLocationsRevealed": [
+        "782de537-8f5d-4eda-b849-2362e28402e5"
+      ],
+      "historyLocationsSuccessfullyInvestigated": [],
+      "historyMoved": 0,
+      "historyMovedTo": [],
+      "historyPlayedCards": [],
+      "historyResourcesGained": 0,
+      "historySkillTestsPerformed": [],
+      "historySuccessfulAttacks": 0,
+      "historySuccessfulEvasions": 0,
+      "historySuccessfulExplore": false,
+      "historySuccessfulInvestigations": 0,
+      "historyTreacheriesDrawn": []
+    }
+  },
   "turnPlayerInvestigatorId": "c01001",
   "undoActionStep": null,
   "undoPhaseStep": 3,

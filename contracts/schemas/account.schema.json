@@ -66,6 +66,9 @@
         },
         "phaseTransitionNotifications": {
           "type": "boolean"
+        },
+        "allowSpectatorsByDefault": {
+          "type": "boolean"
         }
       }
     },
@@ -76,7 +79,8 @@
         "username",
         "email",
         "beta",
-        "phaseTransitionNotifications"
+        "phaseTransitionNotifications",
+        "allowSpectatorsByDefault"
       ],
       "properties": {
         "username": {
@@ -90,6 +94,9 @@
           "type": "boolean"
         },
         "phaseTransitionNotifications": {
+          "type": "boolean"
+        },
+        "allowSpectatorsByDefault": {
           "type": "boolean"
         }
       }
