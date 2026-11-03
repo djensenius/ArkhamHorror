@@ -6,10 +6,11 @@ module Arkham.ArkhamDB.Campaign (
 
 import Arkham.Card (Card, CardCode, PlayerCard, onlyPlayerCards, toCardCode)
 import Arkham.ArkhamDB.Overlay
-import Arkham.Id (InvestigatorId)
+import Arkham.Id (InvestigatorId (..), CampaignId (..))
 import Arkham.ArkhamDB.Service (withOverlayProvenance, withoutExportedOverlay)
 import Arkham.Helpers.Deck (partitionReloadedDeck)
-import Arkham.Campaign.Types (campaignStep, campaignStore, campaignDecks)
+import Arkham.Campaign.Types (campaignStep, campaignStore, campaignDecks, campaignId, campaignMeta)
+import Arkham.Campaigns.TheDreamEaters.Meta qualified as Dream
 import Arkham.Classes.Entity (toAttrs)
 import Arkham.Game (Game (..), RunObservers (..), noRunObservers)
 import Arkham.Game.Utils (modeCampaign, gameInvestigators)
@@ -19,9 +20,13 @@ import Arkham.Decklist qualified as Decklist
 import Arkham.Message (Message (..))
 import Arkham.Taboo.Types (TabooList, fromTabooId)
 import Arkham.Target (Target (GameTarget))
-import Data.Aeson (Value, parseJSON)
+import Data.Aeson (Value, parseJSON, withObject, (.:), (.:?))
 import Data.Aeson.Types (parseMaybe)
 import Data.Map.Strict qualified as Map
+import Data.Text qualified as T
+import Data.UUID qualified as UUID
+import Entity.Arkham.Game (ArkhamGameId)
+import Arkham.Card.CardCode (unCardCode)
 import Relude
 
 -- Resolve materialized cards/proof separately from the durable association id.
@@ -47,6 +52,57 @@ campaignWriteBackSeatIdentity game iid = do
   investigator <- Map.lookup iid $ gameInvestigators game
   campaignWriteBackIdentity (campaignStore campaign) (Map.keys $ campaignDecks campaign)
     iid (investigatorForm (toAttrs investigator) == HomunculusForm)
+
+-- Only the full Dream-Eaters game has independent teams in one game row.
+-- Never use the partial campaign's throwing .part accessor for unknown state.
+-- Overlay/identity metadata already lives in the independent CampaignAttrs.
+campaignWriteBackNamespace :: CampaignId -> Value -> Maybe Text
+campaignWriteBackNamespace cid metadata
+  | cid /= CampaignId "06" = Just ""
+  | otherwise = do
+      (mode, current) <- parseMaybe (withObject "Dream-Eaters write-back identity" \o ->
+        (,) <$> o .: "campaignMode" <*> o .:? "currentCampaignMode") metadata
+      case mode of
+        Dream.PartialMode _ -> Just ""
+        Dream.FullMode -> case current of
+          Just Dream.TheDreamQuest -> Just "dreamQuest"
+          Just Dream.TheWebOfDreams -> Just "webOfDreams"
+          Nothing -> Nothing
+
+-- Both boundary enqueue and saved upgrade selection use the pre-transition
+-- game, including its stable Homunculus origin and active independent part.
+campaignWriteBackKey :: ArkhamGameId -> Game -> InvestigatorId -> Maybe Text
+campaignWriteBackKey gameId game iid = do
+  (stable, namespace) <- case modeCampaign game.gameMode of
+    Nothing -> Just (iid, "")
+    Just campaign -> do
+      (_, stable) <- campaignWriteBackSeatIdentity game iid
+      let attrs = toAttrs campaign
+      namespace <- campaignWriteBackNamespace (campaignId attrs) (campaignMeta attrs)
+      pure (stable, namespace)
+  pure $ UUID.toText (coerce gameId) <> "/" <> unCardCode (unInvestigatorId stable)
+    <> if T.null namespace then "" else "/" <> namespace
+
+-- Persisted dispatch checks mode, never attributes a legacy key to the CURRENT
+-- part. A part-qualified job remains valid when play switches to the other part.
+-- Missing/malformed game metadata also fails closed. The legacy lookup includes
+-- associations, links and outstanding pushes, not the live investigator URL.
+campaignKeyIsSafeWith
+  :: Monad m
+  => (ArkhamGameId -> m (Maybe Text))
+  -> (Text -> m Bool)
+  -> Text
+  -> m Bool
+campaignKeyIsSafeWith loadNamespace hasLegacy key = case T.splitOn "/" key of
+  game : iid : suffix | not (T.null iid), Just uuid <- UUID.fromText game -> do
+    namespace <- loadNamespace $ coerce uuid
+    case namespace of
+      Just "" -> pure $ null suffix
+      Just part | part `elem` ["dreamQuest", "webOfDreams"]
+        , suffix `elem` [["dreamQuest"], ["webOfDreams"]] ->
+          not <$> hasLegacy (game <> "/" <> iid)
+      _ -> pure False
+  _ -> pure False
 
 isWriteBackBoundary :: Message -> Bool
 isWriteBackBoundary = \case

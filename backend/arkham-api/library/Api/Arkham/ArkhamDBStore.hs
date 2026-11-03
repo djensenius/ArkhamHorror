@@ -2,9 +2,11 @@ module Api.Arkham.ArkhamDBStore where
 
 import Arkham.ArkhamDB
 import Arkham.ArkhamDB.Service
+import Arkham.ArkhamDB.Campaign (campaignKeyIsSafeWith, campaignWriteBackNamespace)
 import Arkham.Decklist (ArkhamDBDecklist)
+import Data.Aeson.Types (parseMaybe)
 import Database.Persist qualified as P
-import Database.Persist.Sql (Single, SqlBackend, rawExecute, rawSql, updateWhereCount)
+import Database.Persist.Sql (Single (..), SqlBackend, rawExecute, rawSql, updateWhereCount)
 import Import hiding (state)
 
 -- | Each runDB action is a transaction, including nonce consumption and the
@@ -32,7 +34,8 @@ persistentStoreWith validate database = ArkhamDBStore
       pure $ arkhamDBPushStatus job == "running" && matching == 1
   , renewPushClaim = \time (Entity key job) -> database do
       let renewedAt = max time $ arkhamDBPushUpdatedAt job
-      affected <- if arkhamDBPushStatus job /= "running" then pure 0 else updateWhereCount
+      safe <- writeBackCampaignsSafe (arkhamDBPushDeckId job) [arkhamDBPushCampaignKey job]
+      affected <- if not safe || arkhamDBPushStatus job /= "running" then pure 0 else updateWhereCount
         [ ArkhamDBPushId P.==. key, ArkhamDBPushStatus P.==. "running"
         , ArkhamDBPushStage P.==. arkhamDBPushStage job, ArkhamDBPushUpdatedAt P.==. arkhamDBPushUpdatedAt job
         , ArkhamDBPushGeneration P.==. arkhamDBPushGeneration job
@@ -136,6 +139,44 @@ persistentStoreWith validate database = ArkhamDBStore
       pure active
   , validateDeck = validate
   }
+
+-- Narrow identity projections only: do not deserialize the entire game or the
+-- other team's stored CampaignAttrs during claim/request admission. These has
+-- sibling This/That keys, just like This-only campaign intermissions.
+campaignKeyIsSafe :: forall m. MonadIO m => Text -> ReaderT SqlBackend m Bool
+campaignKeyIsSafe = campaignKeyIsSafeWith loadNamespace hasLegacy
+ where
+  loadNamespace gameId = do
+    rows <- rawSql
+      ("SELECT json_build_object('id', current_data #> '{gameMode,This,id}', 'meta', " <>
+       "json_build_object('campaignMode', current_data #> '{gameMode,This,meta,campaignMode}', " <>
+       "'currentCampaignMode', current_data #> '{gameMode,This,meta,currentCampaignMode}'))::text " <>
+       "FROM arkham_games WHERE id = ?")
+      [toPersistValue gameId] :: ReaderT SqlBackend m [Single Text]
+    pure do
+      Single encoded <- viaNonEmpty head rows
+      value <- decodeStrict' $ encodeUtf8 encoded
+      (cid, metadata) <- parseMaybe (withObject "Campaign identity" \o -> (,) <$> o .: "id" <*> o .: "meta") value
+      campaignWriteBackNamespace cid metadata
+  hasLegacy key = do
+    rows <- rawSql
+      ("SELECT EXISTS (SELECT 1 FROM arkhamdb_campaign_decks WHERE campaign_key = ? " <>
+       "UNION ALL SELECT 1 FROM arkhamdb_deck_links WHERE campaign_key = ? " <>
+       "UNION ALL SELECT 1 FROM arkhamdb_pushes WHERE campaign_key = ? AND status NOT IN ('succeeded', 'cancelled'))")
+      (replicate 3 $ toPersistValue key) :: ReaderT SqlBackend m [Single Bool]
+    pure $ rows /= [Single False]
+
+-- An ambiguous old association on a saved deck fences all its work, even when
+-- a different campaign/part has already queued a newer job. Never reset XP or
+-- repoint the association to make it runnable. Explicit repair is required.
+writeBackCampaignsSafe :: forall m. MonadIO m => ArkhamDeckId -> [Text] -> ReaderT SqlBackend m Bool
+writeBackCampaignsSafe deckId extra = do
+  rows <- rawSql
+    ("SELECT campaign_key FROM arkhamdb_campaign_decks WHERE deck_id = ? " <>
+     "UNION SELECT campaign_key FROM arkhamdb_deck_links WHERE deck_id = ? AND campaign_key IS NOT NULL " <>
+     "UNION SELECT campaign_key FROM arkhamdb_pushes WHERE deck_id = ? AND status NOT IN ('succeeded', 'cancelled')")
+    (replicate 3 $ toPersistValue deckId) :: ReaderT SqlBackend m [Single Text]
+  and <$> traverse campaignKeyIsSafe (ordNub $ extra <> [key | Single key <- rows])
 
 -- All account lifecycle and deck writes take the same user lock, including
 -- when no account exists. NO KEY UPDATE allows unrelated foreign-key inserts.

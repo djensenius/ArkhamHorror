@@ -6,7 +6,8 @@ import Api.Arkham.Helpers (GameApp (..), runGameApp)
 import Api.Arkham.Deck (toDeckErrors)
 import Api.Arkham.ArkhamDBWriteBack qualified as PersistentWriteBack
 import Arkham.Campaign (lookupCampaign)
-import Arkham.Campaign.Types (campaignStep, campaignDecks, campaignStoryCards, campaignStore)
+import Arkham.Campaign.Types (campaignStep, campaignDecks, campaignStoryCards, campaignStore, campaignMeta)
+import Arkham.Campaigns.TheDreamEaters.Meta qualified as Dream
 import Arkham.Classes.Entity (overAttrs, toAttrs)
 import Arkham.Prelude (These (This))
 import Arkham.Game.Utils (gameInvestigators, modeCampaign)
@@ -19,7 +20,7 @@ import System.IO.Error (userError)
 import Arkham.Game qualified as Game
 import Arkham.Game.State (GameState (IsActive))
 import Arkham.Difficulty (Difficulty (Easy))
-import Arkham.Id (PlayerId (..), InvestigatorId (..))
+import Arkham.Id (PlayerId (..), InvestigatorId (..), CampaignId (..))
 import Arkham.Classes.HasQueue (newQueue)
 import Arkham.Queue (queueToRef)
 import Arkham.Question (Question (ChooseUpgradeDeck, ContinueCampaign))
@@ -365,6 +366,25 @@ boundaryGame step = (Game.newCampaign "01" Nothing 1 1 Easy False)
   { Game.gameGameState = IsActive
   , Game.gameMode = This $ overAttrs (\attrs -> attrs {campaignStep = step}) $ lookupCampaign "01" Easy
   }
+
+identityGameId :: ArkhamGameId
+identityGameId = ArkhamGameKey UUID.nil
+
+legacyIdentityKey :: Text
+legacyIdentityKey = UUID.toText UUID.nil <> "/01001"
+
+dreamIdentityGame :: Dream.CampaignMode -> Maybe Dream.CampaignPart -> Game.Game
+dreamIdentityGame mode part = initial
+  { Game.gameEntities = initial.gameEntities {entitiesInvestigators = Map.singleton "01001" $ lookupInvestigator "01001" pid}
+  , Game.gameMode = This $ overAttrs (\attrs -> attrs
+      { campaignStep = UpgradeDeckStep PrologueStep
+      , campaignDecks = Map.singleton "01001" $ Deck []
+      , campaignMeta = toJSON $ Dream.Metadata mode part Nothing mempty mempty
+      }) $ lookupCampaign "06" Easy
+  }
+ where
+  initial = boundaryGame $ UpgradeDeckStep PrologueStep
+  pid = PlayerId $ UUID.fromWords 0 0 0 101
 
 -- Run the real deck seating/replacement queues, including Game.Runner's
 -- deck-list loading and Campaign.Runner's materialization, without SQL.
@@ -762,7 +782,7 @@ spec = describe "ArkhamDB campaign write-back" do
               storyCards = Map.findWithDefault [] deckId $ campaignStoryCards attrs
               snapshot = campaignWriteBackSnapshot (campaignStore attrs) deckId base cards storyCards [] Nothing Nothing
               investigator = fromMaybe (error "Missing live investigator") $ Map.lookup liveId $ gameInvestigators game
-              key = "game/" <> unCardCode (unInvestigatorId stableId)
+          key <- maybe (fail "Missing campaign key") pure $ campaignWriteBackKey identityGameId game liveId
           exportedOverlay snapshot `shouldBe` Just (toJSON overlay)
           modifyIORef' h.job \job -> job
             { arkhamDBPushCampaignKey = key, arkhamDBPushPayload = encodePushDeck snapshot
@@ -799,12 +819,132 @@ spec = describe "ArkhamDB campaign write-back" do
     drain [GainXP "11068b" GameSource 2, AddCampaignCardToDeck "11068b" DoNotShuffleIn $ story "01009" 802]
     later <- boundary >>= \game -> submit game "11068b"
     Map.lookup "01009" later.slots `shouldBe` Just 1
-    readIORef baselines `shouldReturn` Map.singleton "game/01001" 7
+    readIORef baselines `shouldReturn` Map.singleton legacyIdentityKey 7
     filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn`
       ["upgrade/123/5", "upgrade/124/0", "upgrade/125/2"]
     state <- readIORef h.linked
-    fmap arkhamDBDeckLinkCampaignKey (Map.lookup Linking.deckId state.storedLinks) `shouldBe` Just (Just "game/01001")
+    fmap arkhamDBDeckLinkCampaignKey (Map.lookup Linking.deckId state.storedLinks) `shouldBe` Just (Just legacyIdentityKey)
     Map.size state.storedLinks `shouldBe` 1
+
+  it "keeps same-owner same-investigator Dream-Eaters teams on separate saved targets and XP baselines" do
+    quest <- newHarness
+    web <- newHarness
+    let questGame = dreamIdentityGame Dream.FullMode $ Just Dream.TheDreamQuest
+        webGame = dreamIdentityGame Dream.FullMode $ Just Dream.TheWebOfDreams
+        webDeckId = ArkhamDeckKey $ UUID.fromWords 0 0 0 247
+    questKey <- maybe (fail "Missing quest key") pure $ campaignWriteBackKey identityGameId questGame "01001"
+    webKey <- maybe (fail "Missing web key") pure $ campaignWriteBackKey identityGameId webGame "01001"
+    questKey `shouldBe` legacyIdentityKey <> "/dreamQuest"
+    webKey `shouldBe` legacyIdentityKey <> "/webOfDreams"
+    let associations = Map.fromList
+          [(questKey, ArkhamDBCampaignDeck questKey Linking.deckId Linking.userId 0),
+           (webKey, ArkhamDBCampaignDeck webKey webDeckId Linking.userId 0)]
+    baselines <- newIORef $ Map.map arkhamDBCampaignDeckLastPushedXp associations
+    modifyIORef' web.linked \state -> state {Linking.storedLinks = Map.adjust
+      (\link -> link {arkhamDBDeckLinkRemoteDeckId = "456"}) Linking.deckId state.storedLinks}
+    writeIORef web.remotes $ Map.singleton "456" Linking.remote {ArkhamDB.remoteDeckId = "456"}
+    saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef quest.linked >>= maybe (fail "Missing saved deck") pure
+    let submit h game xp expectedDeck = do
+          -- Shared key used by enqueue and the UPGRADE target lookup; URL is
+          -- intentionally the same stale URL after a campaign copy.
+          key <- maybe (fail "Missing part key") pure $ campaignWriteBackKey identityGameId game "01001"
+          savedDeckUpgradeTargets (const $ pure $ Just saved)
+            (const $ expectationFailure "Association must win over URL" >> pure [])
+            Linking.userId (Map.lookup key associations) (Just "same-live-url")
+            `shouldReturn` [expectedDeck]
+          modifyIORef' h.job \job -> job
+            { arkhamDBPushCampaignKey = key, arkhamDBPushTotalXp = xp, arkhamDBPushStatus = "pending"
+            , arkhamDBPushStage = "ready", arkhamDBPushSourceId = Nothing, arkhamDBPushTargetId = Nothing
+            , arkhamDBPushPayload = encodePushDeck $ withExportedOverlay Nothing currentDeck
+            }
+          let writes = h.writes
+                { campaignXpBaseline = \k -> Map.findWithDefault 0 k <$> readIORef baselines
+                , finishPush = \entity remote -> do
+                    result <- h.writes.finishPush entity remote
+                    when (isJust result) $ modifyIORef' baselines $
+                      Map.adjust (acknowledgedCampaignXp $ entityVal entity) (arkhamDBPushCampaignKey $ entityVal entity)
+                    pure result
+                }
+          runWriteBack h.store writes h.client Linking.settings Linking.now False Linking.userId Linking.deckId
+          assertState h "succeeded"
+    submit quest questGame 5 Linking.deckId
+    submit web webGame 2 webDeckId
+    submit quest questGame 7 Linking.deckId
+    readIORef baselines `shouldReturn` Map.fromList [(questKey, 7), (webKey, 2)]
+    filter (T.isPrefixOf "upgrade/") <$> readIORef quest.calls `shouldReturn` ["upgrade/123/5", "upgrade/124/2"]
+    filter (T.isPrefixOf "upgrade/") <$> readIORef web.calls `shouldReturn` ["upgrade/456/2"]
+
+  for_ [("scenarioEnd", ForTarget GameTarget $ EndOfScenario Nothing), ("upgrade", FinishedUpgradingDecks)] \(label, message) ->
+    it ("uses the captured Dream-Eaters part rather than the " <> toString label <> " continuation's part") do
+      let quest = dreamIdentityGame Dream.FullMode $ Just Dream.TheDreamQuest
+          web = dreamIdentityGame Dream.FullMode $ Just Dream.TheWebOfDreams
+      gameRef <- newIORef quest
+      captured <- withCampaignWriteBackBoundary gameRef \observers -> do
+        for_ observers.observeMessage ($ message)
+        writeIORef gameRef web
+      (captured >>= \(_, game) -> campaignWriteBackKey identityGameId game "01001")
+        `shouldBe` Just (legacyIdentityKey <> "/dreamQuest")
+      (\game -> campaignWriteBackKey identityGameId game "01001") <$> readIORef gameRef
+        `shouldReturn` Just (legacyIdentityKey <> "/webOfDreams")
+
+  for_ [Dream.TheDreamQuest, Dream.TheWebOfDreams] \part ->
+    it ("preserves partial Dream-Eaters keys and refuses legacy full keys in " <> show part) do
+      campaignWriteBackKey identityGameId (dreamIdentityGame (Dream.PartialMode part) Nothing) "01001"
+        `shouldBe` Just legacyIdentityKey
+      let full = campaignWriteBackNamespace (CampaignId "06") $ toJSON $ Dream.Metadata Dream.FullMode (Just part) Nothing mempty mempty
+          safe = campaignKeyIsSafeWith (const $ pure full) (const $ pure False)
+      safe legacyIdentityKey `shouldReturn` False
+      safe (legacyIdentityKey <> "/dreamQuest") `shouldReturn` True
+      safe (legacyIdentityKey <> "/webOfDreams") `shouldReturn` True
+      safe (legacyIdentityKey <> "/unknown") `shouldReturn` False
+      campaignKeyIsSafeWith (const $ pure $ Just "") (const $ fail "No legacy probe for ordinary campaigns")
+        legacyIdentityKey `shouldReturn` True
+
+  for_ [Null, object ["campaignMode" .= Dream.FullMode],
+        object ["campaignMode" .= Dream.FullMode, "currentCampaignMode" .= ("unknown" :: Text)]] \metadata ->
+    it ("fails closed for unknown/malformed full-campaign identity: " <> show metadata) do
+      let game = dreamIdentityGame Dream.FullMode Nothing
+          malformed = game {Game.gameMode = This $ overAttrs (\attrs -> attrs {campaignMeta = metadata}) $
+            fromMaybe (error "Missing campaign") $ modeCampaign game.gameMode}
+          scope = campaignWriteBackNamespace (CampaignId "06") metadata
+      scope `shouldBe` Nothing
+      campaignWriteBackKey identityGameId malformed "01001" `shouldBe` Nothing
+      for_ [legacyIdentityKey, legacyIdentityKey <> "/dreamQuest"] \key ->
+        campaignKeyIsSafeWith (const $ pure scope) (const $ pure False) key `shouldReturn` False
+
+  for_ ["ready", "creating", "saving"] \stage ->
+    it ("fences already-queued ambiguous legacy " <> toString stage <> " work before dispatch without discarding accounting") do
+      h <- newHarness
+      writeIORef h.baseline 4
+      modifyIORef' h.job \job -> job
+        { arkhamDBPushCampaignKey = legacyIdentityKey, arkhamDBPushStage = stage
+        , arkhamDBPushSourceId = if stage == "ready" then Nothing else Just "123"
+        , arkhamDBPushTargetId = if stage == "saving" then Just "124" else Nothing
+        }
+      original <- readIORef h.job
+      before <- readIORef h.linked
+      let safeKey = campaignKeyIsSafeWith (const $ pure $ Just "webOfDreams") (const $ pure True)
+          safeDeck _ keys = and <$> traverse safeKey keys
+          writes = h.writes {claimPush = \time retry uid deckId -> do
+            job <- readIORef h.job
+            safe <- admitCampaignPush safeDeck (writeIORef h.job) job
+            if safe then h.writes.claimPush time retry uid deckId else pure Nothing}
+      replicateM_ 2 $ runWriteBack h.store writes h.client Linking.settings Linking.now True Linking.userId Linking.deckId
+      retained <- readIORef h.job
+      arkhamDBPushStatus retained `shouldBe` "failed"
+      arkhamDBPushError retained `shouldBe` Just "validationFailed"
+      let persisted value = map toPersistValue $ toPersistFields value
+      persisted retained {arkhamDBPushStatus = arkhamDBPushStatus original, arkhamDBPushError = arkhamDBPushError original}
+        `shouldBe` persisted original
+      readIORef h.baseline `shouldReturn` 4
+      after <- readIORef h.linked
+      fmap persisted after.storedDecks `shouldBe` fmap persisted before.storedDecks
+      fmap persisted after.storedLinks `shouldBe` fmap persisted before.storedLinks
+      readIORef h.calls `shouldReturn` []
+      -- Even a new part-aware intent cannot bypass a legacy association/link/
+      -- pending-job fence; the legacy row is not reused for either team.
+      for_ ["/dreamQuest", "/webOfDreams"] \part ->
+        safeKey (legacyIdentityKey <> part) `shouldReturn` False
 
   it "refuses unknown or colliding transformed write-back identities without guessing a fresh lineage" do
     campaignWriteBackIdentity mempty ["11068b"] "11068b" True `shouldBe` Nothing

@@ -250,6 +250,24 @@ hasCreationIntent job = arkhamDBPushStage job == "creating" || isJust (arkhamDBP
 accountingFencedPush :: ArkhamDBPush -> Bool
 accountingFencedPush job = arkhamDBPushError job `elem` [Just "boundaryUndone", Just "accountChanged"]
 
+-- Identity cannot be repaired by retry/keep/overwrite/save-as-new. Keep the
+-- complete intent for explicit repair; validationFailed is an existing typed
+-- failure, not a new public conflict reason. Preserve stronger accounting fences.
+ambiguousCampaignPush :: ArkhamDBPush -> ArkhamDBPush
+ambiguousCampaignPush job | accountingFencedPush job = job
+ambiguousCampaignPush job = job {arkhamDBPushStatus = "failed", arkhamDBPushError = Just "validationFailed"}
+
+admitCampaignPush
+  :: Monad m
+  => (ArkhamDeckId -> [Text] -> m Bool)
+  -> (ArkhamDBPush -> m ())
+  -> ArkhamDBPush
+  -> m Bool
+admitCampaignPush isSafe save job = do
+  safe <- isSafe (arkhamDBPushDeckId job) [arkhamDBPushCampaignKey job]
+  unless safe $ save $ ambiguousCampaignPush job
+  pure safe
+
 -- Disabling fences in-flight requests, but an already transmitted creation
 -- remains the oldest outstanding job until explicitly reconciled on re-enable.
 disabledPush :: ArkhamDBPush -> ArkhamDBPush

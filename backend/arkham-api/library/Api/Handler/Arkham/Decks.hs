@@ -22,12 +22,13 @@ import Import hiding (delete, on, update, (=.), (==.))
 import Import qualified as P
 
 import Api.Arkham.ArkhamDBWriteBack (queueCampaignWriteBack, dispatchCampaignWriteBack)
+import Api.Arkham.ArkhamDBStore (campaignKeyIsSafe, writeBackCampaignsSafe)
 import Api.Arkham.Deck (DeckError (..), toDeckErrors)
 import Api.Arkham.Helpers
 import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
 import Api.Handler.Arkham.Games.Shared (publishToRoom, requireGameAccess)
 import Arkham.Campaign.Types (campaignLog)
-import Arkham.ArkhamDB.Campaign (withCampaignWriteBackBoundary, campaignWriteBackSeatIdentity)
+import Arkham.ArkhamDB.Campaign (withCampaignWriteBackBoundary, campaignWriteBackKey)
 import Arkham.ArkhamDB.WriteBack (savedDeckUpgradeTargets, savedDeckUpgradeUpdates)
 import Arkham.ArkhamDB.Service (ArkhamDBError (..), adoptDecklist, arkhamDBErrorStatus)
 import Entity.Arkham.ArkhamDBAccount
@@ -295,18 +296,19 @@ putApiV1ArkhamGameDecksR gameId = do
                   -- Prepare all saved-list adoptions before writing either the
                   -- game or a deck. Copying a push marker first would hide an
                   -- unconsumed incorporated overlay from subsequent sync.
-                  let stableIdentity = case modeCampaign arkhamGameCurrentData.gameMode of
-                        Nothing -> Just investigatorId
-                        Just _ -> snd <$> campaignWriteBackSeatIdentity arkhamGameCurrentData investigatorId
                   prepared <- case mDecklist of
                     Just decklist
                       | sameInvestigator investigatorId decklist
-                      , Just stableIid <- stableIdentity -> do
-                      let campaignKey = UUID.toText (coerce gameId) <> "/" <> unCardCode (unInvestigatorId stableIid)
+                      , Just campaignKey <- campaignWriteBackKey gameId arkhamGameCurrentData investigatorId -> do
+                      safe <- if isNothing (modeCampaign arkhamGameCurrentData.gameMode)
+                        then pure True else campaignKeyIsSafe campaignKey
                       association <- fmap entityVal <$> getBy (UniqueArkhamDBCampaignDeck campaignKey)
-                      targets <- savedDeckUpgradeTargets Persist.get
+                      candidates <- if not safe then pure [] else savedDeckUpgradeTargets Persist.get
                         (\url -> P.selectList [ArkhamDeckUserId P.==. userId, ArkhamDeckUrl P.==. Just url] [])
                         userId association (attr investigatorDeckUrl investigatorEntity)
+                      -- Refusing optional persistence must not block gameplay
+                      -- or silently attribute legacy full-campaign accounting.
+                      targets <- filterM (\deckId -> writeBackCampaignsSafe deckId []) candidates
                       fmap sequence $ for (sort targets) \deckId -> do
                         -- Overlay editing writes this row too. Read under its
                         -- lock so consumption cannot erase a concurrent edit.

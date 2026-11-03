@@ -5,11 +5,11 @@ import Api.Arkham.Deck (toDeckErrorsWith)
 import Api.Handler.Arkham.CustomCards (userCustomCards)
 import Arkham.ArkhamDB
 import Arkham.ArkhamDB.Service (ArkhamDBAction, ArkhamDBError (..))
-import Arkham.Card.CardCode (CardCode, unCardCode)
+import Arkham.Card.CardCode (CardCode)
 import Arkham.Card.CustomCard (CustomCard)
 import Arkham.Decklist (ArkhamDBDecklist)
-import Arkham.Id (InvestigatorId (..), PlayerId (..))
-import Arkham.ArkhamDB.Campaign (campaignWriteBackSnapshot, campaignWriteBackSeatIdentity)
+import Arkham.Id (PlayerId (..))
+import Arkham.ArkhamDB.Campaign (campaignWriteBackSnapshot, campaignWriteBackSeatIdentity, campaignWriteBackKey)
 import Arkham.ArkhamDB.WriteBack
 import Arkham.Campaign.Types (Campaign (..), CampaignAttrs (..), invalidCards)
 import Arkham.Classes.Entity (toAttrs)
@@ -45,10 +45,12 @@ writeBackStore = ArkhamDBWriteBackStore
               pending <- oldestPush deckId
               case pending of
                 Just (Entity key job) | pushCanRun now retry job && generation == arkhamDBPushGeneration job -> do
-                  let claimed = job {arkhamDBPushStatus = "running", arkhamDBPushError = Nothing, arkhamDBPushUpdatedAt = now}
-                  replace key claimed
-                  P.update generation [ArkhamDBAccountLastWriteBackAttemptAt P.=. Just now]
-                  pure $ Just $ Entity key claimed
+                  safe <- admitCampaignPush writeBackCampaignsSafe (replace key) job
+                  if not safe then pure Nothing else do
+                    let claimed = job {arkhamDBPushStatus = "running", arkhamDBPushError = Nothing, arkhamDBPushUpdatedAt = now}
+                    replace key claimed
+                    P.update generation [ArkhamDBAccountLastWriteBackAttemptAt P.=. Just now]
+                    pure $ Just $ Entity key claimed
                 _ -> pure Nothing
           _ -> pure Nothing
   , requestPushRetry = \now uid deckId -> runDB do
@@ -60,8 +62,9 @@ writeBackStore = ArkhamDBWriteBackStore
         case (account, pending) of
           (Just (Entity generation value), Just (Entity key job))
             | arkhamDBPushUserId job == uid && arkhamDBPushGeneration job == generation
-            , writeBackAdmissionReady now value, pushCanRun now True job ->
-                P.update key [ArkhamDBPushStatus P.=. "pending"]
+            , writeBackAdmissionReady now value, pushCanRun now True job -> do
+                safe <- admitCampaignPush writeBackCampaignsSafe (replace key) job
+                when safe $ P.update key [ArkhamDBPushStatus P.=. "pending"]
           _ -> pure ()
   , checkpointPush = \previous updated -> runDB do
       active <- activePush previous
@@ -143,9 +146,10 @@ writeBackStore = ArkhamDBWriteBackStore
       mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
       pending <- oldestPush deckId
       fenced <- hasAccountAccountingFence deckId
+      safe <- writeBackCampaignsSafe deckId []
       case (mapping, pending) of
         (Just (Entity _ link), Just (Entity key job))
-          | not fenced, arkhamDBDeckLinkUserId link == uid && arkhamDBDeckLinkWriteBack link
+          | not fenced && safe, arkhamDBDeckLinkUserId link == uid && arkhamDBDeckLinkWriteBack link
           , canResolvePush mode job -> do
               active <- sameAccountGeneration uid $ arkhamDBPushGeneration job
               if not active then pure False else do
@@ -165,7 +169,8 @@ writeBackStore = ArkhamDBWriteBackStore
       unless enabled do
         outstanding <- selectList
           [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushUserId P.==. uid, ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]] []
-        for_ outstanding \(Entity key job) -> replace key $ disabledPush job
+        safe <- writeBackCampaignsSafe deckId []
+        for_ outstanding \(Entity key job) -> replace key $ if safe then disabledPush job else ambiguousCampaignPush job
       pruneCompletedPushes deckId
       pure $ affected == 1
   , deckWriteBackStatus = \uid -> runDB do
@@ -237,7 +242,8 @@ activePush previous@(Entity _ job) = do
   matching <- P.count $ pushClaim previous
   link <- getBy $ UniqueArkhamDBDeckLinkDeck $ arkhamDBPushDeckId job
   fenced <- hasAccountAccountingFence $ arkhamDBPushDeckId job
-  pure $ not fenced && active && matching == 1 && maybe False (arkhamDBDeckLinkWriteBack . entityVal) link
+  safe <- writeBackCampaignsSafe (arkhamDBPushDeckId job) [arkhamDBPushCampaignKey job]
+  pure $ safe && not fenced && active && matching == 1 && maybe False (arkhamDBDeckLinkWriteBack . entityVal) link
 
 -- activePush has acquired the user lock also used by saveImportedDeck, so
 -- neither a concurrent import nor another completion can claim this target
@@ -269,10 +275,10 @@ queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ game
       attrs = toAttrs campaign
   for_ (Map.toList $ gameInvestigators game) \(iid, investigator) -> do
     let ia = toAttrs investigator
-    for_ ((,) <$> owner (investigatorPlayerId ia) <*> campaignWriteBackSeatIdentity game iid) \(uid, (deckIid, stableIid)) -> do
-      let key = UUID.toText (coerce gameId) <> "/" <> unCardCode (unInvestigatorId stableIid)
+    for_ ((,,) <$> owner (investigatorPlayerId ia) <*> campaignWriteBackSeatIdentity game iid <*> campaignWriteBackKey gameId game iid) \(uid, (deckIid, stableIid), key) -> do
+      safeKey <- campaignKeyIsSafe key
       association <- getBy $ UniqueArkhamDBCampaignDeck key
-      saved <- case association of
+      saved <- if not safeKey then pure Nothing else case association of
         Just (Entity _ value) -> P.get (arkhamDBCampaignDeckDeckId value) <&> fmap (Entity $ arkhamDBCampaignDeckDeckId value)
         Nothing -> case investigatorDeckUrl ia of
           Nothing -> pure Nothing
@@ -294,8 +300,9 @@ queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ game
           generations <- rawSql "SELECT ?? FROM arkhamdb_accounts WHERE user_id = ? FOR KEY SHARE SKIP LOCKED" [toPersistValue uid]
           let generation = viaNonEmpty head (generations :: [Entity ArkhamDBAccount])
           fenced <- hasAccountAccountingFence deckId
+          safe <- writeBackCampaignsSafe deckId [key]
           case (mapping, generation, Map.lookup deckIid $ campaignDecks attrs) of
-            (Just (Entity _ link), Just (Entity generationId _), Just (Deck cards)) | not fenced, ownsCampaignDeck uid deck link -> do
+            (Just (Entity _ link), Just (Entity generationId _), Just (Deck cards)) | safe && not fenced, ownsCampaignDeck uid deck link -> do
               when (isNothing association) $ insert_ $ ArkhamDBCampaignDeck key deckId uid 0
               let story = Map.findWithDefault [] deckIid $ campaignStoryCards attrs
                   list = campaignWriteBackSnapshot (campaignStore attrs) deckIid (arkhamDeckList deck) cards story (case campaign of Campaign c -> invalidCards c) (investigatorSideDeck ia) (investigatorTaboo ia)
@@ -328,8 +335,14 @@ cancelCampaignWriteBack configured gameId restoredStep = cancelCampaignWriteBack
       (\users action -> traverse_ lockArkhamDBUser users >> action)
       (\key -> do
         current <- P.get key
-        for_ current \job -> unless (arkhamDBPushStatus job `elem` ["succeeded", "cancelled"]) $
-          replace key $ undonePush job)
+        for_ current \job -> unless (arkhamDBPushStatus job `elem` ["succeeded", "cancelled"]) do
+          safe <- writeBackCampaignsSafe (arkhamDBPushDeckId job) [arkhamDBPushCampaignKey job]
+          let retired = undonePush job
+          -- Preserve ambiguous legacy rows even if no creation was recorded.
+          -- Repair must not make an undone snapshot runnable again.
+          replace key $ if not safe && arkhamDBPushStatus retired == "cancelled"
+            then retired {arkhamDBPushStatus = "conflict", arkhamDBPushError = Just "boundaryUndone"}
+            else retired)
       toStep
 
 -- One bounded executor, no game lock, no per-boundary/per-retry forks. Only
