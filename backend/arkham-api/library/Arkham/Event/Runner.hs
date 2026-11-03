@@ -42,6 +42,7 @@ import Arkham.Projection
 import Arkham.Window (mkAfter)
 import Arkham.Window qualified as Window
 import Control.Lens (non)
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.IntMap.Strict qualified as IntMap
 
 instance RunMessage EventAttrs where
@@ -56,6 +57,8 @@ instance RunMessage EventAttrs where
 
 runEventMessage :: Runner EventAttrs
 runEventMessage msg a@EventAttrs {..} = runQueueT $ case msg of
+  -- As an asset: what the card remembers, bound back for its own abilities.
+  SetGlobal (is a -> True) key value -> pure $ a & metaMapL %~ KeyMap.insert key value
   IncreaseCustomization iid cardCode customization choices | toCardCode a == cardCode && a.owner == iid -> do
     case customizationIndex a customization of
       Nothing -> pure a
@@ -149,7 +152,12 @@ runEventMessage msg a@EventAttrs {..} = runQueueT $ case msg of
     push $ toDiscard GameSource a
     pure a
   ReadyExhausted -> pure $ a & exhaustedL .~ False
-  Ready (isTarget a -> True) -> pure $ a & exhaustedL .~ False
+  -- An event in play exhausts like an asset, so "your exhausted cards cannot
+  -- ready" has to stop it here too. Only the wider modifier: a card that says
+  -- /assets/ does not reach an event.
+  Ready (isTarget a -> True) -> do
+    modifiers <- getModifiers a.controller
+    pure $ if ControlledCardsCannotReady `elem` modifiers then a else a & exhaustedL .~ False
   Exhaust ea | a `isTarget` ea.target -> do
     unless eventExhausted $ pushAll ea.thenMsgs
     pure $ a & exhaustedL .~ True
@@ -158,7 +166,7 @@ runEventMessage msg a@EventAttrs {..} = runQueueT $ case msg of
   CardEnteredPlay _ card | toCardId a == toCardId card -> do
     pure $ a & beingPaidForL .~ False
   SealedChaosToken token _ (isTarget a -> True) -> do
-    pure $ a & sealedChaosTokensL %~ (token :)
+    pure $ a & sealedChaosTokensL %~ addSealedChaosToken token
   SealedChaosToken token _ _ -> do
     pure $ a & sealedChaosTokensL %~ filter (/= token)
   ReturnChaosTokens tokens -> pure $ a & sealedChaosTokensL %~ filter (`notElem` tokens)
@@ -242,7 +250,10 @@ runEventMessage msg a@EventAttrs {..} = runQueueT $ case msg of
             c <- field EventCard a.id
             push $ Devoured iid' c
             push $ RemovedFromPlay (toSource a)
-          _ -> pushAll [after]
+          -- A placement other than Limbo means the event stayed in play (it
+          -- attached, or sits in a play/threat area), so it is never discarded
+          -- here and the discard-replacement window must not open. #5942
+          _ -> pure ()
     pure a
   After (Revelation _iid (isSource a -> True)) -> do
     result <- liftRunMessage (FinishedEvent a.id) a

@@ -27,6 +27,7 @@ import Arkham.Matcher.Placement
 import Arkham.Matcher.SkillTest
 import Arkham.Matcher.SkillType
 import Arkham.Matcher.Source
+import Arkham.Matcher.Story
 import Arkham.Matcher.Target
 import Arkham.Matcher.Treachery
 import Arkham.Matcher.Value
@@ -99,6 +100,7 @@ data WindowMatcher
   | AttackOrEffectSpentLastUse Timing SourceMatcher TargetMatcher UseType
   | WouldPayCardCost Timing Who CardMatcher
   | WouldBeShuffledIntoDeck DeckMatcher CardMatcher
+  | CardRescued Timing Who CardMatcher
   | AddedToVictory Timing (Maybe Who) CardMatcher
   | PerformAction Timing Who ActionMatcher
   | PerformedSameTypeOfAction Timing Who ActionMatcher
@@ -115,6 +117,8 @@ data WindowMatcher
     -}
     EnemyWouldTakeDamageWithAmount Timing SourceMatcher EnemyMatcher ValueMatcher
   | WouldSearchDeck Timing Who DeckMatcher
+  | -- | "When a card would search the encounter deck to find an enemy".
+    WouldFindEncounterCard Timing Who TargetMatcher SearchMatcher
   | WouldLookAtDeck Timing Who DeckMatcher
   | LookedAtDeck Timing Who DeckMatcher
   | SearchedDeck Timing Who DeckMatcher
@@ -163,6 +167,7 @@ data WindowMatcher
   | MythosStep WindowMythosStepMatcher
   | LocationEntersPlay Timing LocationMatcher
   | ResolvesTreachery Timing Who TreacheryMatcher
+  | ResolvesStory Timing Who StoryMatcher
   | TreacheryEntersPlay Timing TreacheryMatcher
   | AgendaEntersPlay Timing AgendaMatcher
   | AssetEntersPlay Timing AssetMatcher
@@ -189,10 +194,16 @@ data WindowMatcher
   | DiscoverClues Timing Who Where ValueMatcher
   | WouldDiscoverClues Timing Who Where ValueMatcher SourceMatcher
   | GainsClues Timing Who ValueMatcher
+  | {- | The counterpart of 'LostActions'. @#when@ is before the gain lands, so
+    it can be cancelled by dropping the queued @Do (GainActions ...)@.
+    -}
+    GainsActions Timing Who SourceMatcher ValueMatcher
   | GainsResources Timing Who SourceMatcher ValueMatcher
   | SpendsResources Timing Who ValueMatcher
   | EnemyWouldAttack Timing Who EnemyAttackMatcher EnemyMatcher
   | EnemyAttacks Timing Who EnemyAttackMatcher EnemyMatcher
+  | -- Includes the initial Massive attack, before per-investigator delegation.
+    EnemyAttacksWithAnyTarget Timing EnemyAttackMatcher EnemyMatcher
   | EnemyAttacksEvenIfCancelled Timing Who EnemyAttackMatcher EnemyMatcher
   | EnemyAttacked Timing Who SourceMatcher EnemyMatcher
   | EnemyAttackedSuccessfully Timing Who SourceMatcher EnemyMatcher
@@ -288,6 +299,8 @@ data WindowMatcher
   | AssignedHorror Timing Who TargetListMatcher
   | DealtDamageOrHorror Timing SourceMatcher Who
   | InvestigatorDealtDamageOrHorror Timing SourceMatcher Who
+  | -- | "When an encounter card that you have drawn gains surge".
+    GainsSurge Timing Who SourceMatcher
   | WouldDrawEncounterCard Timing Who PhaseMatcher
   | WouldDrawCard Timing Who DeckMatcher
   | {- | 'WouldDrawCard', restricted by what caused the draw. The window itself
@@ -316,6 +329,8 @@ data WindowMatcher
   | GameEnds Timing
   | InvestigatorEliminated Timing Who
   | InvestigatorResigned Timing Who
+  | SuffersPhysicalTrauma Timing Who
+  | SuffersMentalTrauma Timing Who
   | AnyWindow
   | AnyWindowIfEnemy EnemyMatcher
   | NotAnyWindow

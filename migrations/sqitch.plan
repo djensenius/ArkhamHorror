@@ -42,3 +42,11 @@ arkhamdb_write_back_accounting_fences [arkhamdb_write_back] 2026-10-28T01:00:00Z
 arkham_deck_overlay_attachment [arkham_deck_overlay] 2026-10-28T02:00:00Z David Jensenius <david@jensenius.com> # Private identity for each saved overlay attachment
 arkhamdb_write_back_lookup_indexes [arkhamdb_write_back] 2026-11-03T04:08:14Z David Jensenius <david@jensenius.com> # Indexed write-back campaign identity lookups
 arkhamdb_link_states_expiry_index [arkhamdb_account_linking] 2026-11-03T09:30:00Z David Jensenius <david@jensenius.com> # Ordered bounded expiry cleanup for nonces and staged credentials
+arkham_build_connections [users] 2026-10-11T00:00:00Z Claude <noreply@anthropic.com> # arkham.build OAuth connections and pending authorization requests
+arkham_game_archives [arkham_games users] 2026-10-12T00:00:00Z Claude <noreply@anthropic.com> # Undo history offloaded to object storage, and the way back
+add_features_to_users [users] 2026-10-13T00:00:00Z Claude <noreply@anthropic.com> # Per-account grants for features that are not general yet
+investigator_expansion_card_sets [add_urls_to_card_sets] 2026-10-13T01:00:00Z Claude <noreply@anthropic.com> # Expansion icon, custom tokens and custom keywords on a card set
+arkham_third_edition_tables [users] 2026-10-14T00:00:00Z Claude <noreply@anthropic.com> # Third-edition tables in the database, where a game in progress belongs
+arkham_card_set_shares [arkham_custom_card_sets users] 2026-10-15T00:00:00Z Claude <noreply@anthropic.com> # A link that hands an unpublished set to a few people, and who has used it
+arkham_game_outcomes [arkham_game_stats] 2026-10-18T00:00:00Z Claude <noreply@anthropic.com> # How a finished game ended, for the admin stats panel
+allow_spectators [arkham_games users] 2026-10-18T01:00:00Z Claude <noreply@anthropic.com> # Games a host is happy to be watched, and the account default for new ones

@@ -1553,6 +1553,43 @@ generator input, now runs the disposable PostgreSQL integration suite, which
 changes the synthetic catalog fixture digests. The native minimum remains
 `0.1.53`; clients pinned to `0.1.55` are unaffected and need not repin.
 
+#### Upstream sync to c67fa99 (revision 0.1.57)
+
+Revision `0.1.57` merges upstream `halogenandtoast/ArkhamHorror` `c67fa99` and
+raises `nativeClientMinimumRevision` from `0.1.53` to `0.1.57`.
+
+Breaking for native clients:
+
+- `QuestionLabel` wrappers (`basic-choice-question.schema.json`) carry
+  `labelCards`, an array of card codes (empty when the label names no card),
+  instead of the nullable `card` string. Clients pinned to `0.1.53`-`0.1.56`
+  that require the `card` key must take the update-required path.
+
+Additive:
+
+- New `ChooseFromCollection` question (`investigatorId`, `source`,
+  `cardCodes`; answered by choice index) with the `chooseFromCollection`
+  presentation kind, and an optional presentation `labelCards` array when a
+  label names more than one card (`cardCode` stays the first).
+- `PublicGame.outcome` and `GameDetails.outcome`: `null` or a `GameOutcome`
+  (`result`, `certainty`, `note`, `ending`, `source`).
+- Investigators gain `playProhibitions`, `commitProhibitions`,
+  `cannotDiscoverClues` and `cannotSpendClues` (LogRef attributions); the chaos
+  bag gains `debugRevealedChaosTokens`; scenarios gain `sealedChaosTokens`; game
+  settings gain `settingsCustomRandomWeaknessPools`.
+- Spectators: `CreateGamePost.allowSpectators` (advertising only; a game stays
+  spectatable by id), `allowSpectatorsByDefault` on the current user and user
+  settings, `CurrentUser.features`, and the `GameWatcherCount` server message.
+- `GameUnarchived` and `GameUnarchiveFailed` server messages, and
+  `RoomClosed` reasons `abandoned` and `maintenance`.
+- `SiteSettings.maintenance`. While maintenance is on, every route except
+  `/health`, `/site-settings` and the admin maintenance switch, including
+  `/capabilities` and WebSocket upgrades, answers `503` with `Retry-After`.
+
+Clients must update Apple `ContractPin.swift`, and Linux `src/ContractPin.cpp`,
+`contracts/contract-pin.json` and vendored fixtures, to the merged backend
+commit and schemaRevision `0.1.57`.
+
 ### Locale catalog discovery
 
 `GET /capabilities` advertises a catalog with the `i18n.locale-catalog.v1`
@@ -1630,12 +1667,14 @@ both directions.
   version: a client that does not implement it must treat the catalog as
   unavailable rather than guess at the shape.
 - **Compatibility.** The Vue client reads none of it and is unaffected. Native
-  clients must honor `nativeClientMinimumRevision`: revisions before `0.1.53`
+  clients must honor `nativeClientMinimumRevision`: revisions before `0.1.57`
   must update before consuming this contract. The floor was raised from
   `0.1.50` because revision `0.1.53` can publish array-valued
   `chaosBag.forceDraw` payloads; native clients pinned to `0.1.50`-`0.1.52`
   decode that field as string-or-null and must take the update-required path
-  rather than fail during board decoding.
+  rather than fail during board decoding. It was raised again to `0.1.57`
+  because `QuestionLabel` wrappers now carry `labelCards` instead of `card`
+  (see "Upstream sync to c67fa99").
 
 Advertising is deployment configuration, not a build-time constant: see the
 `locale-catalog-*` settings in `backend/arkham-api/config/settings.yml` and

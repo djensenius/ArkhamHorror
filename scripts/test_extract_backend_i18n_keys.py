@@ -1946,6 +1946,29 @@ def test_only_known_caller_scope_alias_reasons_are_classified() -> None:
     FAILURES.append("an arbitrary alias reason was silently classified as caller-scope")
 
 
+def test_a_heading_story_emits_its_title_and_body() -> None:
+    keys = keys_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ do
+  story $ i18nWithHeading "intro"
+  flavor $ withHeading "intro2"
+""",
+        }
+    )
+    for expected in (
+        "standalone.testCampaign.intro.title",
+        "standalone.testCampaign.intro.body",
+        "standalone.testCampaign.intro2.title",
+        "standalone.testCampaign.intro2.body",
+    ):
+        check(expected in keys, f"heading emitters did not emit {expected}: {sorted(keys)}")
+
+
 def test_committed_registry_properties() -> None:
     artifact = json.loads(ARTIFACT.read_text(encoding="utf-8"))
     keys = {entry["key"] for entry in artifact["keys"]}
@@ -2102,6 +2125,7 @@ TESTS = (
     test_a_wrapper_emits_under_the_scope_it_pushes,
     test_a_presentation_emitter_keeps_a_module_from_being_waived,
     test_only_known_caller_scope_alias_reasons_are_classified,
+    test_a_heading_story_emits_its_title_and_body,
     test_committed_registry_properties,
 )
 

@@ -69,6 +69,8 @@ instance ToJSON Game where
       , "gameRemovedFromPlay" .= gameRemovedFromPlay g
       , "gameInSetup" .= gameInSetup g
       , "gameGameState" .= gameGameState g
+      , "gameOutcome" .= gameOutcome g
+      , "gameLastResolution" .= gameLastResolution g
       , "gameSkillTestResults" .= gameSkillTestResults g
       , "gameEnemyMoving" .= gameEnemyMoving g
       , "gameEnemyEvading" .= gameEnemyEvading g
@@ -94,6 +96,7 @@ instance ToJSON Game where
       , "gameAsIfAtIgnored" .= gameAsIfAtIgnored g
       , "gameLocationOffsets" .= gameLocationOffsets g
       , "gameCardPlayStack" .= gameCardPlayStack g
+      , "gameLogBlockStack" .= gameLogBlockStack g
       ]
   toEncoding g =
     pairs
@@ -144,6 +147,8 @@ instance ToJSON Game where
       <> ("gameRemovedFromPlay" .= gameRemovedFromPlay g)
       <> ("gameInSetup" .= gameInSetup g)
       <> ("gameGameState" .= gameGameState g)
+      <> ("gameOutcome" .= gameOutcome g)
+      <> ("gameLastResolution" .= gameLastResolution g)
       <> ("gameSkillTestResults" .= gameSkillTestResults g)
       <> ("gameEnemyMoving" .= gameEnemyMoving g)
       <> ("gameEnemyEvading" .= gameEnemyEvading g)
@@ -169,6 +174,7 @@ instance ToJSON Game where
       <> ("gameAsIfAtIgnored" .= gameAsIfAtIgnored g)
       <> ("gameLocationOffsets" .= gameLocationOffsets g)
       <> ("gameCardPlayStack" .= gameCardPlayStack g)
+      <> ("gameLogBlockStack" .= gameLogBlockStack g)
 
 instance FromJSON Game where
   parseJSON = withObject "Game" \o -> do
@@ -228,6 +234,9 @@ instance FromJSON Game where
     gameRemovedFromPlay <- o .: "gameRemovedFromPlay"
     gameInSetup <- o .: "gameInSetup"
     gameGameState <- o .: "gameGameState"
+    -- Games that finished before outcomes were recorded have none.
+    gameOutcome <- o .:? "gameOutcome" .!= Nothing
+    gameLastResolution <- o .:? "gameLastResolution" .!= Nothing
     gameSkillTestResults <- o .: "gameSkillTestResults"
     gameEnemyMoving <- o .: "gameEnemyMoving"
     gameEnemyEvading <- o .: "gameEnemyEvading"
@@ -239,6 +248,7 @@ instance FromJSON Game where
     gameActionCanBeUndone <- o .: "gameActionCanBeUndone"
     gameActionDiff <- o .: "gameActionDiff"
     let gameActionSnapshot = Transient Nothing
+        gameCollectionCards = Transient Nothing
     gameInAction <- o .: "gameInAction"
     gameCards <- o .: "gameCards"
     gameCardUses <-
@@ -257,5 +267,6 @@ instance FromJSON Game where
     gameLocationOffsets <- o .:? "gameLocationOffsets" .!= mempty
     -- .:? with a default: existing saves predate the stack.
     gameCardPlayStack <- o .:? "gameCardPlayStack" .!= mempty
+    gameLogBlockStack <- o .:? "gameLogBlockStack" .!= mempty
 
     pure Game {..}

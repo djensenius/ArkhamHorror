@@ -185,7 +185,7 @@ spec = describe "deterministic replay checkpoint harness" do
           ,
             ( QuestionWithSource GameSource Nothing
                 $ PayCostQuestion Free
-                $ QuestionLabel "wrapped" Nothing
+                $ QuestionLabel "wrapped" []
                 $ ChooseOne [Label "continue" [Noop]]
             , choiceAnswer
             )
@@ -193,7 +193,7 @@ spec = describe "deterministic replay checkpoint harness" do
           ,
             ( QuestionLabel
                 "amounts"
-                Nothing
+                []
                 (ChooseAmounts "amounts" (TotalAmountTarget 0) [] GameTarget)
             , amountsAnswer
             )
@@ -202,7 +202,7 @@ spec = describe "deterministic replay checkpoint harness" do
           , (PickScenarioSettings, StandaloneSettingsAnswer [])
           , (PickCampaignSettings, CampaignSettingsAnswer $ CampaignSettings [] mempty mempty [])
           , (destinyPrompt, destinyAnswer)
-          , (QuestionLabel "destiny" Nothing destinyPrompt, destinyAnswer)
+          , (QuestionLabel "destiny" [] destinyPrompt, destinyAnswer)
           , (PickCampaignSpecific "campaign" Aeson.Null, CampaignSpecificAnswer "choice" Aeson.Null)
           , (PickScenarioSpecific "scenario" Aeson.Null, ScenarioSpecificAnswer "choice" Aeson.Null)
           , (exchangePrompt, exchangeAnswer)

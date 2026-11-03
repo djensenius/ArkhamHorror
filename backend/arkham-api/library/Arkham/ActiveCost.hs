@@ -101,7 +101,12 @@ import GHC.Records
 
 activeCostActions :: ActiveCost -> [Action]
 activeCostActions ac = case ac.target of
-  ForAbility a -> #activate : a.actions
+  -- 'abilityActions' already adds #activate, and only for a non-basic
+  -- ActionAbility. Prefixing it here double-counted a real activation and, worse,
+  -- labelled the basic fight/evade/investigate/move abilities and every
+  -- reaction/fast ability an activate, so a cost modifier on #activate taxed them
+  -- all (#5895).
+  ForAbility a -> a.actions
   ForCard isPlayAction c ->
     [#play | isPlayAction == IsPlayAction]
       <> case ac.activeCostChosenOrAction of
@@ -506,7 +511,7 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
       push $ ShuffleCardsIntoDeck (Deck.InvestigatorDeck iid) bondedCards
       pure c
     ResolveEachHauntedAbility lid -> do
-      hauntedAbilities <- select $ HauntedAbility <> AbilityOnLocation (LocationWithId lid)
+      hauntedAbilities <- getResolvableHauntedAbilities iid lid
       pushIfAny hauntedAbilities
         $ chooseOneAtATime player [AbilityLabel iid ab [] [] [] | ab <- hauntedAbilities]
       -- No need to record payment... yet
@@ -726,6 +731,10 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
     DiscardAssetCost matcher -> do
       assets <- select (replaceYouMatcher iid matcher <> DiscardableAsset)
       push $ chooseOneSourced $ targetLabels assets $ only . pay . discardCost
+      pure c
+    ExileAssetCost matcher -> do
+      assets <- select (replaceYouMatcher iid matcher)
+      push $ chooseOneSourced $ targetLabels assets $ only . pay . exileCost
       pure c
     DiscardRandomCardCost -> do
       hand <- field InvestigatorHand iid
@@ -1112,8 +1121,9 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
       withPayment $ ResourcePayment payment
     AdditionalActionsCost -> do
       actionRemainingCount <- field InvestigatorRemainingActions iid
+      blockedActions <- getUnspendableActionCount iid
       let currentlyPaid = countAdditionalActionPayments c.payments
-      pushWhen (actionRemainingCount > 0)
+      pushWhen (actionRemainingCount > blockedActions)
         $ chooseOne
           player
           [ Label
@@ -1127,6 +1137,7 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
       pure c
     AdditionalActionsCostThatReducesResourceCostBy n nested -> do
       actionRemainingCount <- field InvestigatorRemainingActions iid
+      blockedActions <- getUnspendableActionCount iid
       let currentlyPaid = countAdditionalActionPayments c.payments
       case c.target of
         ForCard _ _ -> do
@@ -1138,7 +1149,7 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
             lockedActions = totalActionCost nested
           canAffordNested <-
             withAlteredGame withoutCanModifiers $ getCanAffordCost iid c.source actions c.windows nested
-          if actionRemainingCount > lockedActions
+          if actionRemainingCount - blockedActions > lockedActions
             then
               push
                 $ chooseOrRunOne player
@@ -1342,6 +1353,45 @@ payCostFrom msg c iid skipAdditionalCosts mCostSource cost = do
         Just placer -> do
           push $ InvestigatorPlaceCluesOnLocation placer source n
           withPayment $ CluePayment placer n
+    GroupPlaceClueOnLocationCost x locationMatcher -> do
+      totalClues <- getPlayerCountValue x
+      let lm = replaceYouMatcher iid locationMatcher
+      iids <- select $ InvestigatorAt lm
+      -- Each contributor pays 'PlaceClueOnLocationCost' themselves, so the clues
+      -- come from their pool and land on their own location, and each records its
+      -- own 'CluePayment'.
+      contributors <- forMaybeM iids \iid' -> do
+        clues <- getPlaceableClueCount iid'
+        if clues > 0
+          then do
+            name <- fieldMap InvestigatorName toTitle iid'
+            pure $ Just (iid', name, clues)
+          else pure Nothing
+      let place iid' n = PayCost acId iid' True (PlaceClueOnLocationCost (Static n))
+      case contributors of
+        -- A zero total, or nobody who can place a clue, is nothing to ask about:
+        -- an empty 'ChoosePaymentAmounts' would be a question with no answer.
+        _ | totalClues <= 0 -> pure ()
+        [] -> pure ()
+        [(iid', _, _)] -> push $ place iid' totalClues
+        xs | sum (map (\(_, _, clues) -> clues) xs) == totalClues ->
+          for_ xs \(iid', _, clues) -> push $ place iid' clues
+        xs -> do
+          rs <- getRandoms
+          let
+            paymentOptions =
+              zipWith
+                (\choiceId (iid', name, clues) -> PaymentAmountChoice choiceId iid' 0 clues name $ place iid' 1)
+                rs
+                xs
+          lead <- getLeadPlayer
+          push
+            $ Ask lead
+            $ ChoosePaymentAmounts
+              ("$placeCluesOnLocationsAsGroup total=i:" <> tshow totalClues)
+              (Just $ TotalAmountTarget totalClues)
+              paymentOptions
+      pure c
     GroupClueCostRange (sVal, eVal) locationMatcher -> do
       let lm = replaceYouMatcher iid locationMatcher
       mVal <- min eVal . getSum <$> selectAgg Sum InvestigatorClues (InvestigatorAt lm)
@@ -1763,6 +1813,9 @@ instance RunMessage ActiveCost where
               -- play off of Uncage the Soul)
               pushAll
                 $ (guard (notNull actions) *> [BeginAction, beforeWindowMsg])
+                -- Before the costs, so an effect waiting on "the next card you
+                -- play" is bound to this card by the time it is paid for.
+                <> [NextCardPlayed iid card]
                 <> mEffect
                 <> [ wouldPayWindowMsg
                    , Would
@@ -1889,6 +1942,8 @@ instance RunMessage ActiveCost where
     PaidCost acId _ _ payment | acId == c.id -> do
       pure $ c & costPaymentsL <>~ payment
     PayCostFinished acId | acId == c.id -> do
+      currentTick <- getWindowTick
+      let initiationTick = fromMaybe currentTick c.activeCostInitiationTick
       case c.target of
         ForAbility ability -> do
           if ability.index == NonActivateAbility
@@ -1918,7 +1973,8 @@ instance RunMessage ActiveCost where
                   if isFastAbility ability then filter (== Action.Parley) ability.actions else []
                 iid = c.investigator
               whenActivateAbilityWindow <- checkWindows [mkWhen (Window.ActivateAbility iid c.windows ability)]
-              afterActivateAbilityWindow <- checkWindows [mkAfter (Window.ActivateAbility iid c.windows ability)]
+              afterActivateAbilityWindow <-
+                checkWindowsAt initiationTick [mkAfter (Window.ActivateAbility iid c.windows ability)]
               afterMsgs <-
                 if isAction
                   then do
@@ -1944,7 +2000,8 @@ instance RunMessage ActiveCost where
           let iid = c.investigator
           let ability = restricted iid PlayAbility (Self <> Never) (ActionAbility #play Nothing $ ActionCost 1)
           whenActivateAbilityWindow <- checkWindows [mkWhen (Window.ActivateAbility iid c.windows ability)]
-          afterActivateAbilityWindow <- checkWindows [mkAfter (Window.ActivateAbility iid c.windows ability)]
+          afterActivateAbilityWindow <-
+            checkWindowsAt initiationTick [mkAfter (Window.ActivateAbility iid c.windows ability)]
           let actions = c.actions
           afterWindowMsgs <- checkWindows [mkAfter (Window.PerformAction iid action) | action <- actions]
           pushAll

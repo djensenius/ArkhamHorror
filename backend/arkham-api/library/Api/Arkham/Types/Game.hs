@@ -19,6 +19,7 @@ import Arkham.ClassSymbol
 import Arkham.Difficulty
 import Arkham.Game (PublicGame)
 import Arkham.Game.Settings (AsIfRuling)
+import Arkham.Game.Outcome (GameOutcome)
 import Arkham.Game.State
 import Arkham.Id
 import Arkham.Name
@@ -43,6 +44,11 @@ data CreateGamePost = CreateGamePost
   , asIfRuling :: Maybe AsIfRuling
   , ultimatumsAndBoons :: Set UltimatumOrBoon
   , achievementsEnabled :: Bool
+  , allowSpectators :: Bool
+  {- ^ list this game on the home page for anyone to watch. Off unless asked
+  for, which is also what the account default starts as. Decided here and only
+  here: nothing changes it once the game exists.
+  -}
   }
   deriving stock (Eq, Show, Generic)
 
@@ -64,6 +70,7 @@ instance FromJSON CreateGamePost where
     asIfRuling <- o .:? "asIfRuling"
     ultimatumsAndBoons <- o .:? "ultimatumsAndBoons" .!= mempty
     achievementsEnabled <- o .:? "achievementsEnabled" .!= True
+    allowSpectators <- o .:? "allowSpectators" .!= False
     pure CreateGamePost {..}
 
 newtype ClaimSeatPost = ClaimSeatPost
@@ -117,6 +124,8 @@ data GameDetails = GameDetails
   , scenario :: Maybe ScenarioDetails
   , campaign :: Maybe CampaignDetails
   , gameState :: GameState
+  , outcome :: Maybe GameOutcome
+  -- ^ How it ended, for a finished game; see "Arkham.Game.Outcome".
   , name :: Text
   , investigators :: [InvestigatorDetails]
   , otherInvestigators :: [InvestigatorDetails]

@@ -87,6 +87,8 @@ module Arkham.Custom.Ability (
   runCustomSteps,
   customSteps,
   runCustomRevelation,
+  runCustomStepsIn,
+  playWindowBindings,
   abilitiesMetaKey,
   handlersMetaKey,
   modifiersMetaKey,
@@ -104,7 +106,7 @@ import Arkham.Classes.Query
 -- modules into the cycle and onto their boot interfaces).
 
 import Arkham.Custom.Env
-import Arkham.Custom.Expr (evalExpr, runQuery)
+import Arkham.Custom.Expr (evalExpr, runQuery, valueList)
 import Arkham.Custom.Steps
 import Arkham.Helpers.Modifiers (ModifierType, modifySelect)
 import Arkham.Helpers.Window (windowMatches)
@@ -129,6 +131,7 @@ import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (parseMaybe)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
+import System.IO.Unsafe (unsafePerformIO)
 
 abilitiesMetaKey :: Text
 abilitiesMetaKey = "_abilities"
@@ -138,12 +141,6 @@ handlersMetaKey = "_handlers"
 
 modifiersMetaKey :: Text
 modifiersMetaKey = "_modifiers"
-
-revelationMetaKey :: Text
-revelationMetaKey = "_onRevelation"
-
-revelationPlacementMetaKey :: Text
-revelationPlacementMetaKey = "_revelationPlacement"
 
 data AbilitySpec = AbilitySpec
   { specType :: Value
@@ -155,6 +152,14 @@ data AbilitySpec = AbilitySpec
   @search@, @topOfDeck@, or in play when absent. A card only exists as an
   entity out of play if its def says so, which is why the def's zone list is
   derived from this rather than set beside it.
+  -}
+  , specNoAttacksOfOpportunity :: Maybe Value
+  {- ^ "This action does not provoke attacks of opportunity", which lives on the
+  ability rather than in its cost or its steps -- so there was no way to say it
+  and a card that printed it provoked anyway.
+
+  @true@ is every enemy; an enemy matcher narrows it to the ones named, which is
+  what "does not provoke attacks of opportunity from X" wants.
   -}
   , specSteps :: [Value]
   }
@@ -172,6 +177,8 @@ instance FromJSON AbilitySpec where
       .:? "tooltip"
       <*> o
       .:? "zone"
+      <*> o
+      .:? "noAttacksOfOpportunity"
       -- "effect" is the older name for a bare list of messages to push.
       <*> (o .:? "steps" >>= maybe (map pushStep <$> o .:? "effect" .!= []) pure)
 
@@ -182,10 +189,15 @@ data ModifierSpec = ModifierSpec
   { modKind :: Text
   , modMatcher :: Value
   , modTypes :: [Value]
-  , modCondition :: Maybe Value
-  {- ^ Gate on the situation. Modifiers are gathered while reading the game, not
-  while changing it, so a condition here can ask questions but cannot do
-  anything.
+  , modConditions :: [Value]
+  {- ^ Gate on the situation: every condition here has to hold. Modifiers are
+  gathered while reading the game, not while changing it, so a condition can ask
+  questions but cannot do anything.
+
+  Written as one condition or as a list of them. A list is "all of these", which
+  is what lets a gate be added to a modifier somebody else wrote -- a keyword's
+  "while this is active" over a card's own condition (see
+  "Arkham.Custom.SetDefs") -- rather than one of the two being lost.
   -}
   , modEach :: Maybe Value
   {- ^ A query whose results the modifier list is repeated over, each bound under
@@ -224,8 +236,7 @@ instance FromJSON ModifierSpec where
       <*> o
       .:? "modifiers"
       .!= []
-      <*> o
-      .:? "if"
+      <*> (maybe [] valueList <$> o .:? "if")
       <*> (o .:? "each")
       <*> (o .:? "eachBind" .!= "each")
       <*> (map toLet <$> o .:? "let" .!= [])
@@ -272,15 +283,77 @@ metaSpecs key def = fromMaybe [] do
   v <- Map.lookup key (cdMeta def)
   parseMaybe parseJSON v
 
+{- | Everything a card's meta has to be taken apart to answer, taken apart once.
+
+The three spec lists and the @request@ blocks are what the engine asks a custom
+card for, and it asks constantly: the abilities of every entity on every
+'Arkham.Helpers.Action.getActions', the modifiers of every entity on every
+preload, the handlers of every entity on every message. Each ask was a fresh
+parse of a meta key -- or, for the request blocks, a walk of the whole blob --
+of a def that had not changed since the last one.
+
+The fields are lazy, so a card still pays only for the lists something actually
+asks it for, and pays for each of them once.
+-}
+data CompiledCard = CompiledCard
+  { compiledAbilities :: ~[AbilitySpec]
+  , compiledModifiers :: ~[ModifierSpec]
+  , compiledHandlers :: ~[HandlerSpec]
+  , compiledRequests :: ~[Value]
+  }
+
+{- | Keyed by card code and stamped with the registry generation it was read
+under, so a card-builder save drops every compiled card at once rather than
+leaving one behaving the way it used to.
+-}
+{-# NOINLINE compiledCardCache #-}
+compiledCardCache :: IORef (Int, Map CardCode CompiledCard)
+compiledCardCache = unsafePerformIO (newIORef (-1, mempty))
+
+{-# NOINLINE compiledCard #-}
+compiledCard :: CardDef -> CompiledCard
+compiledCard def = unsafePerformIO do
+  generation <- customCardRegistryGeneration
+  (cachedGeneration, compiled) <- readIORef compiledCardCache
+  case Map.lookup code compiled of
+    Just c | cachedGeneration == generation -> pure c
+    _ -> do
+      let
+        c =
+          CompiledCard
+            { compiledAbilities = metaSpecs abilitiesMetaKey def
+            , compiledModifiers = metaSpecs modifiersMetaKey def
+            , compiledHandlers = metaSpecs handlersMetaKey def
+            , compiledRequests = requestBlocks (toJSON (cdMeta def))
+            }
+      atomicModifyIORef' compiledCardCache \(generation', compiled') ->
+        let kept = if generation' == generation then compiled' else mempty
+         in ((generation, Map.insert code c kept), ())
+      pure c
+ where
+  code = toCardCode def
+
 type CustomEntity a = (HasCardDef a, Sourceable a, Targetable a, HasCardCode a, ToJSON a)
 
 {- | The entity's own serialized fields, so @$id@ and friends resolve, plus the
 source and target it is addressed by (which are not fields of the attrs) and, for
 a signature card, the investigator it belongs to as @$investigator@.
 -}
+
+{- | What a card's own abilities, modifiers and steps can name.
+
+The entity's serialized fields, plus the handful the engine supplies, plus
+whatever the card has remembered: a @SetGlobal@ writes into @metaMap@, and its
+keys are bound here so a card can read back something it chose on an earlier
+turn -- "name a [[Trait]]" and then, rounds later, match on it. Real fields win
+a name clash, so remembering under the name of one shadows nothing.
+-}
 bindings :: CustomEntity a => a -> Env
-bindings a = KeyMap.fromList (own <> signatureOf) <> fields
+bindings a = KeyMap.fromList (own <> signatureOf) <> fields <> remembered
  where
+  remembered = case KeyMap.lookup "metaMap" fields of
+    Just (Object m) -> m
+    _ -> mempty
   own =
     [ ("source", toJSON (toSource a))
     , ("target", toJSON (toTarget a))
@@ -304,7 +377,7 @@ bindings a = KeyMap.fromList (own <> signatureOf) <> fields
 customAbilities :: CustomEntity a => a -> [Ability]
 customAbilities a =
   [ applySpec spec (mkAbility a idx abilityType)
-  | (idx, spec) <- zip [1 ..] (metaSpecs abilitiesMetaKey (toCardDef a))
+  | (idx, spec) <- zip [1 ..] (compiledAbilities (compiledCard (toCardDef a)))
   , Just abilityType <- [decodeWith env (specType spec)]
   ]
  where
@@ -315,8 +388,17 @@ customAbilities a =
           zoneCriterion (specZone spec)
             <> fromMaybe (abilityCriteria ab) (decodeWith env =<< specCriteria spec)
       , abilityLimit = fromMaybe (abilityLimit ab) (decodeWith env =<< specLimit spec)
-      , abilityTooltip = specTooltip spec <|> abilityTooltip ab
+      , abilityTooltip = ownText env <$> specTooltip spec <|> abilityTooltip ab
+      , abilityDoesNotProvokeAttacksOfOpportunity = noAttacksOfOpportunity spec
       }
+
+  {- Which enemies this ability does not provoke. @true@ is all of them; a
+  matcher is the narrower "from X" wording. Anything else -- including @false@ --
+  leaves the ability provoking, which is the printed default. -}
+  noAttacksOfOpportunity spec = case specNoAttacksOfOpportunity spec of
+    Just (Bool True) -> Just AnyEnemy
+    Just v -> decodeWith env v
+    Nothing -> Nothing
 
 {- | Where the card must be. Search and the top of the deck are zones the card
 is /put/ into rather than states it can be asked about, so they add nothing.
@@ -333,6 +415,10 @@ A card that is not in play is handed its messages wrapped in where it lives, so
 an ability with a @zone@ never sees a bare 'UseThisAbility'. Matching through
 the wrapper keeps the runners from having to know which zones exist.
 
+The discard is the exception: in-discard entities are handed the wrapped /and/
+the raw message (see @RunMessage Game@ in "Arkham.Game.Runner"), so matching
+'InDiscard' here as well ran the ability's steps twice. The raw form covers it.
+
 The windows come along because an ability that says "that many" is talking about
 the one it triggered on, and only the message still knows them.
 -}
@@ -344,7 +430,6 @@ pattern ZonedUseThisAbility iid source idx ws payment <-
 zonedAbilityUse :: Message -> Maybe (InvestigatorId, Source, Int, [Window], Payment)
 zonedAbilityUse = \case
   InHand _ m -> zonedAbilityUse m
-  InDiscard _ m -> zonedAbilityUse m
   InSearch m -> zonedAbilityUse m
   UseCardAbility iid source idx ws payment -> Just (iid, source, idx, ws, payment)
   _ -> Nothing
@@ -412,6 +497,32 @@ windowFields w = case toJSON (windowType w) of
     Nothing -> []
   _ -> []
 
+{- | The window a fast event was played in, bound the way an ability binds the
+window it triggered on.
+
+An event's "Play after you take 1 or more damage" is a window like any other,
+and what it carries -- how much damage -- is most of what such a card then does.
+Without this the card can see that it was played but not what it was played on,
+and "gain 2 resources for each damage taken" has no number to work from.
+
+The matcher is the card's own @fastWindow@, which is the same question the
+engine asked in deciding the event could be played at all.
+-}
+playWindowBindings :: (CustomEntity a, HasGame m) => a -> InvestigatorId -> [Window] -> m Env
+playWindowBindings a iid ws = case cdFastWindow (toCardDef a) of
+  Nothing -> pure mempty
+  Just matcher -> do
+    mwindow <- findM (\w -> windowMatches iid (toSource a) w matcher) ws
+    pure $ case mwindow of
+      Nothing -> mempty
+      Just w -> KeyMap.fromList $ ("window", toJSON w) : windowFields w
+
+-- | As 'runCustomSteps', with more bindings in scope than the entity's own.
+runCustomStepsIn
+  :: (CustomEntity a, HasGameLogger m, ReverseQueue m) => a -> InvestigatorId -> Env -> Text -> m ()
+runCustomStepsIn a iid extra key =
+  runSteps (extra <> KeyMap.insert "iid" (toJSON iid) (bindings a)) (customSteps a key)
+
 {- | Run the steps stored under a named meta key.
 
 Used for the odd hook that is not an ability or a message handler -- an
@@ -453,6 +564,10 @@ customRevelationPlacement def iid
   | otherwise = case customMetaMaybe revelationPlacementMetaKey def of
       Just ("threatArea" :: Text) -> Just (InThreatArea iid)
       Just "playArea" -> Just (InPlayArea iid)
+      -- What the builder writes for a card its own steps place, and for a
+      -- treachery that is discarded once it resolves: no placement, said out
+      -- loud so it is one of the answers rather than the absence of one.
+      Just "none" -> Nothing
       _ -> Nothing
 
 {- | Pick up a @distribute@ block where its ask left off.
@@ -485,6 +600,33 @@ entity -- by its target, its source, or its id. Without that check a handler
 would fire for every copy of the card and for messages aimed at other entities
 entirely.
 -}
+
+{- | Pick up a @search@ block where its ask left off.
+
+The two answers a search can give -- these cards, or none -- are the two
+branches written beside the ask, so this is the same trip 'resumeDistribute'
+makes. @$cards@ holds everything found and @$card@ the first of them, which is
+what a search for one card wants and what a step that acts on a card can take.
+-}
+resumeSearch :: (CustomEntity a, HasGameLogger m, ReverseQueue m) => a -> Message -> m ()
+resumeSearch a = \case
+  SearchFound _ (LabeledTarget key target) _ cards | target == toTarget a ->
+    for_ (block key) \spec -> do
+      let o = specObject spec
+          name = textField mempty o "bind" "card"
+      runSteps
+        ( KeyMap.insert (Key.fromText (name <> "s")) (toJSON cards)
+            $ KeyMap.insert (Key.fromText name) (maybe Null toJSON (listToMaybe cards))
+            $ bindings a
+        )
+        (maybe [] subSteps (KeyMap.lookup "onFound" o))
+  SearchNoneFound _ (LabeledTarget key target) | target == toTarget a ->
+    for_ (block key) \spec ->
+      runSteps (bindings a) (maybe [] subSteps (KeyMap.lookup "onNoneFound" (specObject spec)))
+  _ -> pure ()
+ where
+  block key = lookup key (searchBlocks (toJSON (cdMeta (toCardDef a))))
+
 {- | Pick up steps that were deferred to the queue.
 
 A @choose@ that re-asks has to read the board again after each choice, so it
@@ -500,24 +642,38 @@ resumeCustomSteps a = \case
 runCustomHandlers :: (CustomEntity a, HasGameLogger m, ReverseQueue m) => a -> Message -> m ()
 runCustomHandlers a msg = do
   resumeDistribute a msg
+  resumeSearch a msg
   resumeCustomSteps a msg
-  case toJSON msg of
+  {- Nothing below can fire for a card that listens for nothing, and deciding
+  that costs a map lookup. Serializing the message and searching it for a
+  mention of this card costs a great deal more, and was being done for every
+  message the game ran against every custom entity on the table. -}
+  unless (null handlerSpecs && null blocks) $ case toJSON msg of
     Object o -> handlers o
     _ -> pure ()
  where
+  compiled = compiledCard (toCardDef a)
+  handlerSpecs = compiledHandlers compiled
+  blocks = compiledRequests compiled
+
   handlers o = do
     let mentioned = any (`isSubValue` Object o) [toJSON (toTarget a), toJSON (toSource a)]
-    for_ (metaSpecs @HandlerSpec handlersMetaKey (toCardDef a)) \handler ->
+    for_ handlerSpecs \handler ->
       when (mentioned || handlerGlobal handler) $ for_ (matched (handlerOn handler) o) \fields -> do
         let env = messageBindings o fields <> bindings a
-            holds (l, r) = sameValue (substitute env l) (substitute env r)
-        when (all holds (handlerRequires handler)) $ runSteps env (handlerSteps handler)
+            {- Both sides are worked out, not merely substituted. A pair that
+            could only compare a binding against a literal cannot ask which
+            KIND of message arrived -- and a message that wraps another (a
+            `Will` carrying what is about to happen) can be told apart no
+            other way. -}
+            holds (l, r) = sameValue <$> evalExpr env l <*> evalExpr env r
+        whenM (allM holds (handlerRequires handler)) $ runSteps env (handlerSteps handler)
 
     {- A `request` step listens the same way, but its steps were written beside
        the message that asked rather than in a section of their own. Every pair
        in the engine routes its answer by source or by target -- both of which
        are this card -- so the mention check is the whole of the matching. -}
-    when mentioned $ for_ (requestBlocks (toJSON (cdMeta (toCardDef a)))) \block -> do
+    when mentioned $ for_ blocks \block -> do
       let b = specObject block
       for_ (KeyMap.lookup "on" b >>= parseMaybe parseJSON) \(name :: Text) ->
         for_ (matched name o) \fields ->
@@ -552,12 +708,12 @@ selects. This is how a custom card reaches other cards -- giving an enemy a
 keyword, say -- rather than only acting on itself.
 -}
 customModifiers :: (CustomEntity a, HasModifiersM m) => a -> m ()
-customModifiers a = for_ (metaSpecs @ModifierSpec modifiersMetaKey (toCardDef a)) \spec -> do
+customModifiers a = for_ (compiledModifiers (compiledCard (toCardDef a))) \spec -> do
   let holds (l, r) = sameValue (substitute baseEnv l) (substitute baseEnv r)
   -- @requires@ first, because it is the one gate that asks the game nothing.
   when (all holds (modRequires spec)) do
     env <- bindLets spec
-    applies <- maybe (pure True) (runReadCondition env) (modCondition spec)
+    applies <- allM (runReadCondition env) (modConditions spec)
     when applies $ case modKind spec of
       "enemy" -> apply @EnemyMatcher env spec
       "location" -> apply @LocationMatcher env spec

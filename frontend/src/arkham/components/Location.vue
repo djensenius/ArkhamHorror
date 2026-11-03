@@ -4,11 +4,11 @@ import { onBeforeUnmount, ComputedRef, ref, computed, watch, nextTick } from 'vu
 import { useDebug } from '@/arkham/debug'
 import { CARD_FLIGHT_ATTR, useCardFlight } from '@/arkham/cardFlight'
 import { Game } from '@/arkham/types/Game'
+import { investigatorMovementName } from '@/arkham/investigatorMovement'
 import { imgsrc } from '@/arkham/helpers'
 import { cardArt, cardImage } from '@/arkham/cardImages'
 import { keyToId } from '@/arkham/types/Key'
 import { useGameChoices, useStickyChoicesSource } from '@/arkham/composables/useGameChoices'
-import { proxyOriginId } from '@/arkham/types/Source'
 import { useGameIndexes } from '@/arkham/composables/useGameIndexes'
 import { useCardFlip } from '@/arkham/composables/useCardFlip'
 import DebugLocation from '@/arkham/components/debug/Location.vue'
@@ -33,7 +33,7 @@ import PoolItem from '@/arkham/components/PoolItem.vue'
 import TokenPool from '@/arkham/components/TokenPool.vue'
 import * as Arkham from '@/arkham/types/Location'
 import { TokenType } from '@/arkham/types/Token'
-import { cardFacedown, Card } from '../types/Card'
+import { cardFacedown, referenceCard, Card } from '../types/Card'
 import useHighlighter from '@/composable/useHighlighter'
 import { IsMobile } from '@/arkham/isMobile'
 import { useDbCardStore } from '@/stores/dbCards'
@@ -461,9 +461,9 @@ const breaches = computed(() => {
   return 0
 })
 const investigators = computed(() => {
-  return props.location.investigators
+  return [...new Set(props.location.investigators)]
     .map((i) => props.game.investigators[i])
-    .filter((i) => i.placement.tag === 'AtLocation')
+    .filter((i) => i && i.placement.tag === 'AtLocation')
 })
 
 
@@ -551,14 +551,19 @@ function onDrop(event: DragEvent) {
   }
 }
 
-const cardsUnderneathToShow = computed(() =>
-  debug.active || isTillinghastEsoterica.value
+const canReferenceAbductedCards = computed(() =>
+  props.game.scenario?.id.replace(/^c/, '') === '73001' &&
+  ['73050', '73052'].includes(props.location.cardCode.replace(/^c/, ''))
+)
+const cardsUnderneathToShow = computed(() => {
+  if (canReferenceAbductedCards.value) return props.location.cardsUnderneath.map(referenceCard)
+  return debug.active || isTillinghastEsoterica.value
     ? props.location.cardsUnderneath
     : playerCardsUnderneath.value
-)
+})
 const hasFacedownCardsUnderneath = computed(() => props.location.cardsUnderneath.some(cardFacedown))
 const canShowCardsUnderneath = computed(() => {
-  if (debug.active) return props.location.cardsUnderneath.length > 0
+  if (debug.active || canReferenceAbductedCards.value) return props.location.cardsUnderneath.length > 0
   if (isTillinghastEsoterica.value) {
     return props.location.cardsUnderneath.length > 0 && !hasFacedownCardsUnderneath.value
   }
@@ -568,18 +573,15 @@ const showCardsUnderneath = () => emits('show', cardsUnderneathToShow, 'Cards Un
 const isAttackTarget = computed(() => props.game.enemyAttackTargets.some((e) => e.target.contents === props.location.id))
 const highlighted = computed(() => highlighter.highlighted.value === props.location.id || isAttackTarget.value)
 
-// Yellow marks the actor/source of what is happening. Two cases put this location there:
-// a pending question wrapped in QuestionWithSource (e.g. the location charging an
-// additional cost to leave it), and an offered proxied ability this location granted to
-// the card it now sits on.
+// Yellow marks the source of a pending question (e.g. an additional move cost).
+// Offered proxied abilities highlight their origin only through button hover.
 const choicesSource = useStickyChoicesSource(() => props.game, () => props.playerId)
 const sourceHighlighted = computed(() => {
+  if (highlighter.sourceHighlighted.value === props.location.id) return true
   const source = choicesSource.value
   if (source !== null && 'contents' in source && source.contents === props.location.id) return true
 
-  return choices.value.some(
-    (c) => c.tag === MessageType.ABILITY_LABEL && proxyOriginId(c.ability.source) === props.location.id
-  )
+  return false
 })
 
 function isVehicleAsset(assetId: string): boolean {
@@ -609,7 +611,7 @@ const hasAnyLocationVehicleAssets = computed(() =>
           v-for="investigator in investigators"
           :key="investigator.id"
           :data-investigator-mini="investigator.id"
-          :style="{ viewTransitionName: `investigator-${investigator.id}` }"
+          :style="{ viewTransitionName: investigatorMovementName(investigator, location.id) }"
           class="investigator-mini-mover"
         >
           <Investigator
@@ -635,7 +637,15 @@ const hasAnyLocationVehicleAssets = computed(() =>
         />
       </div>
       <div class="location-column">
-        <div class="card-frame" :class="{ explosion, 'location--objective': hasObjective, 'objective-ring': hasObjective }" ref="frame" @click="clicked">
+        <div
+          class="card-frame"
+          :class="{ explosion, 'location--objective': hasObjective, 'objective-ring': hasObjective }"
+          ref="frame"
+          @click="clicked"
+          @drop="onDrop"
+          @dragover.prevent="dragover"
+          @dragenter.prevent
+        >
           <Locus v-if="locus" class="locus" />
           <span v-if="blocked" class="status-icon" v-tooltip="'Blocked'">
             <font-awesome-icon :icon="['fab', 'expeditedssl']" />
@@ -688,9 +698,6 @@ const hasAnyLocationVehicleAssets = computed(() =>
                 :src="displayedImage"
                 :class="{ 'location--can-interact': canInteract && !hasObjective && !blocked, 'location--can-interact-cursor': canInteract, 'source-highlight': sourceHighlighted }"
                 draggable="false"
-                @drop="onDrop"
-                @dragover.prevent="dragover"
-                @dragenter.prevent
               />
             </template>
           </div>
@@ -951,6 +958,16 @@ img.card.source-highlight {
   padding: 5px 10px;
 }
 
+.location-column > .debug-open {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding-inline: 0;
+  text-align: center;
+}
+
 .location-column {
   display: flex;
   flex-direction: column;
@@ -1147,6 +1164,8 @@ img.card.source-highlight {
 
 .pool.location-pool {
   position: absolute;
+  /* Objective locations raise the card art to layer 1. Keep tokens above it. */
+  z-index: var(--z-index-2);
   top: 50%;
   align-items: center;
   display: flex;

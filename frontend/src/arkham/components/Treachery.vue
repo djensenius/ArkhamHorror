@@ -3,7 +3,9 @@ import { computed, ref, watch } from 'vue';
 import MissingCardBadge from '@/arkham/components/MissingCardBadge.vue';
 import { CARD_FLIGHT_ATTR, useCardFlight } from '@/arkham/cardFlight'
 import { useDebug } from '@/arkham/debug';
+import { cardDropHandlers, treacheryTarget } from '@/arkham/debugCardDrop';
 import { cardImage } from '@/arkham/cardImages';
+import { toCardContents } from '@/arkham/types/Card';
 import type { Game } from '@/arkham/types/Game';
 import * as ArkhamGame from '@/arkham/types/Game';
 import type { AbilityLabel, AbilityMessage, Message } from '@/arkham/types/Message';
@@ -12,6 +14,7 @@ import AbilityButton from '@/arkham/components/AbilityButton.vue'
 import AbilitiesMenu from '@/arkham/components/AbilitiesMenu.vue'
 import { IsMobile } from '@/arkham/isMobile'
 import Token from '@/arkham/components/Token.vue';
+import CardDebugWindow from '@/arkham/components/debug/CardDebugWindow.vue';
 import * as Arkham from '@/arkham/types/Treachery';
 
 export interface Props {
@@ -54,6 +57,8 @@ watch(() => props.mobileHandOpen, (open) => {
 })
 const image = computed(() => cardImage(props.treachery.cardCode))
 const id = computed(() => props.treachery.id)
+const debugging = ref(false)
+const cardDrop = cardDropHandlers(props.game.id, () => treacheryTarget(props.treachery.id))
 const choices = computed(() => ArkhamGame.choices(props.game, props.playerId))
 const isExhausted = computed(() => props.treachery.exhausted)
 
@@ -108,6 +113,25 @@ function handleCardClick() {
 
   emits('choose', cardAction.value)
 }
+
+/* A card whose identity has been retargeted is really something else underneath
+ * -- Unleashed Chaos (Proliferation) becomes an exact copy of the card drawn
+ * after it, keeping its own CardId and its real code in `originalCardCode`.
+ * Without this the two copies are indistinguishable on the board. */
+const impersonating = computed(() => {
+  const card = props.game.cards?.[props.treachery.cardId]
+  const original = card && toCardContents(card).originalCardCode
+  return original && original !== props.treachery.cardCode ? original : null
+})
+
+/* Filtered rather than mapped straight off the id list: the ids and the entity
+ * map arrive in the same payload, but a treachery that left play between them
+ * would otherwise render as `undefined`. */
+const attachedTreacheries = computed(() =>
+  (props.treachery.treacheries ?? [])
+    .map((tid) => props.game.treacheries[tid])
+    .filter((t) => !!t),
+)
 </script>
 <template>
   <div
@@ -115,8 +139,16 @@ function handleCardClick() {
     :class="{ attached, exhausted: isExhausted }"
     :[CARD_FLIGHT_ATTR]="treachery.cardId"
     :style="cardFlightStyle"
+    v-bind="cardDrop"
   >
     <MissingCardBadge :card-code="treachery.cardCode" />
+    <img
+      v-if="impersonating"
+      class="impersonating-badge"
+      :src="cardImage(impersonating)"
+      :title="$t('treachery.copyOf')"
+      aria-hidden="true"
+    />
     <AbilityButton
       v-if="isInHand && !canUseMobileAbilityMenu"
       v-for="ability in abilities"
@@ -126,16 +158,26 @@ function handleCardClick() {
       :game="game"
       @click="$emit('choose', ability.index)"
     />
-    <img
-      ref="cardFrame"
-      :src="image"
-      class="card"
-      :class="{ 'treachery--can-interact': canHighlight, attached, 'in-hand': isInHand }"
-      :draggable="tuckable || undefined"
-      @dragstart="startDrag"
-      @click="handleCardClick"
-      :data-delay="overlayDelay"
-    />
+    <div class="treachery-face">
+      <img
+        ref="cardFrame"
+        :src="image"
+        class="card"
+        :class="{ 'treachery--can-interact': canHighlight, attached, 'in-hand': isInHand }"
+        :draggable="tuckable || undefined"
+        @dragstart="startDrag"
+        @click="handleCardClick"
+        :data-delay="overlayDelay"
+      />
+      <div class="pool">
+        <TokenPool
+          :tokens="treachery.tokens"
+          :overrides="tokenOverrides"
+          :target="{ tag: 'TreacheryTarget', contents: treachery.id }"
+        />
+        <Token v-for="(sealedToken, index) in treachery.sealedChaosTokens" :key="index" :token="sealedToken" :playerId="playerId" :game="game" @choose="choose" />
+      </div>
+    </div>
     <AbilityButton
       v-if="!isInHand"
       v-for="ability in abilities"
@@ -154,18 +196,32 @@ function handleCardClick() {
       position="top"
       @choose="$emit('choose', $event)"
     />
-    <div class="pool">
-      <TokenPool
-        :tokens="treachery.tokens"
-        :overrides="tokenOverrides"
-        :target="{ tag: 'TreacheryTarget', contents: treachery.id }"
-      />
-      <Token v-for="(sealedToken, index) in treachery.sealedChaosTokens" :key="index" :token="sealedToken" :playerId="playerId" :game="game" @choose="choose" />
-    </div>
+
+    <!-- A treachery attached to this one, drawn as a strip under the host card
+         the way an enemy's attachments are. Recursive by implicit self-reference. -->
+    <Treachery
+      v-for="attached in attachedTreacheries"
+      :key="attached.id"
+      :treachery="attached"
+      :game="game"
+      :playerId="playerId"
+      :attached="true"
+      @choose="$emit('choose', $event)"
+    />
 
     <template v-if="debug.active">
       <button @click="debug.send(game.id, {tag: 'Discard', contents: [null, { tag: 'GameSource' }, { tag: 'TreacheryTarget', contents: id}]})">{{ $t('treachery.discard') }}</button>
+      <button class="debug-open" @click="debugging = true">{{ $t('enemy.debug') }}</button>
     </template>
+    <CardDebugWindow
+      v-if="debugging"
+      :game="game"
+      :title="$t('debug.card.treacheryTitle')"
+      :image="image"
+      :sealedTokens="treachery.sealedChaosTokens"
+      :target="{ tag: 'TreacheryTarget', contents: id }"
+      @close="debugging = false"
+    />
   </div>
 </template>
 
@@ -187,6 +243,14 @@ function handleCardClick() {
   flex-direction: column;
   position: relative;
   width: fit-content;
+}
+
+.treachery-face {
+  position: relative;
+}
+
+.treachery-face > .card {
+  display: block;
 }
 
 .attached .card {
@@ -218,6 +282,19 @@ function handleCardClick() {
 .attached .pool {
   top: auto;
   bottom: 5%;
+}
+
+/* The real card, shown small in the corner of the copy it is impersonating, so
+   two identical-looking cards on the board can be told apart. */
+.impersonating-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: calc(var(--card-width) * 0.28);
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.5);
+  pointer-events: none;
+  z-index: 2;
 }
 
 .exhausted {

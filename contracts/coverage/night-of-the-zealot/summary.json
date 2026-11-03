@@ -22,6 +22,7 @@
         "evade",
         "fight",
         "gainResource",
+        "invalidLabel",
         "investigate",
         "localizedLabel",
         "move",
@@ -63,7 +64,7 @@
         "name": "Roland Banks",
         "seed": 12001
       },
-      "jsonlBytes": 1110259,
+      "jsonlBytes": 1136000,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -89,10 +90,10 @@
         }
       },
       "reachedEndOf01142": true,
-      "recordCount": 263,
+      "recordCount": 264,
       "stepsByScenario": {
         "01104": 150,
-        "01120": 75,
+        "01120": 76,
         "01142": 32,
         "continue:01104": 1,
         "continue:01120": 1,
@@ -173,7 +174,7 @@
         "name": "Daisy Walker",
         "seed": 12002
       },
-      "jsonlBytes": 3771120,
+      "jsonlBytes": 3779281,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -285,7 +286,7 @@
         "name": "Skids O'Toole",
         "seed": 12003
       },
-      "jsonlBytes": 644169,
+      "jsonlBytes": 646590,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -359,6 +360,7 @@
         "evade",
         "fight",
         "gainResource",
+        "invalidLabel",
         "investigate",
         "localizedLabel",
         "move",
@@ -398,7 +400,7 @@
         "name": "Agnes Baker",
         "seed": 12004
       },
-      "jsonlBytes": 759213,
+      "jsonlBytes": 765145,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -424,10 +426,10 @@
         }
       },
       "reachedEndOf01142": true,
-      "recordCount": 166,
+      "recordCount": 167,
       "stepsByScenario": {
         "01104": 39,
-        "01120": 89,
+        "01120": 90,
         "01142": 32,
         "continue:01104": 1,
         "continue:01120": 1,
@@ -514,7 +516,7 @@
         "name": "Wendy Adams",
         "seed": 12005
       },
-      "jsonlBytes": 758691,
+      "jsonlBytes": 770898,
       "outcomes": {
         "01104": {
           "resolution": {

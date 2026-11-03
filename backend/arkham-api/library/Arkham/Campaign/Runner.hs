@@ -238,13 +238,20 @@ defaultCampaignRunner msg a = case msg of
               Nothing -> do
                 pid <- getPlayer iid
                 let cards = nub $ map toCardCode $ filterCards (card_ $ #asset <> #spell) (unDeck deck)
-                pure $ Just $ Ask pid $ QuestionLabel "$cards.label.eldritchBrand5.chooseCard" Nothing $ ChooseOne $ flip map cards \c ->
+                pure $ Just $ Ask pid $ QuestionLabel "$cards.label.eldritchBrand5.chooseCard" [] $ ChooseOne $ flip map cards \c ->
                   CardLabel c False [UpdateCardSetting iid "11080" (SetCardSetting CardAttachments [c])]
               Just _ -> pure Nothing
           else pure Nothing
 
+      customWeaknesses <- getCustomRandomWeaknessCards =<< getPlayer iid
+
       (deck', baseRandomWeaknesses) <-
-        addRandomBasicWeaknessIfNeeded investigatorClass playerCount mDecklist deck
+        addRandomBasicWeaknessIfNeededWithCustom
+          customWeaknesses
+          investigatorClass
+          playerCount
+          mDecklist
+          deck
       -- Ultimatum of Disaster: deckbuilding requirements gain 1 additional
       -- random basic weakness.
       disaster <- hasUltimatum UltimatumOfDisaster
@@ -253,7 +260,8 @@ defaultCampaignRunner msg a = case msg of
           then
             (: [])
               <$> ( genCard
-                      =<< getRandomBasicWeaknessExcluding
+                      =<< getRandomBasicWeaknessExcludingWithCustom
+                        customWeaknesses
                         (basicWeaknessCodes baseRandomWeaknesses)
                         investigatorClass
                         playerCount
@@ -268,7 +276,9 @@ defaultCampaignRunner msg a = case msg of
             concat <$> for randomWeaknesses \_ ->
               morriganWeaknessMessages
                 iid
-                (genCard =<< getRandomBasicWeakness investigatorClass playerCount mDecklist)
+                ( genCard
+                    =<< getRandomBasicWeaknessWithCustom customWeaknesses investigatorClass playerCount mDecklist
+                )
           else pure []
       let weaknessMessages =
             if morrigan then [] else map (AddCampaignCardToDeck iid ShuffleIn) randomWeaknesses
@@ -383,7 +393,7 @@ defaultCampaignRunner msg a = case msg of
             Nothing -> do
               pid <- getPlayer iid
               let cards = nub $ map toCardCode $ filterCards (card_ #spell) (unDeck deck)
-              pure $ Just $ Ask pid $ QuestionLabel "$cards.label.eldritchBrand5.chooseCard" Nothing $ ChooseOne $ flip map cards \c ->
+              pure $ Just $ Ask pid $ QuestionLabel "$cards.label.eldritchBrand5.chooseCard" [] $ ChooseOne $ flip map cards \c ->
                 CardLabel c False [UpdateCardSetting iid "11080" (SetCardSetting CardAttachments [c])]
             Just _ -> pure Nothing
         else pure Nothing
@@ -471,6 +481,11 @@ defaultCampaignRunner msg a = case msg of
       . (logL . recordedSetsL %~ deleteMap key)
       . overRecordedCount key (const Nothing)
       . (logL . orderedKeysL %~ removeOrderedKey)
+  ForgetRecord key ->
+    pure
+      $ updateAttrs a
+      $ (logL %~ forgetCampaignLogKey key)
+      . (recordCountHistoryL %~ filter ((/= key) . (.rccKey)))
   Record key -> do
     -- The log line is the narrator's now (log.recorded); this used to send its
     -- own brace-DSL copy, which showed up beside the structured one.

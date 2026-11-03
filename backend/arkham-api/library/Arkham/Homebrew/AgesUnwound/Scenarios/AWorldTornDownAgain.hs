@@ -75,8 +75,8 @@ aWorldTornDownAgain difficulty =
     , "classroom2 heart      squiggle equals"
     , ".          star       hourglass moon"
     ]
-    -- Two act decks flanking the agenda deck.
-    (decksLayoutL .~ ["act1 agenda1 act2"])
+    -- Center the agenda beside the two stacked act decks.
+    (decksLayoutL .~ [". act1", "agenda1 act1", "agenda1 act2", ". act2"])
 
 {- | "Based on your difficulty level, add the following chaos token to the chaos
 bag for the remainder of the campaign."
@@ -200,7 +200,7 @@ instance RunMessage AWorldTornDownAgain where
       quarry <- getHasRecord YourHuntersFoundANewQuarry
       harnessed <- getHasRecord TheMyriadHarnessedThePowerOfAnotherRealm
       flavor do
-        setTitle "title"
+        h "title"
         when quarry $ p "intro1"
         p (if harnessed then "intro2" else "intro3")
       -- Intro 1: "Each investigator takes 1 direct damage and 1 direct horror."
@@ -239,17 +239,18 @@ instance RunMessage AWorldTornDownAgain where
         unscoped $ li "shuffleRemainder"
         unscoped $ li "readyToBegin"
 
+      additionalRules "thePastAndThePresent"
+
       {- "Gather all the cards from the following encounter sets: A World Torn Down
       Again, Night of the Ritual, Agents of Aforgomon, Myriad, Nyctophobia, Thugs,
       Unleashed Chaos."
 
-      The guide's "Agents of Aforgomon" is the data's @agents_of_chronos@.
       Unleashed Chaos goes straight to the set-aside pool: setup sets "each copy of
       Unleashed Chaos" aside and act 2c /Chaos/ or /Backfire/ is what shuffles them
       in. -}
       gather Set.AWorldTornDownAgain
       gather Set.NightOfTheRitual
-      gather Set.AgentsOfChronos
+      gather Set.AgentsOfAforgomon
       gather Set.Myriad
       gather Set.Nyctophobia
       gather Set.Thugs
@@ -470,7 +471,9 @@ instance RunMessage AWorldTornDownAgain where
       case res of
         -- "If no resolution was reached (each investigator was defeated): Read
         -- Resolution 2."
-        NoResolution -> push R2
+        NoResolution -> do
+          resolution "noResolution"
+          push R2
         -- "Each investigator earns experience equal to the Victory X value of each
         -- card in the victory display."
         Resolution 1 -> do
@@ -482,9 +485,12 @@ instance RunMessage AWorldTornDownAgain where
           record AllTimesAreOne
           resolution "resolution2"
           eachInvestigator drivenInsane
-          gameOver
+          gameOverLost
         _ -> error $ "Unknown resolution: " <> show res
       pure s
+    Msg.RemoveCompletedActFromGame n _ | n == pastDeck -> do
+      attrs' <- liftRunMessage msg attrs
+      pure $ AWorldTornDownAgain $ attrs' & decksLayoutL .~ ["agenda1 act1"]
     _ -> AWorldTornDownAgain <$> liftRunMessage msg attrs
 
 -- | The starting location remembered by 'Setup'.

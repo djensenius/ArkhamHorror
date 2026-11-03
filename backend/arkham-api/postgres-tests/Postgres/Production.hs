@@ -41,8 +41,9 @@ withProductionApp harness action =
     appGameRooms <- MVar.newMVar mempty
     appEventRooms <- MVar.newMVar mempty
     appThirdEditionRooms <- MVar.newMVar mempty
-    appThirdEditionStore <- ThirdEdition.newMemoryStore
+    appThirdEditionStore <- ThirdEdition.newPostgresStore harness.connectionPool
     appPubSubHealth <- newTVarIO =<< getCurrentTime
+    appMaintenance <- newTVarIO Nothing
     let appSettings = compileTimeAppSettings
           { appDatabaseConf = compileTimeAppSettings.appDatabaseConf
               { pgConnStr = harness.connectionString, pgPoolSize = 3 }
@@ -53,6 +54,8 @@ withProductionApp harness action =
         appMessageBroker = WebSocketBroker
         appPubSubSupervisorThread = Nothing
         appRoomHeartbeatThread = Nothing
+        appArchiveThreads = []
+        appPodId = "arkhamdb-postgres-tests"
         appArkhamDBClient = Nothing
         appBugsnag = Bugsnag.defaultSettings ""
     action App {..}

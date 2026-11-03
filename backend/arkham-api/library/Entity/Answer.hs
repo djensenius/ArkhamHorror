@@ -24,7 +24,7 @@ import Arkham.Game
 import Arkham.Game.Utils (modeScenario)
 import Arkham.Helpers.Message (holdsPendingWindowEffects)
 import Arkham.Id
-import Arkham.Investigator (lookupInvestigator)
+import Arkham.Investigator (decklistInvestigatorError, lookupInvestigator)
 import Arkham.Investigator.Types (InvestigatorAttrs (investigatorPlayerId))
 import Arkham.Message
 import Arkham.Name (hasTitle)
@@ -521,10 +521,10 @@ resolves. See "Api.Handler.Arkham.CustomCards".
 registerDeckOwnerCustomCards :: UserId -> DB ()
 registerDeckOwnerCustomCards userId = do
   rows <- selectList [ArkhamCustomCardUserId ==. userId] []
-  registerCustomCards $ Map.fromList do
+  registerCustomCards $ customCardsByCode do
     Entity _ row <- rows
     def <- maybeToList $ Aeson.parseMaybe parseJSON (arkhamCustomCardDef row)
-    pure (cdCardCode def, CustomCard def (arkhamCustomCardArt row))
+    pure $ CustomCard def (arkhamCustomCardArt row)
 
 handleAnswer :: Game -> PlayerId -> Answer -> DB Reply
 handleAnswer game playerId = \case
@@ -597,10 +597,19 @@ touchDeck deckId = do
   now <- liftIO getCurrentTime
   update deckId [ArkhamDeckLastUsedAt =. Just now]
 
--- | Seat @playerId@'s chosen deck, unless it violates deck-choice guards.
+{- | Seat @playerId@'s chosen deck, unless it may not be played.
+
+A mid-campaign join may be refused the investigator, a challenge scenario may
+require a specific one, and a deck may name one the engine cannot build at all --
+an arkham.build placeholder, or a custom card that is not in the library this
+resolved against. Saying so here is the difference between a message and a 500
+from inside the engine (#5891).
+-}
 loadChosenDeck :: Game -> PlayerId -> Maybe UUID -> Maybe DeckOverlay -> ArkhamDBDecklist -> DB Reply
 loadChosenDeck game playerId attachment seatedOverlay dl =
-  case joinDeckRejection game playerId dl.investigator <|> challengeScenarioDeckRejection game playerId dl of
+  case joinDeckRejection game playerId dl.investigator
+    <|> decklistInvestigatorError dl
+    <|> challengeScenarioDeckRejection game playerId dl of
     Just reason -> unhandled reason
     Nothing -> do
       update (coerce playerId) [ArkhamPlayerInvestigatorId =. coerce (investigator_code dl)]
@@ -751,6 +760,8 @@ handleAnswerPure game@Game {..} playerId = \case
             ChoosePaymentAmounts _ _ info -> doResolve q info
             _ -> unhandled "Wrong question type"
           Nothing -> unhandled "Wrong question type"
+  Raw message@(SetCustomRandomWeaknessPool {}) -> handled [message, AskMap gameQuestion]
+  Raw message@(SetPlayerCustomRandomWeaknessPool {}) -> handled [message, AskMap gameQuestion]
   Raw message -> do
     let inFastWindow =
           maybe
@@ -921,6 +932,9 @@ handleAnswerPure game@Game {..} playerId = \case
     ChooseOneWizard flavor qs confirm back -> case qs !!? qrChoice response of
       Nothing -> [Ask playerId $ f $ ChooseOneWizard flavor qs confirm back]
       Just WizardChoice {messages} -> [Run messages]
+    ChooseFromCollection iid source codes -> case codes !!? qrChoice response of
+      Nothing -> [Ask playerId $ f q]
+      Just code -> [HandleTargetChoice iid source (CardCodeTarget code)]
     ChooseOne qs -> case qs !!? qrChoice response of
       Nothing -> [Ask playerId $ f $ ChooseOne qs]
       Just msg -> [uiToRun msg]
@@ -948,7 +962,9 @@ handleAnswerPure game@Game {..} playerId = \case
       case (mm, msgs') of
         (Just m', []) -> [uiToRun m']
         (Just m', msgs''@(m1 : mrest)) ->
-          if n - 1 == 0
+          -- @<= 0@, not @== 0@: a question that arrived with a non-positive amount would
+          -- otherwise count down forever, taking a payment on every answer.
+          if n - 1 <= 0
             then [uiToRun m']
             else
               -- it is possible that every choice in qs is the same, in which case we can just run them all

@@ -1,15 +1,16 @@
 <script lang="ts" setup>
 import Draggable from '@/components/Draggable.vue';
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useDebug } from '@/arkham/debug';
 import { TokenType, Token } from '@/arkham/types/Token';
 import { cardImg } from '@/arkham/helpers';
 import type { Game } from '@/arkham/types/Game';
 import PoolItem from '@/arkham/components/PoolItem.vue';
 import Modifier from '@/arkham/components/Modifier.vue';
-import { type ChaosToken, chaosTokenImage } from '@/arkham/types/ChaosToken';
+import SealedTokensSection from '@/arkham/components/debug/SealedTokensSection.vue';
 import * as Arkham from '@/arkham/types/Enemy'
 import { useEscape } from '@/composable/escape'
+import { useCardStore } from '@/stores/cards'
 
 const props = defineProps<{
   game: Game
@@ -62,29 +63,21 @@ const investigatorId = computed(() => Object.values(props.game.investigators).fi
 const id = computed(() => props.enemy.id)
 
 const cardCode = computed(() => props.enemy.cardCode)
+/* Through the def's art, not the card code: an enemy with no printed card names
+ * its own face (the Roman Soldier's `:ages-unwound:xsoldier`, after the core
+ * `xpolyp`/`xreanimated`) and the code resolves to a file that does not exist.
+ * Same lookup Enemy.vue does. */
+const cardStore = useCardStore()
+onMounted(() => {
+  if (!cardStore.loaded) cardStore.fetchCards()
+})
 const image = computed(() => {
-  return cardImg(cardCode.value.replace(/^c/, ''))
+  const def = cardStore.cards.find((c) => c.cardCode === cardCode.value)
+  return cardImg(def?.art ?? cardCode.value.replace(/^c/, ''))
 })
 
 const debug = useDebug()
 const damage = computed(() => props.enemy.tokens[TokenType.Damage])
-
-const sealedTokens = computed(() => props.enemy.sealedChaosTokens)
-
-/* `UnsealChaosToken` takes the whole record, and `Eq ChaosToken` compares ids, so
- * the other fields only have to be well-formed. Same shape Key.vue sends. */
-function unseal(token: ChaosToken) {
-  debug.send(props.game.id, {
-    tag: 'UnsealChaosToken',
-    contents: {
-      chaosTokenId: token.id,
-      chaosTokenFace: token.face,
-      chaosTokenRevealedBy: null,
-      chaosTokenCancelled: false,
-      chaosTokenSealed: true,
-    },
-  })
-}
 
 function defeat() {
   emit('close')
@@ -202,6 +195,12 @@ const createModifier = (target: {tag: string, contents: string}, modifier: {tag:
             <button v-if="!enemy.exhausted" @click="debug.send(game.id, {tag: 'Exhaust', contents: {tag: 'EnemyTarget', contents: id}})">{{ $t('debug.enemy.exhaust') }}</button>
             <button v-else @click="debug.send(game.id, {tag: 'Ready', contents: {tag: 'EnemyTarget', contents: id}})">{{ $t('debug.enemy.ready') }}</button>
             <button @click="debug.send(game.id, {tag: 'EnemyEvaded', contents: [investigatorId, id]})">{{ $t('debug.enemy.evade') }}</button>
+            <!-- Only an enemy in a threat area can be disengaged; a massive enemy never is. -->
+            <button
+              v-if="enemy.placement.tag === 'InThreatArea'"
+              v-tooltip="$t('debug.enemy.disengageHint')"
+              @click="debug.send(game.id, {tag: 'EngageMessage', contents: {tag: 'DisengageEnemyFromAll_', contents: id}})"
+            >{{ $t('debug.enemy.disengage') }}</button>
             <button class="debug-button--danger" @click="defeat">{{ $t('debug.enemy.defeat') }}</button>
           </div>
         </section>
@@ -228,22 +227,11 @@ const createModifier = (target: {tag: string, contents: string}, modifier: {tag:
           </div>
         </section>
 
-        <section v-if="sealedTokens.length > 0" class="debug-section">
-          <span class="debug-label">{{ $t('debug.enemy.sealedTokens') }}</span>
-          <div class="debug-row">
-            <button
-              v-for="token in sealedTokens"
-              :key="token.id"
-              type="button"
-              class="debug-sealed-token"
-              v-tooltip="$t('debug.enemy.release')"
-              @click="unseal(token)"
-            >
-              <img :src="chaosTokenImage(token.face)" />
-              <span class="debug-sealed-token__x" aria-hidden="true">×</span>
-            </button>
-          </div>
-        </section>
+        <SealedTokensSection
+          :game="game"
+          :tokens="enemy.sealedChaosTokens"
+          :target="{ tag: 'EnemyTarget', contents: id }"
+        />
 
         <section class="debug-section">
           <span class="debug-label">{{ $t('debug.common.modifiers') }}</span>
@@ -376,41 +364,6 @@ const createModifier = (target: {tag: string, contents: string}, modifier: {tag:
 .debug-stepper button:hover {
   background: var(--button);
   border-color: var(--select);
-}
-
-/* A sealed token doubles as its own release button: the × only shows on hover so
-   the row still reads as the enemy's sealed pool at a glance. */
-.debug-panel button.debug-sealed-token {
-  position: relative;
-  padding: 3px;
-  display: grid;
-  place-items: center;
-  border-radius: 999px;
-}
-
-.debug-sealed-token img {
-  width: 30px;
-  height: auto;
-  display: block;
-}
-
-.debug-sealed-token__x {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.6);
-  color: #fff;
-  font-size: 1.1rem;
-  font-weight: 700;
-  line-height: 1;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-
-.debug-sealed-token:hover .debug-sealed-token__x {
-  opacity: 1;
 }
 
 .debug-modifiers {

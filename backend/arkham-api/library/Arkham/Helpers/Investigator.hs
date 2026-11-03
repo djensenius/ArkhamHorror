@@ -38,6 +38,7 @@ import Arkham.Message (
   pattern HealHorror,
   pattern InvestigatorMulligan,
  )
+import Arkham.Modifier (Modifier, modifierType)
 import Arkham.Name
 import Arkham.Placement
 import Arkham.Prelude
@@ -257,21 +258,59 @@ getCanDiscoverClues isInvestigation iid lid = do
   -- restrict. Player card effects are checked against their own source at the
   -- point they try to expose.
   canExpose <- getCanExposeAt iid (LocationSource lid) lid
-  (&& or [hasClues, hasConcealed && canExpose]) . not <$> anyM match modifiers
+  (&& or [hasClues, hasConcealed && canExpose])
+    . not
+    <$> anyM (preventsDiscoveringClues isInvestigation lid) modifiers
+
+{- | Whether a modifier forbids discovering clues at a location outright, split
+out of 'getCanDiscoverClues' so the same question can be asked for the client's
+benefit -- see 'getCannotDiscoverCluesModifiers'. One predicate for both, so
+what the clue pool says cannot disagree with what the engine allows.
+
+Deliberately not the rest of 'getCanDiscoverClues': whether a clue is actually
+there is not a prohibition, it is the board a moment later.
+-}
+preventsDiscoveringClues :: HasGame m => IsInvestigate -> LocationId -> ModifierType -> m Bool
+preventsDiscoveringClues isInvestigation lid = \case
+  CannotDiscoverClues {} -> pure True
+  CannotDiscoverCluesAt matcher -> elem lid <$> select matcher
+  CannotDiscoverCluesExceptAsResultOfInvestigation matcher
+    | isInvestigation == NotInvestigate -> elem lid <$> select matcher
+  _ -> pure False
+
+{- | The modifiers stopping an investigator from discovering clues where they
+stand, in full, so a caller can name what is responsible.
+
+Asked as though investigating, which is the one route a
+'CannotDiscoverCluesExceptAsResultOfInvestigation' leaves open: only a ban that
+holds either way is reported, since "you cannot discover clues" is a lie while
+investigating still would. An investigator off the map has no location for a
+location-scoped ban to be about, so only the flat one can apply to them.
+-}
+getCannotDiscoverCluesModifiers :: HasGame m => InvestigatorId -> m [Modifier]
+getCannotDiscoverCluesModifiers iid = do
+  mods <- getFullModifiers iid
+  field InvestigatorLocation iid >>= \case
+    Nothing -> pure $ filter (isFlatCannotDiscoverClues . modifierType) mods
+    Just lid -> filterM (preventsDiscoveringClues IsInvestigate lid . modifierType) mods
  where
-  match CannotDiscoverClues {} = pure True
-  match (CannotDiscoverCluesAt matcher) = elem lid <$> select matcher
-  match (CannotDiscoverCluesExceptAsResultOfInvestigation matcher) | isInvestigation == NotInvestigate = elem lid <$> select matcher
-  match _ = pure False
+  isFlatCannotDiscoverClues CannotDiscoverClues {} = True
+  isFlatCannotDiscoverClues _ = False
 
 getCanSpendClues
   :: (HasGame m, AsId investigator, IdOf investigator ~ InvestigatorId) => investigator -> m Bool
-getCanSpendClues (asId -> iid) = do
-  modifiers <- getModifiers iid
-  pure $ not (any match modifiers)
- where
-  match CannotSpendClues {} = True
-  match _ = False
+getCanSpendClues (asId -> iid) = not . any preventsSpendingClues <$> getModifiers iid
+
+-- | The spending half of the pair above; see 'preventsDiscoveringClues'.
+preventsSpendingClues :: ModifierType -> Bool
+preventsSpendingClues = \case
+  CannotSpendClues {} -> True
+  _ -> False
+
+-- | As 'getCannotDiscoverCluesModifiers', for spending.
+getCannotSpendCluesModifiers :: HasGame m => InvestigatorId -> m [Modifier]
+getCannotSpendCluesModifiers iid =
+  filter (preventsSpendingClues . modifierType) <$> getFullModifiers iid
 
 providedSlot :: Sourceable source => InvestigatorAttrs -> source -> Bool
 providedSlot attrs source = any (any (isSlotSource source)) $ toList attrs.slots
@@ -298,6 +337,20 @@ toCanHoldMap = Map.map nub . foldr canHold mempty
 
 getCanHoldMap :: HasGame m => InvestigatorAttrs -> m (Map SlotType [SlotType])
 getCanHoldMap a = toCanHoldMap <$> getModifiers a
+
+{- | Whether a card, played now, would find a slot for each one it takes.
+
+Separate from 'fitsAvailableSlots', which asks about an asset already in play
+and so has to exempt the slots that asset is already holding. A card in hand
+holds none.
+-}
+cardFitsAvailableSlots :: (HasGame m, IsCard a) => a -> InvestigatorAttrs -> m Bool
+cardFitsAvailableSlots card a = do
+  let slotTypes = cdSlots (toCardDef card)
+  canHoldMap <- getCanHoldMap a
+  availableSlots <- concatForM (nub slotTypes) \slotType ->
+    map (const slotType) <$> availableSlotTypesFor slotType canHoldMap card a.slots
+  pure $ null (slotTypes \\ availableSlots)
 
 fitsAvailableSlots :: HasGame m => AssetId -> InvestigatorAttrs -> m FitsSlots
 fitsAvailableSlots aid a = do
@@ -358,6 +411,17 @@ discardableCards InvestigatorAttrs {..} =
     then investigatorHand
     else filter (not . cardIsWeakness) investigatorHand
 
+{- | Cards in hand that can actually be discarded for hand size: player cards
+only, no weaknesses, and nothing modified @CannotLeaveYourHand@ -- otherwise the
+check asks for a discard that can never happen.
+-}
+handSizeDiscardable :: HasGame m => InvestigatorAttrs -> m [Card]
+handSizeDiscardable InvestigatorAttrs {..} =
+  filterM (fmap (notElem CannotLeaveYourHand) . getModifiers . toCardId)
+    $ map toCard
+    $ filter (isNothing . cdCardSubType . toCardDef)
+    $ onlyPlayerCards investigatorHand
+
 getAttrStats :: InvestigatorAttrs -> Stats
 getAttrStats InvestigatorAttrs {..} =
   Stats
@@ -405,11 +469,11 @@ investigator f cardDef Stats {..} =
                 , investigatorName = cdName cardDef
                 , investigatorCardCode = cdCardCode cardDef
                 , investigatorArt = CardCodeExact $ cdCardCode cardDef
-                , investigatorClass =
-                    fromJustNote "missing class symbol"
-                      . headMay
-                      . setToList
-                      $ cdClassSymbols cardDef
+                , -- A printed investigator always has exactly one, so only a def
+                  -- handed to the engine at runtime can be without. Neutral is
+                  -- what the card builder reads one of those as.
+                  investigatorClass =
+                    fromMaybe #neutral . headMay . setToList $ cdClassSymbols cardDef
                 , investigatorHealth = health
                 , investigatorSanity = sanity
                 , investigatorWillpower = willpower
@@ -779,7 +843,10 @@ getAsIfInHandCardsFor forPlay iid = do
       _ -> False
   cardsAddedViaModifiers <- flip mapMaybeM modifiers $ \case
     AsIfInHand c -> pure $ Just c
-    AsIfInHandFor forPlay' c | forPlay == forPlay' -> Just <$> getCard c
+    -- Tolerant of a card the registry no longer holds: this runs for every
+    -- investigator on every read of the game (see 'getPlayProhibitions'), and a
+    -- card that is not registered is in nobody's hand anyway.
+    AsIfInHandFor forPlay' c | forPlay == forPlay' -> getCardMaybe c
     CanCommitToSkillTestsAsIfInHand c | forPlay == NotForPlay && isSkillTest -> pure $ Just c
     _ -> pure Nothing
   discard <- field InvestigatorDiscard iid
@@ -804,14 +871,15 @@ applied -- otherwise e.g. Marksmanship(1)'s targeting modifier never fires
 while it sits under Stick to the Plan. Cards merely playable from
 discard/deck are deliberately excluded; those load as their own entities.
 -}
-getAsIfInHandEffectCards :: (HasCallStack, HasGame m) => InvestigatorId -> m [Card]
+getAsIfInHandEffectCards :: HasGame m => InvestigatorId -> m [Card]
 getAsIfInHandEffectCards iid = do
   isSkillTest <- isJust <$> getSkillTest
   modifiers <- getModifiers (InvestigatorTarget iid)
   modifiers & mapMaybeM \case
     AsIfInHand c -> pure $ Just c
-    AsIfInHandFor _ c -> Just <$> getCard c
-    AsIfInHandForEffects c -> Just <$> getCard c
+    -- Unregistered means not in hand, as in 'getAsIfInHandCardsFor'.
+    AsIfInHandFor _ c -> getCardMaybe c
+    AsIfInHandForEffects c -> getCardMaybe c
     CanCommitToSkillTestsAsIfInHand c | isSkillTest -> pure $ Just c
     _ -> pure Nothing
 
@@ -847,13 +915,24 @@ getMaybeCardAttachments iid c = do
   settings <- field InvestigatorSettings iid
   pure $ cardAttachments <$> lookup (toCardCode c) (perCardSettings settings)
 
+{- | Is this investigator's turn for the round already behind them? The filter
+'Arkham.Message.ChooseTurnPlayer' and the queue-drain fallback both offer turns
+by: a seat that ended its turn, resigned or was defeated has none coming.
+-}
+doneWithTurn :: Investigator -> Bool
+doneWithTurn =
+  or
+    . sequence
+      [ attr investigatorEndedTurn
+      , attr investigatorResigned
+      , attr investigatorDefeated
+      ]
+
 getCanLoseActions
   :: (HasGame m, AsId investigator, IdOf investigator ~ InvestigatorId)
   => investigator -> m Bool
-getCanLoseActions (asId -> iid) = do
-  remaining <- field InvestigatorRemainingActions iid
-  additional <- fieldLength InvestigatorAdditionalActions iid
-  pure $ remaining + additional > 0
+getCanLoseActions (asId -> iid) =
+  selectAny $ InvestigatorWithId iid <> InvestigatorWithAnyActionsRemaining
 
 selectAffectsOthers
   :: HasGame m => InvestigatorId -> InvestigatorMatcher -> m [InvestigatorId]

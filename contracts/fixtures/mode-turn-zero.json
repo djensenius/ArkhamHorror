@@ -210,6 +210,7 @@
         }
       ],
       "choice": null,
+      "debugRevealedChaosTokens": [],
       "forceDraw": [],
       "pendingRequests": [],
       "revealedChaosTokens": [],
@@ -808,6 +809,7 @@
     "resignedCardCodes": [],
     "resolvedStories": [],
     "scope": "theGathering",
+    "sealedChaosTokens": [],
     "search": null,
     "setAsideCards": [
       {

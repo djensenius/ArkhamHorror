@@ -17,6 +17,7 @@ import type { AbilityLabel, AbilityMessage, Message } from '@/arkham/types/Messa
 import { MessageType } from '@/arkham/types/Message'
 import { cardId, toCardContents } from '@/arkham/types/Card'
 import SealedChaosTokens from '@/arkham/components/SealedChaosTokens.vue';
+import CardDebugWindow from '@/arkham/components/debug/CardDebugWindow.vue';
 import { investigatorTarget, cardDropHandlers } from '@/arkham/debugCardDrop';
 import AbilityButton from '@/arkham/components/AbilityButton.vue'
 import { useMenu } from '@/composable/menu';
@@ -45,6 +46,7 @@ const highlighter = useHighlighter()
 const isHighlighted = computed(() => highlighter.highlighted.value === props.investigator.id)
 const isAttackTarget = computed(() => props.game.enemyAttackTargets.some((e) => e.target.contents === props.investigator.id))
 const debug = useDebug()
+const debugging = ref(false)
 
 /* One handler reading shiftKey rather than a @click.exact / @click.shift pair: two
  * competing listeners only agree while the event's modifier state is exactly what
@@ -54,6 +56,17 @@ function debugGainActions(event: MouseEvent) {
   debug.send(props.game.id, {
     tag: 'GainActions',
     contents: [id.value, { tag: 'TestSource', contents: [] }, event.shiftKey ? 5 : 1],
+  })
+}
+
+// A negative gain, so no "lose actions" windows fire and additional actions
+// are left alone.
+function debugLoseActions(event: MouseEvent) {
+  const amount = Math.min(event.shiftKey ? 5 : 1, props.investigator.remainingActions)
+  if (amount <= 0) return
+  debug.send(props.game.id, {
+    tag: 'GainActions',
+    contents: [id.value, { tag: 'TestSource', contents: [] }, -amount],
   })
 }
 // Debug: a chaos token dragged from the bag seals here; a token from the debug
@@ -84,6 +97,7 @@ watch(() => props.playerId, () => {
         content: t('gameBar.viewBonded'),
         binding: "viewBonded",
         nested: 'view',
+        section: 'panels',
         action: () => toggleShowBonded()
       })
     } else {
@@ -295,6 +309,14 @@ watch(() => choices.value, () => {
 
 const modifiers = computed(() => props.investigator.modifiers)
 
+const blockedActions = computed(() => modifiers.value?.reduce((total, modifier) =>
+  total + (modifier.type.tag === 'CannotSpendLastActions' ? Math.max(0, modifier.type.contents) : 0), 0) ?? 0)
+
+const blockedActionSources = computed(() => modifiers.value?.flatMap(modifier =>
+  modifier.type.tag === 'CannotSpendLastActions'
+    ? Array.from({ length: Math.max(0, modifier.type.contents) }, () => sourceCardCode(modifier.source, props.game))
+    : []) ?? [])
+
 const blankedModifier = computed(() => {
   return modifiers.value?.find(
     (m) =>
@@ -460,8 +482,8 @@ const spadeInjury = computed(() => {
 <template>
   <div v-if="portrait" class="portrait-container" :data-id="investigator.id" v-bind="cardDrop">
     <span v-if="isMobile">
-      <i class="action" v-for="n in investigator.remainingActions" :key="n"></i>
-      <template v-for="action in investigator.additionalActions" :key="action">
+      <i class="action" v-for="n in investigator.remainingActions" :key="n" :class="{ 'action--blocked': n <= blockedActions }" :data-image-id="n <= blockedActions ? blockedActionSources[n - 1] : undefined" :title="n <= blockedActions ? 'This action cannot be spent while the restriction is active' : undefined"></i>
+      <template v-for="(action, actionIndex) in investigator.additionalActions" :key="actionIndex">
         <button @click="useEffectAction(action)" v-if="action.tag === 'EffectAction'" v-tooltip="action.contents[0]" :class="[{ activeButton: isActiveEffectAction(action)}, `${investigatorClass.toLowerCase()}ActionButton`]">
           <i class="action"></i>
         </button>
@@ -532,15 +554,18 @@ const spadeInjury = computed(() => {
           <div class="combat combat-icon">{{combat}}</div>
           <div class="agility agility-icon">{{agility}}</div>
         </div>
-        <div class="investigator-image" :data-id="investigator.id">
+        <div
+          class="investigator-image"
+          :data-id="investigator.id"
+          @drop="onDrop($event)"
+          @dragover.prevent="dragover($event)"
+          @dragenter.prevent
+        >
           <img
             :class="{ 'investigator--can-interact': investigatorAction !== -1, 'ability-target': isHighlighted || isAttackTarget }"
             class="card card--sideways"
             :src="image"
             @click="clicked"
-            @drop="onDrop($event)"
-            @dragover.prevent="dragover($event)"
-            @dragenter.prevent
           />
           <span v-if="isBlanked" class="blanked-badge" :data-image-id="blankedCardCode"><font-awesome-icon icon="ban" /></span>
           <PendingDamageTokens
@@ -567,8 +592,8 @@ const spadeInjury = computed(() => {
               <i class="heart" v-if="heartInjury"></i>
               <i class="diamond" v-if="diamondInjury"></i>
               <i class="club" v-if="clubInjury"></i>
-              <i class="action" v-for="n in investigator.remainingActions" :key="n"></i>
-              <template v-for="action in investigator.additionalActions" :key="action">
+              <i class="action" v-for="n in investigator.remainingActions" :key="n" :class="{ 'action--blocked': n <= blockedActions }" :data-image-id="n <= blockedActions ? blockedActionSources[n - 1] : undefined" :title="n <= blockedActions ? 'This action cannot be spent while the restriction is active' : undefined"></i>
+              <template v-for="(action, actionIndex) in investigator.additionalActions" :key="actionIndex">
                 <button @click="useEffectAction(action)" v-if="action.tag === 'EffectAction'" v-tooltip="action.contents[0]" :class="[{ activeButton: isActiveEffectAction(action)}, `${investigatorClass.toLowerCase()}ActionButton`]">
                   <i class="action"></i>
                 </button>
@@ -587,7 +612,24 @@ const spadeInjury = computed(() => {
               </span>
             </span>
             <template v-if="debug.active">
-              <button v-tooltip="$t('debug.enemy.shiftFive')" @click="debugGainActions">+</button>
+              <span class="debug-actions-group">
+                <button
+                  v-tooltip="$t('debug.enemy.shiftFive')"
+                  :disabled="investigator.remainingActions === 0"
+                  @click="debugLoseActions"
+                >−</button>
+                <button v-tooltip="$t('debug.enemy.shiftFive')" @click="debugGainActions">+</button>
+              </span>
+              <button @click="debugging = true">{{ $t('enemy.debug') }}</button>
+              <CardDebugWindow
+                v-if="debugging"
+                :game="game"
+                :title="$t('debug.card.investigatorTitle')"
+                :image="image"
+                :sealedTokens="investigator.sealedChaosTokens"
+                :target="{ tag: 'InvestigatorTarget', contents: id }"
+                @close="debugging = false"
+              />
             </template>
             <AbilityButton
               v-for="ability in abilities"
@@ -597,7 +639,7 @@ const spadeInjury = computed(() => {
               @click="$emit('choose', ability.index)"
               />
             <button
-            :class="{ active: endTurnAction !== -1 && investigator.remainingActions === 0 }"
+            :class="{ active: endTurnAction !== -1 && investigator.remainingActions <= blockedActions }"
             :disabled="endTurnAction == -1"
             :data-game-actionable="endTurnAction !== -1 || undefined"
             @click="$emit('choose', endTurnAction)"
@@ -673,6 +715,10 @@ const spadeInjury = computed(() => {
 </template>
 
 <style scoped>
+i.action--blocked {
+  opacity: 0.3;
+}
+
 i.action {
   font-family: 'Arkham';
   font-style: normal;
@@ -1092,6 +1138,16 @@ i.action {
     :deep(img) {
       width: calc(var(--pool-token-width) * 1.2);
     }
+  }
+}
+
+.debug-actions-group {
+  display: flex;
+  gap: 2px;
+
+  > button {
+    flex: 1;
+    min-width: 0;
   }
 }
 

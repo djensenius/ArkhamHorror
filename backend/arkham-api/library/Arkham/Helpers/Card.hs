@@ -300,10 +300,41 @@ passesLimits iid c = do
     -- Handled in 'passesPerLocationLimits' so it applies at the play location
     -- and so the mirror exclusion is enforced for unlimited cards too.
     LimitPerTraitPerLocation {} -> pure True
+    -- As above: a per-location limit is about the location, not the table.
+    LimitPerLocation {} -> pure True
 
 -- | The traits a card limits to "N per location" via 'LimitPerTraitPerLocation'.
 perLocationLimitTraits :: Card -> [(Trait, Int)]
 perLocationLimitTraits c = [(t, m) | LimitPerTraitPerLocation t m <- cdLimits (toCardDef c)]
+
+{- | The investigator's hand as it stood when their current action, effect or
+ability was initiated: the cards literally in hand, plus the cards that have left
+it since and are still resolving.
+
+Playability is determined with the card still in hand -- @cdCriteria@, the
+post-payment re-check in @Game.Runner@'s @PlayCard@, and the card's own guards all
+run before @CardEnteredPlay@ strips it from hand -- so a continuous effect that
+reads hand /contents/ is read at one hand size when the play is judged legal and at
+a smaller one when the effect it licensed resolves. Anything whose legality that
+effect re-checks therefore blinks off in between.
+
+Dark Matter's Hound of Tindalos ("while you have an odd number of cards in your
+hand, Hound of Tindalos is considered to be engaged with you") is the first card to
+care, and its FAQ settles the reading: all that matters is that you are able to
+attack the Hound when you initiate your action, effect or ability, so long as you
+had an odd number of cards when you were about to play the Fight event. That is why
+cards committed to a test in progress count too, and why a card played from the
+discard pile does not.
+-}
+getHandAtInitiation :: HasGame m => InvestigatorId -> m [Card]
+getHandAtInitiation iid = do
+  hand <- field Field.InvestigatorHand iid
+  committed <- field Field.InvestigatorCommittedCards iid
+  resolving <- select $ ActiveEvent <> eventOwnedBy iid
+  played <- flip foldMapM resolving \eid -> do
+    playedFrom <- field Field.EventPlayedFrom eid
+    if playedFrom == FromHand then pure <$> field Field.EventCard eid else pure []
+  pure $ nubOrdOn toCardId (hand <> committed <> played)
 
 {- | Every card currently attached to a location (events, assets, treacheries).
 Used by the per-trait-per-location limit checks.
@@ -366,7 +397,13 @@ cardPassesLimitsAtLocation c lid = do
       all (\(t, m) -> m > length (filter (sharesTrait t) attached)) (perLocationLimitTraits c)
     notExcluded =
       not $ any (\x -> any ((`elem` cTraits) . fst) (perLocationLimitTraits x)) attached
-  pure $ ownLimitsOk && notExcluded
+    -- "Limit 1 per location" counts copies of this card already there.
+    sameTitle x = nameTitle (toName x) == nameTitle (toName c)
+    copiesOk =
+      all
+        (\m -> m > length (filter sameTitle attached))
+        [m | LimitPerLocation m <- cdLimits (toCardDef c)]
+  pure $ ownLimitsOk && notExcluded && copiesOk
 
 cardIsFast :: HasGame m => Card -> m Bool
 cardIsFast = cardIsFast' getModifiers

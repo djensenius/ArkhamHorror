@@ -14,6 +14,7 @@ import Arkham.Classes.Query
 import Arkham.Constants
 import Arkham.Customization
 import Arkham.ForMovement
+import {-# SOURCE #-} Arkham.Game (abilityMatches)
 import Arkham.Game.Settings
 import Arkham.GameEnv
 import {-# SOURCE #-} Arkham.Helpers.Cost (getAdditionalActionCost, getCanAffordCost)
@@ -22,7 +23,7 @@ import Arkham.Helpers.Location (getLocationOf)
 import Arkham.Helpers.Modifiers (getModifiers, withoutModifier)
 import Arkham.Helpers.Query (allInvestigators, getActiveInvestigatorId)
 import Arkham.Helpers.Scenario (getScenarioDeck)
-import Arkham.Helpers.Window (getThatEnemy, getThatInvestigator, windowMatches)
+import Arkham.Helpers.Window (getThatEnemy, getThatInvestigator, windowInvestigator, windowMatches)
 import Arkham.Homebrew.Defs (homebrewActionAffordability)
 import Arkham.I18n (cardNameVar, ikey', varStr, withI18n)
 import Arkham.Id
@@ -36,7 +37,6 @@ import Arkham.Scenario.Deck
 import Arkham.Source
 import Arkham.Target
 import Arkham.Window (Window (..))
-import Arkham.Window qualified as Window
 
 getAbility :: HasGame m => AbilityRef -> m (Maybe Ability)
 getAbility ref = selectOne (Matcher.AbilityIs ref.source ref.index)
@@ -107,6 +107,25 @@ applyCriteriaOverride = \case
   SetAbilityCriteria (CriteriaOverride c) -> const c
   _ -> id
 
+{- | The haunted abilities on a location that @iid@ may actually resolve.
+
+Haunted abilities are collected by ability type and source, which skips the
+criteria check the normal ability path does in 'getCanPerformAbility', so a
+@restricted@ haunted ability resolved with its condition unmet. Only the
+criteria are tested here: a haunted ability is forced, free and matches any
+window, so the rest of 'getCanPerformAbility' has nothing to say about it, and
+a modifier that stops an investigator triggering abilities must not stop one.
+-}
+getResolvableHauntedAbilities :: HasGame m => InvestigatorId -> LocationId -> m [Ability]
+getResolvableHauntedAbilities iid lid = do
+  abilities <-
+    select $ Matcher.HauntedAbility <> Matcher.AbilityOnLocation (Matcher.LocationWithId lid)
+  flip filterM abilities \ability -> do
+    abilityModifiers <- getModifiers (AbilityTarget iid ability.ref)
+    let criteria = foldr applyCriteriaOverride (abilityCriteria ability) abilityModifiers
+    withActiveInvestigator iid
+      $ passesCriteria iid Nothing (toSource ability) ability.requestor [] criteria
+
 getCanPerformAbility
   :: (HasCallStack, HasGame m) => InvestigatorId -> [Window] -> Ability -> m Bool
 getCanPerformAbility !iid !ws !ability = do
@@ -171,10 +190,18 @@ preventedByInvestigatorModifiers iid ability = do
       effectiveMatchers
         | isForced = filter explicitlyTargetsForcedAbilities cannotTriggerMatchers
         | otherwise = cannotTriggerMatchers
+  {- 'abilityMatches' and not @elem ability <$> select@: 'getAbilitiesMatching' is
+  wrapped in @guardYourLocation@, so for an investigator with no location it
+  answers @[]@ for EVERY matcher and the ban silently does nothing. That is not
+  a corner case -- /Ritual Circle: A Harnessed Future/ removes a seat from the
+  game (@Placement.Unplaced@) and then bans @AnyAbility@, which was exactly the
+  position where the ban had to hold and did not. Matching the one ability
+  directly also drops the requirement that it be @Eq@-present in the game's
+  ability pool, and is cheaper: @AnyAbility@ is a constant instead of a sweep. -}
   suppressedByMatcher <-
     if null effectiveMatchers
       then pure False
-      else elem ability <$> select (Matcher.AbilityOneOf effectiveMatchers)
+      else abilityMatches ability (Matcher.AbilityOneOf effectiveMatchers)
   if suppressedByMatcher
     then pure True
     else
@@ -441,6 +468,7 @@ getCanAffordAbilityCost iid a@Ability {..} ws = do
             pure $ [m | not doDelayAdditionalCosts, AdditionalCostToLeave m <- mods]
           _ -> pure []
       else pure []
+  let moveCosts = [m | #move `elem` abilityActions a, not doDelayAdditionalCosts, AdditionalCostToMove m <- imods]
   performActionCosts <- do
     -- riders can sit on the investigator (a treachery in their threat area) or
     -- on their location, so both are consulted
@@ -467,17 +495,18 @@ getCanAffordAbilityCost iid a@Ability {..} ws = do
     fixEnemy =
       (maybe id Matcher.replaceThatInvestigator $ getThatInvestigator ws)
         . (maybe id Matcher.replaceThatEnemy mThatEnemy)
+    actionCosts =
+      investigateCosts
+        <> exploreCosts
+        <> resignCosts
+        <> enterCosts
+        <> leaveCosts
+        <> moveCosts
+        <> performActionCosts
     costF =
       case find isSetCost modifiers of
-        Just (SetAbilityCost c) ->
-          fixEnemy
-            . fold
-            . (: investigateCosts <> exploreCosts <> resignCosts <> enterCosts <> leaveCosts <> performActionCosts)
-            . const c
-        _ ->
-          fixEnemy
-            . fold
-            . (: investigateCosts <> exploreCosts <> resignCosts <> enterCosts <> leaveCosts <> performActionCosts)
+        Just (SetAbilityCost c) -> fixEnemy . fold . (: actionCosts) . const c
+        _ -> fixEnemy . fold . (: actionCosts)
     isSetCost = \case
       SetAbilityCost _ -> True
       _ -> False
@@ -493,7 +522,10 @@ getCanAffordAbilityCost iid a@Ability {..} ws = do
     ServitorAbility _ -> pure True
     Haunted -> pure True
     Cosmos -> pure True
-    ActionAbility actions _ cost -> getCanAffordCost iid (toSource a) (actionsToList actions) ws (f cost)
+    -- 'a.actions', not the bare designators: payment charges against the list that
+    -- includes #activate, so checking affordability without it offered an [action]
+    -- ability the investigator could not pay for (#5895).
+    ActionAbility _ _ cost -> getCanAffordCost iid (toSource a) a.actions ws (f cost)
     ReactionAbility _ cost actions -> getCanAffordCost iid (toSource a) (actionsToList actions) ws (f cost)
     CustomizationReaction _ _ cost -> getCanAffordCost iid (toSource a) [] ws (f cost)
     ConstantReaction _ _ cost -> getCanAffordCost iid (toSource a) [] ws (f cost)
@@ -649,6 +681,26 @@ getCanAffordUseWith f canIgnoreAbilityLimit iid ability ws = do
           $ filter
             ((Just cardDef.title ==) . fmap toTitle . abilityCardDef . abilityLimit . usedAbility)
             usedAbilities'
+      MaxPer cardDef PerWindow n -> do
+        -- scoped to the current windows like GroupLimit PerWindow, but the bucket is the
+        -- card def rather than the ability, so every copy of the card shares it. Without
+        -- the `ws` intersection this would be a once-per-game limit, since EndCheckWindow
+        -- only prunes the Player/Group PerWindow records.
+        let
+          abilityCardDef = \case
+            MaxPer cDef _ _ -> Just cDef
+            _ -> Nothing
+        usedAbilities' <-
+          filterDepthSpecificAbilities
+            =<< concatMapM (field InvestigatorUsedAbilities)
+            =<< allInvestigators
+        let
+          matching =
+            filter
+              ((Just cardDef.title ==) . fmap toTitle . abilityCardDef . abilityLimit . usedAbility)
+              usedAbilities'
+        let countInWs u = length (filter (`elem` ws) (usedAbilityWindows u))
+        pure $ sum (map countInWs matching) < n
       MaxPer cardDef _ n -> do
         let
           abilityCardDef = \case
@@ -677,22 +729,22 @@ getCanAffordUseWith f canIgnoreAbilityLimit iid ability ws = do
             ((Just cardDef.title ==) . fmap toTitle . abilityCardDef . abilityLimit . usedAbility)
             usedAbilities'
       PerInvestigatorLimit _ n -> do
-        -- This is difficult and based on the window, so we need to match out the
-        -- relevant investigator ids from the window. If this becomes more prevalent
-        -- we may want a method from `Window -> Maybe InvestigatorId`
+        {- Which investigator the bucket belongs to comes from the window, via
+        `windowInvestigator`. Only `CommittedCard` was read before, so this
+        limit on any other window answered False and the ability was never
+        performable -- an ability silently switched off by the limit meant to
+        meter it. -}
         anyM
           ( \window ->
-              case windowType window of
-                Window.CommittedCard iid' _ -> do
+              case windowInvestigator (windowType window) of
+                Nothing -> pure False
+                Just iid' -> do
                   let
-                    matchingPerInvestigatorCount =
-                      flip count usedAbilities $ \usedAbility' ->
-                        flip any (usedAbilityWindows usedAbility') $ \case
-                          (windowType -> Window.CommittedCard iid'' _) ->
-                            usedAbility usedAbility' == ability && iid' == iid''
-                          _ -> False
-                  pure $ matchingPerInvestigatorCount < n
-                _ -> pure False
+                    sameSeat used =
+                      usedAbility used
+                        == ability
+                        && any ((== Just iid') . windowInvestigator . windowType) (usedAbilityWindows used)
+                  pure $ count sameSeat usedAbilities < n
           )
           ws
       GroupLimit PerCampaign n -> do

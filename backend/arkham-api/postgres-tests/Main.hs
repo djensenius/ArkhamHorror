@@ -43,6 +43,7 @@ import Postgres.DispatchSpec qualified as DispatchSQL
 import Postgres.PayloadSpec qualified as PayloadSQL
 import Postgres.ConcurrencySpec qualified as ConcurrencySQL
 import Postgres.DeleteSpec qualified as DeleteSQL
+import Postgres.ThirdEditionSpec qualified as ThirdEditionSQL
 import Postgres.Production
 import Postgres.WriteBackSpec qualified as WriteBackSQL
 import Relude hiding (first, second)
@@ -71,6 +72,7 @@ main = withHarness \harness -> withProductionApp harness \app ->
     PayloadSQL.spec harness app settings transport remote (writeBackSeed app)
     ConcurrencySQL.spec harness app settings transport remote (writeBackSeed app)
     DeleteSQL.spec harness app settings transport remote (writeBackSeed app)
+    ThirdEditionSQL.spec harness app
 
 writeBackSeed :: App -> WriteBackSQL.Seed
 writeBackSeed app connection label = do

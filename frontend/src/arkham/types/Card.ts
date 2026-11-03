@@ -6,6 +6,16 @@ import { v2Optional } from '@/arkham/parser';
 
 export type Card = PlayerCard | EncounterCard | VengeanceCard;
 
+// A display-only copy for piles whose facedown cards may be referenced.
+// Keep the stored card facedown and preserve its printed side.
+export function referenceCard(card: Card): Card {
+  if (card.tag === 'VengeanceCard') {
+    const inner = card.contents
+    return { ...card, contents: { ...inner, contents: { ...inner.contents, facedown: false } } }
+  }
+  return { ...card, contents: { ...card.contents, facedown: false } }
+}
+
 function cardIsFlipped(card: Card | CardContents) {
   switch (card.tag) {
     case 'CardContents':
@@ -90,6 +100,10 @@ export type CardContents = {
   tag: "CardContents"
   id: string
   cardCode: string
+  /* What the card really is, when `cardCode` has been retargeted to make it a
+   * copy of something else (Unleashed Chaos (Proliferation)). Equal to
+   * `cardCode` for every ordinary card. */
+  originalCardCode?: string
   isFlipped?: boolean
   facedown?: boolean
   tokens: Tokens
@@ -123,6 +137,7 @@ export const cardContentsDecoder = JsonDecoder.object<CardContents>(
     tag: JsonDecoder.constant('CardContents'),
     id: JsonDecoder.string(),
     cardCode: JsonDecoder.string(),
+    originalCardCode: v2Optional(JsonDecoder.string()),
     isFlipped: v2Optional(JsonDecoder.boolean()),
     facedown: v2Optional(JsonDecoder.boolean()),
     tokens: JsonDecoder.constant({}),

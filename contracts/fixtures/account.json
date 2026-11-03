@@ -7,13 +7,15 @@
   },
   "userSettings": {
     "beta": true,
-    "phaseTransitionNotifications": false
+    "phaseTransitionNotifications": false,
+    "allowSpectatorsByDefault": true
   },
   "settingsUser": {
     "username": "Investigator",
     "email": "investigator@example.com",
     "beta": true,
-    "phaseTransitionNotifications": false
+    "phaseTransitionNotifications": false,
+    "allowSpectatorsByDefault": false
   },
   "notifications": [
     {

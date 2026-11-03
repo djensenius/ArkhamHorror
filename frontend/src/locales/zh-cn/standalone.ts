@@ -7,6 +7,7 @@ import murderAtTheExcelsiorHotel from '@/locales/zh-cn/standalone/murderAtTheExc
 import fortuneAndFolly from '@/locales/zh-cn/standalone/fortuneAndFolly.json'
 import theMidwinterGala from '@/locales/zh-cn/standalone/theMidwinterGala.json'
 import filmFatale from '@/locales/zh-cn/standalone/filmFatale.json'
+import tracesToNowhere from '@/locales/zh-cn/standalone/tracesToNowhere.json'
 import theBlobThatAteEverything from '@/locales/zh-cn/standalone/theBlobThatAteEverything.json'
 import warOfTheOuterGods from '@/locales/zh-cn/standalone/warOfTheOuterGods.json'
 import machinationsThroughTime from '@/locales/zh-cn/standalone/machinationsThroughTime.json'
@@ -30,6 +31,7 @@ export default {
   fortuneAndFolly,
   theMidwinterGala,
   filmFatale,
+  tracesToNowhere,
   theBlobThatAteEverything,
   warOfTheOuterGods,
   machinationsThroughTime,

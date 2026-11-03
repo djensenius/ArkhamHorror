@@ -22,6 +22,14 @@ module Api.Handler.ThirdEdition (
   postApiV1ThirdEditionAnswerR,
   postApiV1ThirdEditionDebugR,
   postApiV1ThirdEditionUndoR,
+  getApiV1ThirdEditionExportR,
+  postApiV1ThirdEditionBugR,
+  postApiV1ThirdEditionImportR,
+
+  -- * Exposed for tests
+  withTableAccess,
+  getApiV1ThirdEditionExportWith,
+  postApiV1ThirdEditionBugWith,
 ) where
 
 import AH3e.Engine (GameOptions (..), answer, applyDebug, newGame, runEngine, withSeedFrom)
@@ -31,6 +39,7 @@ import AH3e.Types.Ids (PlayerId (..), ScenarioCode)
 import AH3e.Types.State (DebugAction, GameMode)
 import AH3e.View (catalogView, gameView)
 import Api.Arkham.Helpers (joinRoomIn, releaseRoomIfEmpty)
+import Api.Handler.Arkham.Game.Bug (BugUploadTransport, awsBugUpload, uploadBugExportUsing)
 import Api.Handler.Arkham.Games.Shared (publishOrWarn, streamRoom, websocketConnectionOptions)
 import Control.Monad.Random (getRandomR)
 import Data.Aeson qualified as Aeson
@@ -103,7 +112,7 @@ postApiV1ThirdEditionTablesR = do
           , createdAt = now
           }
   store <- getStore
-  liftIO (store.insertTable table)
+  liftIO (store.insertTable table [])
   pure (tableView Nothing table 0)
 
 {- | The table as it stands, or its live feed when the request is a websocket
@@ -114,9 +123,10 @@ getApiV1ThirdEditionTableR :: UUID -> Handler Value
 getApiV1ThirdEditionTableR tid = do
   _ <- getRequestUserId
   wsOptions <- websocketConnectionOptions
+  joining <- anonymousSubscriber
   webSocketsOptions wsOptions
     $ streamRoom
-      (joinRoomIn appThirdEditionRooms tableChannel tid)
+      (joinRoomIn joining appThirdEditionRooms tableChannel tid)
       (void $ releaseRoomIfEmpty appThirdEditionRooms tid)
   store <- getStore
   liftIO (store.getTable tid) >>= \case
@@ -162,7 +172,12 @@ postApiV1ThirdEditionStartR tid = do
     unless (t.host == userId) $ Left "Only the host can start the game"
     when (started t) $ Left "The game has already started"
     unless (null (freeSeats t)) $ Left "Every seat needs a player first"
-    let opts = GameOptions {expansions = t.options.expansions, mode = t.options.mode, scenario = t.options.scenario}
+    let opts =
+          GameOptions
+            { expansions = t.options.expansions
+            , mode = t.options.mode
+            , scenario = t.options.scenario
+            }
     g <- newGame [PlayerId s.player | s <- t.seats] seed opts
     g' <- first tshow (runEngine g)
     pure (withGame g' t, KeepHistory)
@@ -204,6 +219,91 @@ postApiV1ThirdEditionUndoR tid = do
     -- and answering again rolls different dice rather than the same ones.
     let resumed = maybe earlier (withSeedFrom earlier) t.game
     pure (withGame resumed t, PopHistory)
+
+{- | The whole table, game state and all: what an import takes back and what a
+filed bug carries. Not the game /view/ the table endpoint serves, which is what
+a player may see rather than what the engine is holding.
+-}
+getApiV1ThirdEditionExportR :: UUID -> Handler Value
+getApiV1ThirdEditionExportR = getApiV1ThirdEditionExportWith isAdminUser
+
+-- | 'getApiV1ThirdEditionExportR' with the admin lookup supplied.
+getApiV1ThirdEditionExportWith :: (UserId -> Handler Bool) -> UUID -> Handler Value
+getApiV1ThirdEditionExportWith isAdmin tid = Aeson.toJSON <$> exportTable isAdmin tid
+
+-- | File a bug: the export goes to the bug bucket and its URL into the issue.
+postApiV1ThirdEditionBugR :: UUID -> Handler Value
+postApiV1ThirdEditionBugR = postApiV1ThirdEditionBugWith isAdminUser awsBugUpload
+
+{- | 'postApiV1ThirdEditionBugR' with the admin lookup and S3 transport
+supplied. The upload is the Arkham bug endpoint's hardened one: a sanitized 502
+rather than a raw AWS error, and no PUT unless HeadObject confirmed the object
+absent.
+-}
+postApiV1ThirdEditionBugWith :: (UserId -> Handler Bool) -> BugUploadTransport -> UUID -> Handler Value
+postApiV1ThirdEditionBugWith isAdmin transport tid = do
+  table <- exportTable isAdmin tid
+  url <- uploadBugExportUsing transport ("third-edition table " <> UUID.toText tid) "ah3e-" (Aeson.encode table)
+  pure (object ["url" .= url])
+
+{- | The full engine state, hidden information included, is for the table's
+own players, its host and admins. Anyone else gets the same 404 as a table
+that does not exist: table ids are listed publicly, so a different answer
+would disclose which ones are real.
+-}
+exportTable :: (UserId -> Handler Bool) -> UUID -> Handler TableExport
+exportTable isAdmin tid = do
+  userId <- getRequestUserId
+  store <- getStore
+  liftIO (store.getTable tid) >>= \case
+    Nothing -> noSuchTable
+    Just (t, _) ->
+      withTableAccess userId t (isAdmin userId) noSuchTable
+        -- the earlier states ride along, so a filed bug can be rewound rather than
+        -- only looked at: third edition has no replay runner
+        (TableExport t <$> liftIO (store.getHistory tid))
+ where
+  noSuchTable = failWith status404 "No such table"
+
+{- | Run protected table work only for a seated player, the host (who may have
+left their seat) or an admin. As with
+'Api.Handler.Arkham.Games.Shared.withGameAccess', rejection and protected
+work share a result type, so a denial cannot fall through to the protected
+work; the admin lookup runs only for someone who is neither.
+-}
+withTableAccess :: Monad m => UserId -> Table -> m Bool -> m a -> m a -> m a
+withTableAccess userId t lookupAdmin reject protected
+  | t.host == userId || isSeated userId t = protected
+  | otherwise = do
+      admin <- lookupAdmin
+      if admin then protected else reject
+
+isAdminUser :: UserId -> Handler Bool
+isAdminUser userId = maybe False (\(Entity _ user) -> user.admin) <$> runDB (getEntity userId)
+
+{- | Load an exported table as a new one. The importer hosts it and holds every
+seat, so they can answer for each player on their own, as an imported Arkham
+game does.
+-}
+postApiV1ThirdEditionImportR :: Handler Value
+postApiV1ThirdEditionImportR = do
+  Entity userId user <- getRequestUser
+  TableExport imported history <- (requireCheckJsonBody :: Handler TableExport)
+  tid <- liftIO nextRandom
+  now <- liftIO getCurrentTime
+  let
+    table =
+      imported
+        { id = tid
+        , host = userId
+        , hostName = userUsername user
+        , seats = [s {user = Just userId, username = Just (userUsername user)} | s <- imported.seats]
+        , version = 0
+        , createdAt = now
+        }
+  store <- getStore
+  liftIO (store.insertTable table history)
+  pure (tableView Nothing table (length history))
 
 -- | Run the engine on the table's game, keeping the state it replaces for undo.
 step :: Show e => Table -> (Game -> Either e Game) -> Either Text (Table, HistoryChange)

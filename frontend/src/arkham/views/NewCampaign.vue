@@ -61,6 +61,9 @@ const returnTo = ref(false)
 // Per-seat AI configuration (dev-only, Solo games only); see GameOptions.vue.
 
 const fullCampaignOptionKey = ref<string | null>(null)
+/* The community narrative variant chosen for this game, or null for the
+ * Campaign Guide's own prose -- which is the default. */
+const narrativeKey = ref<string | null>(null)
 const recommendedOptionState = ref<Record<string, boolean>>({})
 
 // Ultimatums and Boons variant tags selected in GameOptions (e.g. "BoonOfHades").
@@ -69,6 +72,25 @@ const ultimatumsAndBoons = ref<string[]>([])
 // Achievement tracking (default on). Only honored for campaigns with an
 // achievement catalog; unsupported campaigns always send true.
 const achievementsEnabled = ref(true)
+
+/* List this game on the home page for anyone to watch. Off unless the account
+ * has said otherwise in Settings -- and it is only the starting position, so
+ * changing it here is for this game alone.
+ *
+ * `currentUser` can still be loading when this runs, so the default is applied
+ * by watch rather than read once. Only until the form is touched: after that the
+ * choice is the player's and the preference must not overwrite it. */
+const allowSpectators = ref(false)
+const allowSpectatorsTouched = ref(false)
+watch(
+  () => currentUser.value?.allowSpectatorsByDefault,
+  (preferred) => {
+    if (allowSpectatorsTouched.value) return
+    allowSpectators.value = preferred === true
+  },
+  { immediate: true },
+)
+watch(allowSpectators, () => (allowSpectatorsTouched.value = true))
 
 // "Epic Multiplayer" side-story mode state (only meaningful for epic-capable
 // side stories; see GameOptions.vue / side-stories.json).
@@ -266,6 +288,7 @@ watch(selectedCampaign, (id) => {
   selectedScenario.value = null
   returnTo.value = false
   recommendedOptionState.value = {}
+  narrativeKey.value = null
   ultimatumsAndBoons.value = []
   strictAsIfAt.value = campaignChapter(campaignJSON.find((c) => c.id === id), id) === 2
 
@@ -325,9 +348,14 @@ async function start() {
 
   const variant = fullCampaignOptionKey.value ? [{ 'tag': 'CampaignVariant', 'contents': fullCampaignOptionKey.value }] : [];
 
+  const narrative = narrativeKey.value
+    ? [{ tag: 'NarrativeVariant', contents: narrativeKey.value }]
+    : []
+
   const options = [
     ...enabledRecommendedOptions,
     ...variant,
+    ...narrative,
     ...(miniCampaign.value ? [{ tag: 'PlayAsMiniCampaign' }] : []),
     ...(returnTo.value && scenario.value?.returnToVariant ? [{ tag: 'PlayWithTheBlobThatAteEverythingElse' }] : [])
   ]
@@ -386,7 +414,8 @@ async function start() {
         options,
         strictAsIfAt.value,
         ultimatumsAndBoons.value,
-        achievementsForCreate(campaignId)
+        achievementsForCreate(campaignId),
+        allowSpectators.value
       ).then((game) => router.push(`/games/${game.id}`))
     }
   } else {
@@ -406,7 +435,8 @@ async function start() {
         options,
         strictAsIfAt.value,
         ultimatumsAndBoons.value,
-        achievementsForCreate(campaignId)
+        achievementsForCreate(campaignId),
+        allowSpectators.value
       ).then((game) => router.push(`/games/${game.id}`))
     }
   }
@@ -448,8 +478,10 @@ async function start() {
           v-model:campaignName="campaignName"
           v-model:fullCampaignOptionKey="fullCampaignOptionKey"
           v-model:recommendedOptionState="recommendedOptionState"
+          v-model:narrativeKey="narrativeKey"
           v-model:ultimatumsAndBoons="ultimatumsAndBoons"
           v-model:achievementsEnabled="achievementsEnabled"
+          v-model:allowSpectators="allowSpectators"
           v-model:epicMode="epicMode"
           v-model:epicGroupCount="epicGroupCount"
           v-model:epicGroups="epicGroups"
@@ -467,6 +499,7 @@ async function start() {
           :currentCampaignName="currentCampaignName"
           :chosenCampaignId="selectedCampaign"
           :chosenSideStoryId="gameMode === 'SideStory' ? selectedScenario : null"
+          :displayRules="displayRuleOptions"
         />
 
         <div class="wizard-actions buttons">
@@ -558,6 +591,10 @@ h2 {
   font-size: 2em;
   padding: 0;
   margin: 0;
+  /* Matches the home page's title, which morphs into this one. */
+  @media (max-width: 768px) {
+    font-size: 1.5em;
+  }
 }
 
 header {
@@ -571,8 +608,12 @@ header {
   gap: 12px;
 }
 
+/* The title sizes to its text rather than stretching across the header: it
+   carries `main-header-title` across the home <-> new game view transition, and
+   a stretched box scales the home page's title up to the header's width. */
 header h2 {
-  flex: 1;
+  flex: none;
+  margin-right: auto;
 }
 
 input[type='radio'] {

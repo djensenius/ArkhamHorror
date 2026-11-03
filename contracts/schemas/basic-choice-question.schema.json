@@ -255,7 +255,7 @@
       "required": [
         "tag",
         "label",
-        "card",
+        "labelCards",
         "question"
       ],
       "properties": {
@@ -265,8 +265,9 @@
         "label": {
           "const": "Assign 1 damage"
         },
-        "card": {
-          "type": "null"
+        "labelCards": {
+          "type": "array",
+          "maxItems": 0
         },
         "question": {
           "type": "object",
@@ -300,7 +301,7 @@
       "required": [
         "tag",
         "label",
-        "card",
+        "labelCards",
         "question"
       ],
       "properties": {
@@ -310,8 +311,9 @@
         "label": {
           "const": "Assign 1 horror"
         },
-        "card": {
-          "type": "null"
+        "labelCards": {
+          "type": "array",
+          "maxItems": 0
         },
         "question": {
           "type": "object",
@@ -3278,7 +3280,7 @@
       "required": [
         "tag",
         "label",
-        "card",
+        "labelCards",
         "question"
       ],
       "properties": {
@@ -3288,8 +3290,9 @@
         "label": {
           "const": "Assign 2 horror"
         },
-        "card": {
-          "type": "null"
+        "labelCards": {
+          "type": "array",
+          "maxItems": 0
         },
         "question": {
           "type": "object",
@@ -3765,7 +3768,7 @@
       "required": [
         "tag",
         "label",
-        "card",
+        "labelCards",
         "question"
       ],
       "properties": {
@@ -3775,8 +3778,9 @@
         "label": {
           "const": "Assign 1 damage and 1 horror"
         },
-        "card": {
-          "type": "null"
+        "labelCards": {
+          "type": "array",
+          "maxItems": 0
         },
         "question": {
           "$ref": "#/$defs/enemyAttackDamageAssignmentChoices"
@@ -4270,7 +4274,7 @@
       "required": [
         "tag",
         "label",
-        "card",
+        "labelCards",
         "question"
       ],
       "properties": {
@@ -4280,8 +4284,9 @@
         "label": {
           "const": "Assign 1 horror"
         },
-        "card": {
-          "type": "null"
+        "labelCards": {
+          "type": "array",
+          "maxItems": 0
         },
         "question": {
           "$ref": "#/$defs/enemyAttackRemainingHorrorAssignmentChoices"
@@ -4294,7 +4299,7 @@
       "required": [
         "tag",
         "label",
-        "card",
+        "labelCards",
         "question"
       ],
       "properties": {
@@ -4304,8 +4309,9 @@
         "label": {
           "const": "Assign 1 damage"
         },
-        "card": {
-          "type": "null"
+        "labelCards": {
+          "type": "array",
+          "maxItems": 0
         },
         "question": {
           "$ref": "#/$defs/enemyAttackRemainingDamageAssignmentChoices"

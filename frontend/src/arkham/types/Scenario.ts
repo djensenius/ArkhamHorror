@@ -17,7 +17,7 @@ import { Difficulty, difficultyDecoder } from '@/arkham/types/Difficulty';
 import { Tokens, tokensDecoder } from '@/arkham/types/Token';
 import { TarotCard, tarotCardDecoder, tarotScopeDecoder } from '@/arkham/types/TarotCard';
 import { XpEntry, xpEntryDecoder} from '@/arkham/types/Xp';
-import { customTokenKey, type TokenFace } from '@/arkham/types/ChaosToken';
+import { chaosTokenDecoder, customTokenKey, type ChaosToken, type TokenFace } from '@/arkham/types/ChaosToken';
 
 /** A set of locations the map draws as one box, routing connections to the box. */
 export type GroupLayout = 'GroupRow' | 'GroupColumn' | 'GroupSquare'
@@ -78,6 +78,7 @@ export type Scenario = {
   decks: [string, Card[]][];
   deckDiscards: [string, Card[]][];
   cardsUnderScenarioReference: Card[];
+  sealedChaosTokens: ChaosToken[];
   cardsUnderAgendaDeck: Card[];
   cardsUnderActDeck: Card[];
   cardsNextToActDeck: Card[];
@@ -122,12 +123,63 @@ export const scenarioDetailsDecoder = JsonDecoder.object<ScenarioDetails>({
   variant: v2Optional(JsonDecoder.string()),
 }, 'ScenarioDetails');
 
+/* A homebrew campaign's own remembered key. `homebrewKey` is namespaced
+ * `<campaignScope>.KeyName`, exactly like `HomebrewCampaignLogKey`, so the scope
+ * travels with the key instead of being read off whichever scenario is showing.
+ * `name` is the investigator it was remembered about (`...For`), `payload` the
+ * arbitrary value it carries (`...With`); the locale entry may interpolate
+ * either. */
+export type HomebrewRemembered = {
+  tag: "HomebrewRemembered"
+  homebrewKey: string
+  name?: Name
+  payload?: Record<string, unknown>
+}
+
 export type Remembered=
     { tag: "YouOweBiancaResources", contents: number } |
     { tag: "RememberNamed" | "RememberedName", actualTag: string, name: Name } |
-    { tag: string, contents?: undefined, actualTag?: undefined, name?: undefined }
+    HomebrewRemembered |
+    { tag: string, contents?: undefined, actualTag?: undefined, name?: undefined, homebrewKey?: undefined, payload?: undefined }
+
+const labeledDecoder = JsonDecoder.object(
+  { getLabel: nameDecoder, unLabel: JsonDecoder.string() },
+  'labeled'
+)
 
 const rememberedDecoder = JsonDecoder.oneOf([
+  JsonDecoder.object(
+    {
+      tag: JsonDecoder.literal('HomebrewScenarioLogKeyFor'),
+      contents: JsonDecoder.tuple([JsonDecoder.string(), labeledDecoder], 'HomebrewScenarioLogKeyFor'),
+    },
+    'Remembered'
+  ).map<Remembered>(({ contents }) => ({
+    tag: 'HomebrewRemembered',
+    homebrewKey: contents[0],
+    name: contents[1].getLabel,
+  })),
+  JsonDecoder.object(
+    {
+      tag: JsonDecoder.literal('HomebrewScenarioLogKeyWith'),
+      contents: JsonDecoder.tuple(
+        [JsonDecoder.string(), JsonDecoder.succeed()],
+        'HomebrewScenarioLogKeyWith'
+      ),
+    },
+    'Remembered'
+  ).map<Remembered>(({ contents }) => ({
+    tag: 'HomebrewRemembered',
+    homebrewKey: contents[0],
+    payload:
+      typeof contents[1] === 'object' && contents[1] !== null && !Array.isArray(contents[1])
+        ? (contents[1] as Record<string, unknown>)
+        : undefined,
+  })),
+  JsonDecoder.object(
+    { tag: JsonDecoder.literal('HomebrewScenarioLogKey'), contents: JsonDecoder.string() },
+    'Remembered'
+  ).map<Remembered>(({ contents }) => ({ tag: 'HomebrewRemembered', homebrewKey: contents })),
   JsonDecoder.object<Remembered>(
     {
       tag: JsonDecoder.literal('YouOweBiancaResources'),
@@ -186,6 +238,7 @@ export const scenarioDecoder = JsonDecoder.object<DecodedScenario>({
     JsonDecoder.constant([] as [string, Card[]][]),
   ], 'deckDiscards'),
   cardsUnderScenarioReference: JsonDecoder.array<Card>(cardDecoder, 'UnderneathAgendaCards'),
+  sealedChaosTokens: JsonDecoder.array<ChaosToken>(chaosTokenDecoder, 'ChaosToken[]'),
   cardsUnderAgendaDeck: JsonDecoder.array<Card>(cardDecoder, 'UnderneathAgendaCards'),
   cardsUnderActDeck: JsonDecoder.array<Card>(cardDecoder, 'UnderneathActCards'),
   tarotCards: JsonDecoder.
@@ -255,14 +308,16 @@ export function scenarioToKeyI18n(scenario: Scenario): string {
 }
 
 // Maps a campaign id (e.g. "07" or "7") to its i18n scope root, so campaign-wide
-// content can be looked up even when no scenario is currently active.
+// content can be looked up even when no scenario is currently active. A "Return
+// to" box has its own campaign id but reuses the campaign's locale scope, the
+// same way its scenarios do.
 export function campaignIdToI18n(campaignId: string): string | null {
   switch (campaignId.replace(/^0+/, '')) {
-    case "1": return "nightOfTheZealot"
-    case "2": return "theDunwichLegacy"
-    case "3": return "thePathToCarcosa"
-    case "4": return "theForgottenAge"
-    case "5": return "theCircleUndone"
+    case "1": case "50": return "nightOfTheZealot"
+    case "2": case "51": return "theDunwichLegacy"
+    case "3": case "52": return "thePathToCarcosa"
+    case "4": case "53": return "theForgottenAge"
+    case "5": case "54": return "theCircleUndone"
     case "6": return "theDreamEaters"
     case "7": return "theInnsmouthConspiracy"
     case "8": return "edgeOfTheEarth"
@@ -459,6 +514,7 @@ export function scenarioIdToI18n(scenarioId: string): string {
     case "70001": return "standalone.theLabyrinthsOfLunacy"
     case "71001": return "standalone.theMidwinterGala"
     case "72001": return "standalone.filmFatale"
+    case "73001": return "standalone.tracesToNowhere"
     case "81001": return "standalone.curseOfTheRougarou"
     case "82001": return "standalone.carnevaleOfHorrors"
     case "83001": return "standalone.theEternalSlumber"

@@ -19,7 +19,7 @@ otherPlayer :: PlayerId
 otherPlayer = PlayerId (fromWords64 0 2)
 
 afterSkillTestSeat :: [UI Message] -> Question Message
-afterSkillTestSeat = QuestionLabel "$label.chooseAfterSkillTestEffect" Nothing . ChooseOneAtATime
+afterSkillTestSeat = QuestionLabel "$label.chooseAfterSkillTestEffect" [] . ChooseOneAtATime
 
 answerFirstChoice :: PlayerId -> Answer
 answerFirstChoice pid =
@@ -181,7 +181,7 @@ spec = do
                 (fromJustNote "test harness always has a scenario" $ modeScenario g.gameMode)
           , gameQuestion =
               singletonMap pid
-                $ QuestionLabel "$chooseLeadInvestigator" Nothing (ChooseOne [])
+                $ QuestionLabel "$chooseLeadInvestigator" [] (ChooseOne [])
           }
 
       game <- getGame
@@ -198,7 +198,7 @@ spec = do
       let
         question =
           QuestionWithSource GameSource Nothing
-            $ QuestionLabel "wrapped" Nothing
+            $ QuestionLabel "wrapped" []
             $ PayCostQuestion Free
             $ ChooseOne [Label "choice" [ClearUI]]
         invalidAnswer =
@@ -326,10 +326,10 @@ spec = do
             , AmountChoice secondChoice "second" 0 2
             ]
             GameTarget
-        amountLabelWrapped = QuestionLabel "amounts" Nothing bareQuestion
+        amountLabelWrapped = QuestionLabel "amounts" [] bareQuestion
         sourceWrapped = QuestionWithSource GameSource Nothing bareQuestion
         payCostWrapped = PayCostQuestion Free bareQuestion
-        doubleWrapped = QuestionWithSource GameSource Nothing (QuestionLabel "amounts" Nothing bareQuestion)
+        doubleWrapped = QuestionWithSource GameSource Nothing (QuestionLabel "amounts" [] bareQuestion)
         gameFor question = baseGame {gameQuestion = singletonMap pid question, gameScenarioSteps = 12}
         answer game values =
           AmountsAnswer
@@ -375,7 +375,7 @@ spec = do
             , PaymentAmountChoice secondChoice investigator 0 2 "second" GameOver
             ]
         payCostWrapped = PayCostQuestion Free bareQuestion
-        paymentLabelWrapped = QuestionLabel "payment" Nothing bareQuestion
+        paymentLabelWrapped = QuestionLabel "payment" [] bareQuestion
         sourceWrapped = QuestionWithSource GameSource Nothing bareQuestion
         doubleWrapped = QuestionWithSource GameSource Nothing (PayCostQuestion Free bareQuestion)
         gameFor question = baseGame {gameQuestion = singletonMap pid question, gameScenarioSteps = 13}

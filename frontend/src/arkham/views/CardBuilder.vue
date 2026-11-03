@@ -4,7 +4,7 @@
  *
  * In a game you only pick from this library; building and editing happen here,
  * where there is room for it. */
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import CustomCardForm from '@/arkham/components/debug/CustomCardForm.vue'
@@ -12,7 +12,7 @@ import CardOverlay from '@/arkham/components/CardOverlay.vue'
 import CardSetStrip from '@/arkham/components/CardSetStrip.vue'
 import SegmentedToggle from '@/components/SegmentedToggle.vue'
 import Prompt from '@/components/Prompt.vue'
-import { stripCardCodePrefix } from '@/arkham/customCards'
+import { cardKind, stripCardCodePrefix } from '@/arkham/customCards'
 import {
   mintCustomCardCode,
   renderCardPlaceholder,
@@ -21,16 +21,29 @@ import {
   type SignatureSummary,
 } from '@/arkham/customCards'
 import { isBadLink, setLinkLabel } from '@/arkham/setLink'
+import * as Api from '@/arkham/api'
 import CustomCardsPage from '@/arkham/components/CustomCardsPage.vue'
-import FilterBar from '@/arkham/components/FilterBar.vue'
+import CardFilters from '@/arkham/components/CardFilters.vue'
+import {
+  chosenFacetCount,
+  clearFilter,
+  emptyCardFilter,
+  filterCards,
+  filterIsEmpty,
+} from '@/arkham/customCardFilters'
 import MetaChip from '@/arkham/components/MetaChip.vue'
 import SetPreview from '@/arkham/components/SetPreview.vue'
 import { useUserStore } from '@/stores/user'
 import {
   createSet,
   exportCards,
+  canExport,
+  canUnlock,
   isAwaitingReview,
+  isFromShare,
   isListed,
+  isLocked,
+  isShared,
   isSubscribed,
   publishSet,
   syncSet,
@@ -46,11 +59,17 @@ import {
   loadLibrary,
   removeFromLibrary,
   removeSet,
+  unlockSet,
   updateSet,
   saveToLibrary,
   setCards,
+  type LibraryCard,
   type LibrarySet,
 } from '@/arkham/customCardLibrary'
+import ExpansionDetails, { type ExpansionDraft } from '@/arkham/components/debug/ExpansionDetails.vue'
+import SetTextEditor from '@/arkham/components/debug/SetTextEditor.vue'
+import RawCardEditor from '@/arkham/components/debug/RawCardEditor.vue'
+import { importChanges, type CardChange } from '@/arkham/customCardDiff'
 
 const { t, te } = useI18n()
 const K = 'customCardSets.'
@@ -86,6 +105,16 @@ function confirmDiscard(): Promise<boolean> {
   })
 }
 const selected = ref<string[]>([])
+
+/* Whether the panel is picking cards rather than opening them. A checkbox on
+ * every row is a column of chrome for something done rarely -- selecting is
+ * only ever for exporting -- so the rows stay cards until you ask. */
+const selecting = ref(false)
+
+function toggleSelecting() {
+  selecting.value = !selecting.value
+  if (!selecting.value) selected.value = []
+}
 const busy = ref(false)
 const libraryCollapsed = ref(false)
 const status = ref<string | null>(null)
@@ -103,6 +132,15 @@ const renamingSetId = ref<string | null>(null)
 const renameDraft = ref('')
 const describeDraft = ref('')
 const linkDraft = ref('')
+/* What marking the set an investigator expansion unlocks: its symbol, its own
+ * tokens, its own keywords. Part of the same form, and so the same request: all
+ * of it is what the set says about itself. */
+const expansionDraft = ref<ExpansionDraft>({
+  investigatorExpansion: false,
+  icon: null,
+  tokens: [],
+  keywords: [],
+})
 
 const route = useRoute()
 const router = useRouter()
@@ -128,6 +166,8 @@ function startPublish(set: LibrarySet) {
   publishingSetId.value = set.id
   publishNote.value = ''
   publishNotify.value = true
+  // Both answer "what do I do with this set", and open together they are a wall.
+  sharingSetId.value = null
   status.value = null
   error.value = null
 }
@@ -211,12 +251,186 @@ async function update(set: LibrarySet) {
   }
 }
 
+/* ------------------------------------------------------------------- lock ---
+
+   A set taken from a listing or a link follows it, which means it stays what was
+   published or shared: the server refuses every edit, and the controls that
+   would try are not shown. This is the one button that changes that. */
+async function unlock(set: LibrarySet) {
+  status.value = null
+  error.value = null
+  try {
+    await unlockSet(set.id)
+    status.value = t(`${K}unlocked`, { name: set.name })
+  } catch (e) {
+    console.error(e)
+    error.value = t(`${K}unlockFailed`)
+  }
+}
+
+/* ------------------------------------------------------------------ share ---
+
+   Handing an unpublished set to a few people. The marketplace is the other way
+   to do it and the wrong one for a set that is not finished: it is public,
+   reviewed, and versioned, and a playtest wants the people trying the cards to
+   have whatever changed this afternoon.
+
+   The panel is opened per set, like the publish form, and the two are mutually
+   exclusive: they are both "what do I do with this set", and open together they
+   would be a wall. */
+const sharingSetId = ref<string | null>(null)
+const share = ref<Api.CardSetShare | null>(null)
+const shareBusy = ref(false)
+const copied = ref(false)
+/* Both destructive in their own way -- one kills the link for everybody, the
+ * other for one person -- so each asks once, inline, rather than in a dialog
+ * over the top of the list it is about. */
+const confirmingStop = ref(false)
+const confirmingRotate = ref(false)
+
+const shareLink = computed(() => (share.value ? Api.shareUrl(share.value.token) : null))
+
+function resetShare() {
+  share.value = null
+  copied.value = false
+  confirmingStop.value = false
+  confirmingRotate.value = false
+}
+
+/* Opens on what is there: a set already shared loads its link and its people, a
+ * set that is not shows the one button that starts it. A 404 is the answer to
+ * "is this shared", not a failure. */
+async function openShare(set: LibrarySet) {
+  publishingSetId.value = null
+  status.value = null
+  error.value = null
+  if (sharingSetId.value === set.id) {
+    sharingSetId.value = null
+    resetShare()
+    return
+  }
+  sharingSetId.value = set.id
+  resetShare()
+  if (!set.shareToken) return
+  shareBusy.value = true
+  try {
+    share.value = await Api.fetchCardSetShare(set.id)
+  } catch (e) {
+    console.error(e)
+    error.value = t(`${K}shareLoadFailed`)
+  } finally {
+    shareBusy.value = false
+  }
+}
+
+async function startShare(set: LibrarySet) {
+  shareBusy.value = true
+  error.value = null
+  try {
+    share.value = await Api.shareCardSet(set.id)
+    await loadLibrary(true)
+    status.value = t(`${K}shareStarted`, { name: set.name })
+  } catch (e) {
+    console.error(e)
+    error.value = t(`${K}shareFailed`)
+  } finally {
+    shareBusy.value = false
+  }
+}
+
+/* A new link, which makes the old one worthless -- the way to deal with one that
+ * got somewhere it should not have. The people stay: they are the record of who
+ * took the set, which is still true of them, and anyone who should not have it
+ * is removed by themselves. */
+async function rotateShare(set: LibrarySet) {
+  confirmingRotate.value = false
+  shareBusy.value = true
+  error.value = null
+  try {
+    share.value = await Api.shareCardSet(set.id, true)
+    copied.value = false
+    status.value = t(`${K}shareRotated`)
+  } catch (e) {
+    console.error(e)
+    error.value = t(`${K}shareFailed`)
+  } finally {
+    shareBusy.value = false
+  }
+}
+
+/* Stop sharing. The link dies and the list of who had it goes with it; what
+ * anybody already took stays in their own library, which is what the warning
+ * above the button says. */
+async function stopShare(set: LibrarySet) {
+  confirmingStop.value = false
+  shareBusy.value = true
+  error.value = null
+  try {
+    await Api.unshareCardSet(set.id)
+    resetShare()
+    sharingSetId.value = null
+    await loadLibrary(true)
+    status.value = t(`${K}shareStopped`, { name: set.name })
+  } catch (e) {
+    console.error(e)
+    error.value = t(`${K}shareFailed`)
+  } finally {
+    shareBusy.value = false
+  }
+}
+
+/* One person, without disturbing the link everyone else holds. Nothing of
+ * theirs is taken away -- the cards they took are theirs -- all this stops is
+ * reading the set and taking it again. */
+async function setAccess(set: LibrarySet, access: Api.CardSetShareAccess, revoked: boolean) {
+  shareBusy.value = true
+  error.value = null
+  try {
+    share.value = await Api.setCardSetShareAccess(set.id, access.id, revoked)
+    await loadLibrary(true)
+  } catch (e) {
+    console.error(e)
+    error.value = t(`${K}shareFailed`)
+  } finally {
+    shareBusy.value = false
+  }
+}
+
+async function copyLink() {
+  if (!shareLink.value) return
+  try {
+    await navigator.clipboard.writeText(shareLink.value)
+    copied.value = true
+  } catch {
+    copied.value = false
+  }
+}
+
+/* Where one person stands with the set, in the words the author needs: they have
+ * it, they have an old one, or they have only looked. */
+function accessLine(access: Api.CardSetShareAccess): string {
+  if (access.revoked) return t(`${K}shareRemoved`)
+  if (!access.takenAt) return t(`${K}shareLookedOnly`)
+  const date = new Date(access.takenAt).toLocaleDateString()
+  return access.behind ? t(`${K}shareHasOlder`, { date }) : t(`${K}shareHasCurrent`, { date })
+}
+
 /* ?card=<code> opens the builder on that card: a deep link from a game ("Edit
  * custom card" on an asset), and the way one card links to another — a
  * signature to the investigator whose it is. Watched rather than read once, so
  * a link followed while already here still lands. */
 async function openFromRoute() {
   await loadLibrary()
+  /* The url names the set, so a link to one opens it and a reload stays on it.
+   * A set that is not yours (or no longer exists) falls through to the list
+   * rather than to somebody else's set. */
+  const routed = typeof route.params.setId === 'string' ? route.params.setId : null
+  if (routed && sets.value.some((s) => s.id === routed)) {
+    if (activeSetId.value !== routed) chooseActiveSet(routed)
+    browsingSets.value = false
+  } else if (routed) {
+    browsingSets.value = true
+  }
   ensureActiveSet()
   const wanted = route.query.card
   if (typeof wanted !== 'string') return
@@ -233,12 +447,14 @@ onMounted(async () => {
   // Nothing has been typed yet, whether a card opened or the editor is blank.
   if (baseline.value === null) markClean()
 })
-watch(() => route.query.card, openFromRoute)
+watch(() => [route.params.setId, route.query.card], openFromRoute)
 
 /* Leaving the builder entirely. Navigating within it -- which is what opening a
  * card does, since the url names the card -- is not leaving: those paths ask on
  * their own, before they replace what is in the editor. */
-onBeforeRouteLeave(async (to) => (to.name === 'CardBuilder' ? true : await confirmDiscard()))
+onBeforeRouteLeave(async (to) =>
+  to.name === 'CardBuilder' || to.name === 'CardBuilderSet' ? true : await confirmDiscard(),
+)
 
 /* And leaving the site, where the browser asks in its own words and all we can
  * do is say that there is something to lose. */
@@ -248,12 +464,123 @@ function warnOnUnload(event: BeforeUnloadEvent) {
   event.returnValue = ''
 }
 
+/* The head is only separated from the card once it is over it. A line drawn
+ * while it is still at the top of the panel would be a line under a heading,
+ * which is a different thing to say. */
+const headEl = ref<HTMLElement | null>(null)
+const headStuck = ref(false)
+
+/* The page scrolls inside a box of its own rather than the window, so that box
+ * is what the head is measured against. */
+function scrollParent(el: HTMLElement): HTMLElement | null {
+  for (let at = el.parentElement; at; at = at.parentElement) {
+    if (/auto|scroll|overlay/.test(getComputedStyle(at).overflowY)) return at
+  }
+  return null
+}
+
+/* Watched rather than observed once at mount: the editor arrives with the set,
+ * which is fetched, so at mount there is no head to measure yet. */
+let headWatcher: IntersectionObserver | null = null
+
+watch(headEl, (el) => {
+  headWatcher?.disconnect()
+  headWatcher = null
+  headStuck.value = false
+  if (!el) return
+  // A pixel of the top is cut off what it is measured against, so the head
+  // stops fitting exactly when it comes to rest against that top.
+  headWatcher = new IntersectionObserver(
+    ([entry]) => (headStuck.value = entry.intersectionRatio < 1),
+    { root: scrollParent(el), rootMargin: '-1px 0px 0px 0px', threshold: 1 },
+  )
+  headWatcher.observe(el)
+})
+
+onUnmounted(() => headWatcher?.disconnect())
+
 onMounted(() => window.addEventListener('beforeunload', warnOnUnload))
 onUnmounted(() => window.removeEventListener('beforeunload', warnOnUnload))
 
 const cards = computed(() => libraryCards())
 const sets = computed(() => librarySets())
 const activeSet = computed(() => librarySet(activeSetId.value))
+
+/* The set open in the editor, when it is one that follows something. Drives the
+ * editor pane: no new cards, no saving, no deleting, and the form itself inside
+ * a disabled fieldset, so its fields read rather than invite. */
+const activeSetLocked = computed(() => !!activeSet.value && isLocked(activeSet.value))
+
+/* The two things that depend on where a locked set came from. A copy of
+ * something published can be taken into the editor and exported like any set of
+ * yours; one taken from a share link is the author's unpublished work, so it can
+ * be neither. */
+const activeSetUnlockable = computed(() => !!activeSet.value && canUnlock(activeSet.value))
+const activeSetExportable = computed(() => !!activeSet.value && canExport(activeSet.value))
+
+/* An expansion leaves as an expansion or not at all.
+ *
+ * Its cards carry a copy of what the set declares -- the tokens they place on
+ * themselves, the keywords they print -- because that copy is the only form
+ * those declarations reach a running game in. A card taken out on its own
+ * would have to carry the whole box with it to say what its keyword means, so
+ * it does not go out on its own: the set is the unit, and the file carries the
+ * declarations once at the top instead of on every card in it. */
+const wholeSetOnly = computed(() => !!activeSet.value?.investigatorExpansion)
+
+/* What the open set declares, for the card form: the keywords a card here can
+ * print, and the tokens one of them can be marked with. Empty for a set that is
+ * not an investigator expansion, which is what keeps the form from offering a
+ * keyword section to a set that has none. */
+const openSetDeclaration = computed(() => ({
+  keywords: activeSet.value?.keywords ?? [],
+  tokens: activeSet.value?.tokens ?? [],
+}))
+
+/* What the set declares, in a line. A count rather than the lists themselves:
+ * the button is a way in, and a panel about cards should not grow a section per
+ * kind of thing an expansion can hold. */
+const declarationSummary = computed(() => {
+  const set = activeSet.value
+  if (!set?.investigatorExpansion) return t(`${K}notAnExpansion`)
+  const parts = [
+    t(`${K}tokenCount`, set.tokens?.length ?? 0),
+    t(`${K}keywordCount`, set.keywords?.length ?? 0),
+  ]
+  return parts.join(', ')
+})
+
+/* Editing what the open set declares, without leaving it. The sets page can do
+ * this too, as part of the whole details form; this is the same edit reached
+ * from where the cards that use it are being written. */
+const editingDeclaration = ref(false)
+
+/* Open everything the set declares, in the main panel. */
+function startDeclaration(set: LibrarySet) {
+  startRename(set)
+  // `startRename` opens the details form on the sets page; only the expansion
+  // half is wanted here, so that is closed again and the draft kept.
+  renamingSetId.value = null
+  editingDeclaration.value = true
+}
+
+async function saveDeclaration(set: LibrarySet) {
+  const expansion = expansionDraft.value
+  editingDeclaration.value = false
+  error.value = null
+  try {
+    await updateSet(set.id, {
+      name: set.name,
+      investigatorExpansion: expansion.investigatorExpansion,
+      icon: expansion.icon,
+      tokens: expansion.tokens,
+      keywords: expansion.keywords,
+    })
+  } catch (e) {
+    console.error(e)
+    error.value = t(`${K}setRenameFailed`)
+  }
+}
 
 const inPrintedOrder = (setId: string) => setCards(setId).sort(byPrintedNumber)
 
@@ -262,6 +589,11 @@ const inPrintedOrder = (setId: string) => setCards(setId).sort(byPrintedNumber)
 const activeCards = computed(() =>
   activeSetId.value ? inPrintedOrder(activeSetId.value) : [],
 )
+
+/* What the panel actually lists. Everything that acts on "the cards" -- the
+ * count, selecting them all, exporting the selection -- acts on these, so a
+ * filtered panel never quietly picks up a card it is not showing. */
+const visibleCards = computed(() => filterCards(activeCards.value, filter))
 
 /* Two pages, not one: your sets, or the editor for the set you opened. The
  * editor is a card at a time, so browsing sets there meant the panel and the
@@ -275,7 +607,18 @@ const inSet = computed(() => !browsingSets.value && !!activeSet.value)
 function openSet(id: string) {
   chooseActiveSet(id)
   browsingSets.value = false
+  editingDeclaration.value = false
   startNew()
+  router.push({ name: 'CardBuilderSet', params: { setId: id } })
+}
+
+/* Back to the list, and to the url that is the list. Pushed rather than
+ * replaced: clicking into a set and out again is two steps, and the back button
+ * should retrace them. */
+function leaveSet() {
+  browsingSets.value = true
+  editingDeclaration.value = false
+  router.push({ name: 'CardBuilder', query: {} })
 }
 
 /* Falls back to whatever set is first rather than leaving nothing selected: a
@@ -305,7 +648,11 @@ function ensureActiveSet() {
 
 // ---------------------------------------------------------- browse & sort ---
 
-const setQuery = ref('')
+/* One filter for both halves of the builder: the list of sets, and the panel
+ * inside a set. Searching for a card on the sets page and then opening the set
+ * it is in should not throw away what you typed to find it. */
+const filter = reactive(emptyCardFilter())
+const filtering = computed(() => !filterIsEmpty(filter))
 const setOrder = ref<'name' | 'recent'>('name')
 const setOrderOptions = computed(() => [
   { value: 'name' as const, label: t(`${K}orderAlphabetical`) },
@@ -317,23 +664,25 @@ const setOrderOptions = computed(() => [
 const lastTouched = (set: LibrarySet) =>
   setCards(set.id).reduce((newest, c) => (c.updatedAt > newest ? c.updatedAt : newest), set.updatedAt)
 
-const matches = (text: string | null | undefined, query: string) =>
-  !!text && text.toLowerCase().includes(query)
-
 /* The cards in a set that answer the filter; all of them when there is none. */
 function matchingCards(setId: string) {
-  const query = setQuery.value.trim().toLowerCase()
-  const cards = inPrintedOrder(setId)
-  if (!query) return cards
-  return cards.filter((c) => matches(c.def.name.title, query) || matches(c.def.name.subtitle, query))
+  return filterCards(inPrintedOrder(setId), filter)
+}
+
+/* A set's name only answers for the typed words. Once a chip is lit the
+ * question is about cards -- "the locations" is not answered by a set called
+ * Locations with none in it -- so the name stops standing in for them. */
+function matchesSetName(set: LibrarySet) {
+  const query = filter.query.trim().toLowerCase()
+  if (!query || chosenFacetCount(filter) > 0) return false
+  return set.name.toLowerCase().includes(query)
 }
 
 /* A set stays in the list when its own name matches or one of its cards does,
  * so searching for a card finds the set holding it. */
 const visibleSets = computed(() => {
-  const query = setQuery.value.trim().toLowerCase()
-  const shown = query
-    ? sets.value.filter((s) => matches(s.name, query) || matchingCards(s.id).length > 0)
+  const shown = filtering.value
+    ? sets.value.filter((s) => matchesSetName(s) || matchingCards(s.id).length > 0)
     : [...sets.value]
   // `sets` is already alphabetical, so only the other order has to be applied.
   if (setOrder.value === 'recent') {
@@ -351,7 +700,7 @@ function toggleSelected(code: string) {
   else selected.value.splice(index, 1)
 }
 
-const selectAll = () => (selected.value = activeCards.value.map((c) => c.def.cardCode))
+const selectAll = () => (selected.value = visibleCards.value.map((c) => c.def.cardCode))
 const clearSelection = () => (selected.value = [])
 
 // -------------------------------------------------------------------- sets ---
@@ -376,6 +725,14 @@ function startRename(set: LibrarySet) {
   renameDraft.value = set.name
   describeDraft.value = set.description ?? ''
   linkDraft.value = set.url ?? ''
+  expansionDraft.value = {
+    investigatorExpansion: set.investigatorExpansion ?? false,
+    icon: set.icon ?? null,
+    // Copied rather than referenced: the editor replaces the whole draft on
+    // every keystroke, and the set in the library must not change until saved.
+    tokens: (set.tokens ?? []).map((token) => ({ ...token })),
+    keywords: (set.keywords ?? []).map((keyword) => ({ ...keyword })),
+  }
 }
 
 /* Only what actually changed is sent. The description and the link are left out
@@ -390,23 +747,47 @@ async function commitRename(set: LibrarySet) {
   const name = renameDraft.value.trim()
   const description = describeDraft.value.trim()
   const url = linkDraft.value.trim()
+  const expansion = expansionDraft.value
   leaveDetails(set)
   if (!name) return
   const renamed = name !== set.name
   const redescribed = description !== (set.description ?? '')
   const relinked = url !== (set.url ?? '')
-  if (!renamed && !redescribed && !relinked) return
+  /* Unticking the box leaves the tokens and the keywords where they are rather
+   * than sending empty lists: somebody who ticks it again has not lost the work,
+   * and a set that is not an expansion is not asked about either of them
+   * anywhere. */
+  const nowExpansion = expansion.investigatorExpansion
+  const declared = nowExpansion
+    ? { icon: expansion.icon, tokens: expansion.tokens, keywords: expansion.keywords }
+    : {}
+  const expansionChanged =
+    nowExpansion !== (set.investigatorExpansion ?? false)
+    || (nowExpansion && !sameDeclaration(set, expansion))
+  if (!renamed && !redescribed && !relinked && !expansionChanged) return
   error.value = null
   try {
     await updateSet(set.id, {
       name,
       ...(redescribed ? { description: description || null } : {}),
       ...(relinked ? { url: url || null } : {}),
+      ...(expansionChanged ? { investigatorExpansion: nowExpansion, ...declared } : {}),
     })
   } catch (e) {
     console.error(e)
     error.value = t(`${K}${isBadLink(e) ? 'setLinkInvalid' : 'setRenameFailed'}`)
   }
+}
+
+/* Whether the draft says the same as the set. Compared as JSON rather than
+ * field by field: these are small lists of plain records, and the alternative is
+ * a deep-equality walk written out for two shapes that will grow. */
+function sameDeclaration(set: LibrarySet, draft: ExpansionDraft): boolean {
+  return (
+    (set.icon ?? null) === draft.icon
+    && JSON.stringify(set.tokens ?? []) === JSON.stringify(draft.tokens)
+    && JSON.stringify(set.keywords ?? []) === JSON.stringify(draft.keywords)
+  )
 }
 
 
@@ -417,6 +798,51 @@ async function commitRename(set: LibrarySet) {
  * work to lose to a dialog you have already learned to click through. */
 const deletingSet = ref<LibrarySet | null>(null)
 const deletingCard = ref<CustomCard | null>(null)
+
+/* The card whose def is open as JSON. Held as the library row rather than the
+ * def, since saving one needs the set it belongs to and the art it keeps. */
+const rawCard = ref<LibraryCard | null>(null)
+
+/* The number printed on a card, which is what the panel is sorted by and so
+ * the thing to read down the left edge of it. Written by hand, so it is a
+ * string: "134", but also "12a" and "R3". */
+const printedNumber = (card: LibraryCard) => {
+  const number = card.def.meta?.number
+  return typeof number === 'string' ? number.trim() : typeof number === 'number' ? String(number) : ''
+}
+
+/* Only a set that numbers its cards gets the column. A box does; a handful of
+ * cards made one afternoon does not, and an empty gutter down the side of it
+ * would be a column of nothing. */
+const numbered = computed(() => visibleCards.value.some((card) => printedNumber(card)))
+
+/* The row behind the open form, which is what the raw editor edits. A card
+ * being written for the first time has no stored def to read. */
+const editingRaw = computed(() => (editingCode.value ? (libraryCard(editingCode.value) ?? null) : null))
+
+/* The card by name once it has one, since "Editing card" says the least of
+ * anything on the page. Read off the form, so renaming one renames the head. */
+const editingTitle = computed(() => (form.value?.cardTitle ?? '').trim())
+const rawBusy = ref(false)
+
+async function saveRaw(def: Record<string, any>) {
+  const card = rawCard.value
+  if (!card) return
+  rawBusy.value = true
+  error.value = null
+  try {
+    const saved = await saveToLibrary({ def: def as CustomCard['def'], art: card.art }, card.setId)
+    rawCard.value = null
+    // The form may be showing the card that just changed underneath it.
+    if (editingCode.value === saved.def.cardCode) form.value?.loadCard(saved)
+    status.value = t(`${K}rawSaved`, { name: saved.def.name.title })
+  } catch (e) {
+    console.error(e)
+    error.value = t(`${K}rawFailed`)
+  } finally {
+    rawBusy.value = false
+  }
+}
 
 const deleteSetPrompt = computed(() => {
   const set = deletingSet.value
@@ -442,6 +868,7 @@ async function dropSet(set: LibrarySet) {
 
 async function edit(card: CustomCard) {
   if (!(await confirmDiscard())) return
+  editingDeclaration.value = false
   editingCode.value = card.def.cardCode
   browsingSets.value = false
   status.value = null
@@ -459,6 +886,9 @@ async function edit(card: CustomCard) {
 
 async function startNew() {
   if (!(await confirmDiscard())) return
+  // The declaration editor and the card form share the main panel, so reaching
+  // for a card is also leaving the declaration.
+  editingDeclaration.value = false
   editingCode.value = null
   status.value = null
   error.value = null
@@ -471,16 +901,26 @@ async function startNew() {
  * link is worth sharing. Replaced rather than pushed: opening one card after
  * another should not fill up the back button. */
 function syncRoute(cardCode: string | null) {
+  // Whichever page the card is on: a card opened inside a set keeps the set's
+  // url, so the link carries both and a reload comes back to the same place.
+  const where = activeSetId.value && !browsingSets.value
+    ? { name: 'CardBuilderSet', params: { setId: activeSetId.value } }
+    : { name: 'CardBuilder' }
   const current = route.query.card
+  const sameSet = route.params.setId === (where.params?.setId ?? undefined)
   if (cardCode === null) {
-    if (current === undefined) return
-    router.replace({ name: 'CardBuilder', query: {} })
+    if (current === undefined && sameSet) return
+    router.replace({ ...where, query: {} })
     return
   }
-  if (typeof current === 'string' && stripCardCodePrefix(current) === stripCardCodePrefix(cardCode)) {
+  if (
+    sameSet
+    && typeof current === 'string'
+    && stripCardCodePrefix(current) === stripCardCodePrefix(cardCode)
+  ) {
     return
   }
-  router.replace({ name: 'CardBuilder', query: { card: cardCode } })
+  router.replace({ ...where, query: { card: cardCode } })
 }
 
 async function save() {
@@ -523,7 +963,25 @@ async function remove(card: CustomCard) {
 
 // ---------------------------------------------------------------- export ---
 
+/* The set a card belongs to, which is what decides whether it may leave. Read
+ * per card rather than from the open set, because the selection and the one-card
+ * export both run from a panel that is only ever showing one set, and a wrong
+ * answer here is somebody's unpublished work in a file. */
+const exportable = (cards: CustomCard[]) =>
+  cards.every((c) => {
+    const set = librarySet(libraryCard(c.def.cardCode)?.setId ?? null)
+    return !set || canExport(set)
+  })
+
 async function download(cards: CustomCard[], filename: string, set?: LibrarySet) {
+  /* Somebody else's unpublished work is not yours to hand on. The buttons are
+   * not rendered for one, so nothing here should reach this -- it is the rule
+   * stated where the file is written rather than only where it is asked for.
+   *
+   * Not a guarantee, and not meant as one: the cards are in the library this
+   * reads because playing with them needs them there. It is the affordance that
+   * is withdrawn. */
+  if ((set && !canExport(set)) || !exportable(cards)) return
   // The art is fetched and inlined, so this waits on the network.
   const blob = new Blob([JSON.stringify(await exportCards(cards, set), null, 2)], {
     type: 'application/json',
@@ -546,9 +1004,16 @@ const exportOne = (card: CustomCard) => download([card], `${slug(card.def.name.t
 const exportSet = (set: LibrarySet) =>
   download(inPrintedOrder(set.id), `${slug(set.name)}.arkhamcard.json`, set)
 
+/* With cards picked, the picked ones; with none, the whole set -- which is the
+ * answer to "export" when nothing has been singled out, and the file somebody
+ * syncing another library actually wants. A set export carries the set itself,
+ * so it lands as that set rather than as loose cards needing somewhere to go. */
 async function exportSelected() {
-  const chosen = activeCards.value.filter((c) => isSelected(c.def.cardCode))
-  if (!chosen.length) return
+  const chosen = wholeSetOnly.value ? [] : activeCards.value.filter((c) => isSelected(c.def.cardCode))
+  if (!chosen.length) {
+    if (activeSet.value) await exportSet(activeSet.value)
+    return
+  }
   await download(
     chosen,
     chosen.length === 1 ? `${slug(chosen[0].def.name.title)}.arkhamcard.json` : `custom-cards-${chosen.length}.json`,
@@ -621,6 +1086,26 @@ const importBreakdown = computed(() => {
     }))
 })
 
+/* Cards in the file that your library already holds somewhere else.
+ *
+ * A card belongs to one set and the row is keyed on its code, so writing it
+ * into a second set moves it rather than copying it -- the set it came from is
+ * left a card short, and nothing says so. The server refuses it; this is the
+ * same answer given before the yes rather than after it, where it can name
+ * every card at once and point at the set they are in. */
+const importElsewhere = computed(() => {
+  const incoming = pendingImport.value
+  if (!incoming) return []
+  const target = (incoming.into ?? incoming.replacing)?.id ?? null
+  const found: { title: string; set: string }[] = []
+  for (const card of incoming.cards) {
+    const held = libraryCard(card.def.cardCode)
+    if (!held || held.setId === target) continue
+    found.push({ title: card.def.name.title, set: librarySet(held.setId)?.name ?? '' })
+  }
+  return found
+})
+
 /* A replace swaps the set's cards outright, so anything the set holds that the
  * file does not is going away. That is the part worth knowing before the yes,
  * and the part a one-line confirm could never say. */
@@ -647,6 +1132,27 @@ const importDiff = computed(() => {
   }
 })
 
+/* What the file would do to the cards that are already there, card by card and
+ * key by key. The counts above say how much lands; this says what it lands on,
+ * which is the question when two libraries have drifted apart. */
+const importReview = computed(() => {
+  const incoming = pendingImport.value
+  if (!incoming) return null
+  const target = incoming.into ?? incoming.replacing
+  if (!target) return null
+  const existing = setCards(target.id).map((c) => c.def as any)
+  const review = importChanges(existing, incoming.cards.map((c) => c.def as any))
+  // Adding to a set takes nothing out of it, whatever the file leaves unsaid.
+  return incoming.into ? { ...review, removed: [] } : review
+})
+
+// One card's keys open at a time: a def is long, and two are longer.
+const openChange = ref<string | null>(null)
+const toggleChange = (code: string) => (openChange.value = openChange.value === code ? null : code)
+
+const changeLabel = (change: CardChange) =>
+  change.changes.map((c) => c.key).join(', ')
+
 /* Everything imported arrives as a set, replacing one of the same name rather
  * than merging into it. A file that names no set falls back to what the cards
  * claim, and failing that to the file's own name. */
@@ -665,6 +1171,7 @@ async function reviewImport(
   status.value = null
   pendingImport.value = null
   importExpanded.value = false
+  openChange.value = null
   portraitsCut.value = 0
   try {
     const { name, description, url, sourceCode, cards } = await parse(await file.text())
@@ -863,7 +1370,9 @@ async function onImport(event: Event) {
         {{ t(`${K}cardCount`, pendingImport.cards.length) }}
         <span v-if="importDiff" class="split">
           <span class="added">{{ t(`${K}reviewAdded`, { n: importDiff.added }) }}</span>
-          <span>{{ t(`${K}reviewUpdated`, { n: importDiff.updated }) }}</span>
+          <!-- Counted by what differs, not by what is present in both: a file
+               that brings a card back unchanged updates nothing. -->
+          <span>{{ t(`${K}reviewUpdated`, { n: importReview ? importReview.updated.length : importDiff.updated }) }}</span>
           <span v-if="!pendingImport.into" :class="{ dropped: importDiff.removed > 0 }">
             {{ t(`${K}reviewDropped`, { n: importDiff.removed }) }}
           </span>
@@ -889,6 +1398,46 @@ async function onImport(event: Event) {
         {{ t(`${K}reviewSubscribed`, { name: pendingImport.replacing.name }) }}
       </p>
 
+      <!-- Which cards change, and in what. The counts say how big the import
+           is; this says what it is, which is the only form of it you can agree
+           to when the two libraries have drifted. -->
+      <div v-if="importReview && (importReview.updated.length || importReview.added.length || importReview.removed.length)" class="review-changes">
+        <p v-if="importReview.identical" class="note">
+          {{ importReview.identical }} unchanged
+        </p>
+
+        <ul class="changed">
+          <li v-for="card in importReview.updated" :key="card.cardCode" class="changed-card">
+            <button type="button" class="change-head" @click="toggleChange(card.cardCode)">
+              <span class="mark changed">changed</span>
+              <span class="who">{{ card.title }}</span>
+              <span class="keys">{{ changeLabel(card) }}</span>
+            </button>
+            <div v-if="openChange === card.cardCode" class="change-body">
+              <div v-for="field in card.changes" :key="field.key" class="field">
+                <code class="field-key">{{ field.key }}</code>
+                <div class="sides">
+                  <pre class="was">{{ field.before }}</pre>
+                  <pre class="now">{{ field.after }}</pre>
+                </div>
+              </div>
+            </div>
+          </li>
+          <li v-for="card in importReview.added" :key="card.cardCode" class="changed-card">
+            <span class="change-head plain">
+              <span class="mark added">new</span>
+              <span class="who">{{ card.title }}</span>
+            </span>
+          </li>
+          <li v-for="card in importReview.removed" :key="card.cardCode" class="changed-card">
+            <span class="change-head plain">
+              <span class="mark removed">dropped</span>
+              <span class="who">{{ card.title }}</span>
+            </span>
+          </li>
+        </ul>
+      </div>
+
       <!-- Clipped to one row by default: a pool export can run to hundreds of
            cards, and the whole wrapped grid is taller than the page. -->
       <div ref="importPreview" class="review-preview" :class="{ expanded: importExpanded }">
@@ -905,8 +1454,13 @@ async function onImport(event: Event) {
           : t(`${K}reviewShowAll`, { count: pendingImport.cards.length }) }}
       </button>
 
+      <p v-if="importElsewhere.length" class="warn">
+        <font-awesome-icon icon="triangle-exclamation" />
+        {{ t(`${K}reviewElsewhere`, { count: importElsewhere.length, name: importElsewhere[0].title, set: importElsewhere[0].set }) }}
+      </p>
+
       <div class="review-actions">
-        <button type="button" class="confirm" :disabled="busy" @click="commitImport">
+        <button type="button" class="confirm" :disabled="busy || importElsewhere.length > 0" @click="commitImport">
           {{ pendingImport.replacing ? t(`${K}reviewConfirmReplace`) : t(`${K}reviewConfirm`) }}
         </button>
         <button type="button" class="cancel" @click="cancelImport">
@@ -925,21 +1479,28 @@ async function onImport(event: Event) {
     </section>
 
     <template v-else>
-      <FilterBar
-        v-model="setQuery"
+      <CardFilters
+        v-model="filter"
+        :cards="cards"
         :placeholder="t(`${K}filterPlaceholder`)"
-        :clear-label="t(`${K}clearFilter`)"
       >
         <SegmentedToggle
           v-model="setOrder"
           :options="setOrderOptions"
           :label="t(`${K}orderLabel`)"
         />
-      </FilterBar>
+      </CardFilters>
 
       <p v-if="!visibleSets.length" class="no-matches">
         <font-awesome-icon icon="search" />
-        <span>{{ t(`${K}noMatches`, { query: setQuery.trim() }) }}</span>
+        <span>
+          {{ filter.query.trim()
+            ? t(`${K}noMatches`, { query: filter.query.trim() })
+            : t(`${K}noFilterMatches`) }}
+        </span>
+        <button type="button" class="link" @click="clearFilter(filter)">
+          {{ t(`${K}clearFilter`) }}
+        </button>
       </p>
 
       <ul v-else class="set-cards">
@@ -978,6 +1539,7 @@ async function onImport(event: Event) {
               @keydown.stop
               @keydown.esc="leaveDetails(set)"
             />
+            <ExpansionDetails v-model="expansionDraft" />
             <div class="rename-actions">
               <button type="submit">{{ t(`${K}saveSetDetails`) }}</button>
               <button type="button" class="cancel" @click="leaveDetails(set)">
@@ -987,15 +1549,27 @@ async function onImport(event: Event) {
           </form>
           <div v-else class="set-identity">
             <button type="button" class="set-open" @click="openSet(set.id)">
+              <!-- An expansion's own symbol, the way a printed box is filed.
+                   Decorative: the name beside it already says which set. -->
+              <span
+                v-if="set.icon"
+                class="expansion-icon"
+                :style="{ '--set-icon-url': `url(${set.icon})` }"
+                aria-hidden="true"
+              ></span>
               <span class="name">{{ set.name }}</span>
             </button>
             <div class="set-facts">
               <MetaChip>{{ set.cardCount ? t(`${K}cardCount`, set.cardCount) : t(`${K}emptySetShort`) }}</MetaChip>
+              <!-- The lock is the chip's own: a set you follow is one you can
+                   read, play and update, and not edit. One chip rather than two,
+                   because where it came from and why it is locked are the same
+                   fact. -->
               <MetaChip
                 v-if="isSubscribed(set)"
                 tone="good"
-                icon="circle-check"
-                v-tooltip="t(`${K}editingUnsubscribes`)"
+                icon="lock"
+                v-tooltip="t(`${K}lockedHelp`)"
               >
                 {{ t(`${K}subscribedBadge`, { version: set.subscribedVersion }) }}
               </MetaChip>
@@ -1007,6 +1581,42 @@ async function onImport(event: Event) {
                 icon="store"
               >
                 {{ t(`${K}listedChip`, { version: set.approvedVersion }) }}
+              </MetaChip>
+              <!-- Somebody else's set, taken through a link they sent. Links
+                   back to it rather than carrying a take button: taking it
+                   replaces every card in the copy, which wants the sentence
+                   that page has room for. -->
+              <router-link
+                v-if="isFromShare(set)"
+                class="from-share"
+                :to="{ name: 'SharedCardSet', params: { token: set.sharedToken } }"
+                v-tooltip="
+                  set.sharedBy
+                    ? t(`${K}sharedBy`, { author: set.sharedBy })
+                    : t(`${K}fromShareHelp`)
+                "
+                @click.stop
+              >
+                <MetaChip
+                  :tone="set.sharedBehind ? 'good' : 'plain'"
+                  :icon="set.sharedBehind ? 'link' : 'lock'"
+                >
+                  {{ t(`${K}${set.sharedBehind ? 'fromShareBehind' : 'fromShareChip'}`) }}
+                </MetaChip>
+              </router-link>
+              <!-- Shared by link, with how many people have used it. A link
+                   nobody has opened says something different from one three
+                   people are playing with, so the count is the chip. -->
+              <MetaChip
+                v-if="isShared(set)"
+                icon="link"
+                v-tooltip="t(`${K}sharedChipHelp`)"
+              >
+                {{
+                  set.shareCount
+                    ? t(`${K}sharedWithCount`, set.shareCount)
+                    : t(`${K}sharedChip`)
+                }}
               </MetaChip>
               <!-- Where the set lives in the world, shown as the host: it is
                    the only thing on this row that leads somewhere else, and
@@ -1036,8 +1646,24 @@ async function onImport(event: Event) {
               {{ t(`${K}updateTo`, { version: set.latestVersion }) }}
             </button>
 
+            <!-- A locked copy of a *published* set: the one thing to do with it
+                 beyond reading it and taking it again is to make it yours. A
+                 copy taken from a share link has no such button -- that set is
+                 unpublished, and it stays the author's. -->
+            <button
+              v-if="canUnlock(set)"
+              type="button"
+              class="unlock"
+              v-tooltip="t(`${K}unlockHelp`)"
+              @click="unlock(set)"
+            >
+              <font-awesome-icon icon="unlock" />
+              {{ t(`${K}unlockSet`) }}
+            </button>
+
             <div class="row-actions" role="group" :aria-label="t(`${K}setActions`)">
               <button
+                v-if="!isLocked(set)"
                 type="button"
                 v-tooltip="publishTitle(set)"
                 :aria-label="publishTitle(set)"
@@ -1045,10 +1671,28 @@ async function onImport(event: Event) {
               >
                 <font-awesome-icon icon="store" />
               </button>
-              <button type="button" v-tooltip="t(`${K}renameSet`)" :aria-label="t(`${K}renameSet`)" @click="startRename(set)">
+              <!-- Handing it to a few people rather than to everybody, which is
+                   what an unfinished set wants. Beside publishing, because they
+                   are the two ways a set leaves your account. -->
+              <button
+                v-if="!isLocked(set)"
+                type="button"
+                :class="{ on: isShared(set) }"
+                v-tooltip="t(`${K}shareSet`, { name: set.name })"
+                :aria-label="t(`${K}shareSet`, { name: set.name })"
+                :aria-expanded="sharingSetId === set.id"
+                @click="openShare(set)"
+              >
+                <font-awesome-icon icon="link" />
+              </button>
+              <button v-if="!isLocked(set)" type="button" v-tooltip="t(`${K}renameSet`)" :aria-label="t(`${K}renameSet`)" @click="startRename(set)">
                 <font-awesome-icon icon="pen" />
               </button>
+              <!-- Somebody else's unpublished work is not yours to hand on, so
+                   a set taken from a share link has no export. Everything else
+                   in your library does, your own shared sets included. -->
               <button
+                v-if="canExport(set)"
                 type="button"
                 v-tooltip="t(`${K}exportSet`, { name: set.name })"
                 :aria-label="t(`${K}exportSet`, { name: set.name })"
@@ -1059,6 +1703,7 @@ async function onImport(event: Event) {
               <!-- Adds to this set rather than becoming one, which is what a card
                    somebody sent you needs: it has no set of its own to land as. -->
               <label
+                v-if="!isLocked(set)"
                 class="set-import"
                 v-tooltip="t(`${K}importIntoSet`, { name: set.name })"
                 :aria-label="t(`${K}importIntoSet`, { name: set.name })"
@@ -1159,6 +1804,118 @@ async function onImport(event: Event) {
           </div>
         </form>
 
+        <!-- The link, and everyone who has used it. Under the row rather than in
+             a dialog: it is a list that grows, and the author comes back to it. -->
+        <section v-if="sharingSetId === set.id" class="share">
+          <p class="share-lede">{{ t(`${K}shareLede`) }}</p>
+
+          <template v-if="share">
+            <div class="share-link">
+              <input
+                :value="shareLink"
+                type="text"
+                readonly
+                :aria-label="t(`${K}shareLinkLabel`)"
+                @focus="($event.target as HTMLInputElement).select()"
+                @keydown.stop
+              />
+              <button type="button" class="copy" @click="copyLink">
+                <font-awesome-icon icon="copy" />
+                {{ t(`${K}${copied ? 'shareCopied' : 'shareCopy'}`) }}
+              </button>
+            </div>
+            <small class="share-help">{{ t(`${K}shareLinkHelp`) }}</small>
+
+            <!-- Who has it. A share is a url, so this is everyone who has opened
+                 it -- there is no invitation list to compare it against. -->
+            <h4 class="share-people-title">
+              <font-awesome-icon icon="users" />
+              {{ t(`${K}sharePeople`) }}
+            </h4>
+            <p v-if="!share.people.length" class="share-nobody">
+              {{ t(`${K}shareNobodyYet`) }}
+            </p>
+            <ul v-else class="share-people">
+              <li v-for="person in share.people" :key="person.id" :class="{ off: person.revoked }">
+                <div class="who">
+                  <span class="name">{{ person.name }}</span>
+                  <span class="standing">{{ accessLine(person) }}</span>
+                </div>
+                <button
+                  type="button"
+                  class="quiet"
+                  :disabled="shareBusy"
+                  @click="setAccess(set, person, !person.revoked)"
+                >
+                  {{ t(`${K}${person.revoked ? 'shareAllowAgain' : 'shareRemovePerson'}`) }}
+                </button>
+              </li>
+            </ul>
+
+            <div class="share-actions">
+              <!-- A new link, which makes the one you sent worthless. Asked
+                   first, because somebody is holding the old one. -->
+              <template v-if="confirmingRotate">
+                <span class="confirm-line">{{ t(`${K}shareRotateWarning`) }}</span>
+                <button type="button" :disabled="shareBusy" @click="rotateShare(set)">
+                  {{ t(`${K}shareRotateConfirm`) }}
+                </button>
+                <button type="button" class="cancel" @click="confirmingRotate = false">
+                  {{ t(`${K}publishCancel`) }}
+                </button>
+              </template>
+              <template v-else-if="confirmingStop">
+                <span class="confirm-line">{{ t(`${K}shareStopWarning`) }}</span>
+                <button type="button" class="danger" :disabled="shareBusy" @click="stopShare(set)">
+                  {{ t(`${K}shareStopConfirm`) }}
+                </button>
+                <button type="button" class="cancel" @click="confirmingStop = false">
+                  {{ t(`${K}publishCancel`) }}
+                </button>
+              </template>
+              <template v-else>
+                <!-- What they will see when they open it, which is the one thing
+                     the link itself cannot tell you. -->
+                <router-link
+                  v-if="share"
+                  class="quiet preview"
+                  :to="{ name: 'SharedCardSet', params: { token: share.token } }"
+                >
+                  <font-awesome-icon icon="eye" />
+                  {{ t(`${K}sharePreview`) }}
+                </router-link>
+                <button type="button" class="quiet" @click="confirmingRotate = true">
+                  <font-awesome-icon icon="refresh" />
+                  {{ t(`${K}shareRotate`) }}
+                </button>
+                <button type="button" class="quiet danger" @click="confirmingStop = true">
+                  <font-awesome-icon icon="link-slash" />
+                  {{ t(`${K}shareStop`) }}
+                </button>
+                <button type="button" class="cancel" @click="openShare(set)">
+                  {{ t(`${K}shareClose`) }}
+                </button>
+              </template>
+            </div>
+          </template>
+
+          <p v-else-if="shareBusy" class="share-nobody">{{ t(`${K}loading`) }}</p>
+
+          <!-- Not shared yet: one button, and what it will do. An empty set can
+               be shared -- the link is made before the cards often enough -- and
+               says so to whoever opens it until there is something in it. -->
+          <div v-else class="share-actions">
+            <button type="button" :disabled="shareBusy" @click="startShare(set)">
+              <font-awesome-icon icon="link" />
+              {{ t(`${K}shareStart`) }}
+            </button>
+            <button type="button" class="cancel" @click="openShare(set)">
+              {{ t(`${K}publishCancel`) }}
+            </button>
+            <span v-if="!set.cardCount" class="confirm-line">{{ t(`${K}shareNeedsCards`) }}</span>
+          </div>
+        </section>
+
         <!-- As many cards as fit on one row, and no more: the grid's auto-fill
              decides how many that is, and the row below it is clipped. -->
         <SetPreview
@@ -1166,7 +1923,7 @@ async function onImport(event: Event) {
           :data-set-id="set.id"
           :cards="matchingCards(set.id)"
           :total="set.cardCount"
-          :empty-label="setQuery.trim() ? t(`${K}noCardMatches`) : t(`${K}emptySet`)"
+          :empty-label="filtering ? t(`${K}noCardMatches`) : t(`${K}emptySet`)"
           @pick="edit"
           @view-all="openSet(set.id)"
         />
@@ -1182,32 +1939,86 @@ async function onImport(event: Event) {
         <h2 class="panel-title" :title="activeSet?.name">{{ activeSet?.name }}</h2>
       </div>
 
-      <button type="button" class="back-to-sets" @click="browsingSets = true">
+      <button type="button" class="back-to-sets" @click="leaveSet">
         ← {{ t(`${K}backToSets`) }}
       </button>
 
+      <!-- What this set declares, where the cards that use it are. Without this
+           the tokens and keywords were only visible inside the set-details form
+           on the other page, which is no way to check what a card's keyword
+           refers to while writing it. Editable in place for the same reason. -->
+      <!-- What this set declares, where the cards that use it are: a list, so a
+           card's keyword can be checked against its rule while it is being
+           written. Editing happens in the main panel, which has the room for
+           it -- these only say what is there and open that editor. -->
+      <!-- One way in to everything the set declares. The tokens and the
+           keywords were two lists here with their own add buttons, which put a
+           growing menu of kinds in a panel whose job is the cards; the editor
+           they open has room for them and a tab each. -->
+      <button
+        v-if="activeSet"
+        type="button"
+        class="edit-expansion"
+        :class="{ on: editingDeclaration }"
+        :disabled="activeSetLocked"
+        @click="startDeclaration(activeSet)"
+      >
+        <font-awesome-icon icon="box-archive" />
+        <span class="edit-expansion-text">
+          <strong>{{ t(`${K}editExpansion`) }}</strong>
+          <small>{{ declarationSummary }}</small>
+        </span>
+      </button>
+
       <div class="group-head">
-        <h3>{{ t(`${K}cardCount`, activeCards.length) }}</h3>
-        <div class="row-actions">
+        <h3>
+          {{ filtering && visibleCards.length !== activeCards.length
+            ? t(`${K}cardCountFiltered`, { shown: visibleCards.length, total: activeCards.length })
+            : t(`${K}cardCount`, activeCards.length) }}
+        </h3>
+        <!-- Selecting cards is only ever for exporting them, so a set with no
+             export has no selection either. -->
+        <div v-if="activeSetExportable" class="row-actions">
           <button
+            v-if="!wholeSetOnly"
             type="button"
-            :disabled="!activeCards.length"
-            v-tooltip="t(`${K}selectAll`)"
-            :aria-label="t(`${K}selectAll`)"
-            @click="selectAll"
+            class="select-toggle"
+            :class="{ on: selecting }"
+            :aria-pressed="selecting"
+            :disabled="!visibleCards.length"
+            v-tooltip="t(`${K}selectCards`)"
+            :aria-label="t(`${K}selectCards`)"
+            @click="toggleSelecting"
           >
             <font-awesome-icon icon="check-double" />
           </button>
           <button
+            v-if="selecting"
             type="button"
-            :disabled="!selected.length"
-            v-tooltip="t(`${K}exportSelected`, { count: selected.length })"
-            :aria-label="t(`${K}exportSelected`, { count: selected.length })"
+            :disabled="!visibleCards.length"
+            v-tooltip="t(`${K}selectAll`)"
+            :aria-label="t(`${K}selectAll`)"
+            @click="selectAll"
+          >
+            <font-awesome-icon icon="list" />
+          </button>
+          <!-- Offered whether or not anything is picked: with a selection it
+               takes that, and without one it takes the set. -->
+          <button
+            type="button"
+            :disabled="!activeCards.length"
+            v-tooltip="selected.length
+              ? t(`${K}exportSelected`, { count: selected.length })
+              : t(`${K}exportSet`, { name: activeSet?.name })"
+            :aria-label="selected.length
+              ? t(`${K}exportSelected`, { count: selected.length })
+              : t(`${K}exportSet`, { name: activeSet?.name })"
             @click="exportSelected"
           >
             <font-awesome-icon icon="download" />
           </button>
           <button
+            v-if="selecting"
             type="button"
             :disabled="!selected.length"
             v-tooltip="t(`${K}clearSelection`)"
@@ -1219,33 +2030,101 @@ async function onImport(event: Event) {
         </div>
       </div>
 
-      <button type="button" class="new-card" @click="startNew">+ {{ t(`${K}newCard`) }}</button>
+      <!-- A set that follows somebody else's stays what they published or
+           shared, so there is nothing to add to it and nothing to throw away.
+           For a copy of something published, the button that makes it yours sits
+           where the new-card button was; for one taken from a share link there
+           is no such button, and the box says so instead of leaving the missing
+           controls to be puzzled over. -->
+      <button
+        v-if="activeSetUnlockable"
+        type="button"
+        class="unlock-panel"
+        @click="unlock(activeSet!)"
+      >
+        <font-awesome-icon icon="unlock" />
+        <span class="unlock-text">
+          <strong>{{ t(`${K}unlockSet`) }}</strong>
+          <small>{{ t(`${K}lockedPanelHelp`) }}</small>
+        </span>
+      </button>
+      <p v-else-if="activeSetLocked" class="shared-note">
+        <font-awesome-icon icon="lock" />
+        <span>
+          {{
+            activeSet?.sharedBy
+              ? t(`${K}sharedBy`, { author: activeSet.sharedBy })
+              : t(`${K}sharedPanelHelp`)
+          }}
+        </span>
+      </p>
+      <button v-else type="button" class="new-card" @click="startNew">+ {{ t(`${K}newCard`) }}</button>
 
       <p v-if="!activeCards.length" class="muted">{{ t(`${K}emptySetPanel`) }}</p>
-      <ul v-else class="library-list">
+      <template v-else>
+        <!-- A set runs to a few hundred cards once it is a box rather than a
+             handful, and the panel is the only way to reach any of them. -->
+        <CardFilters
+          v-model="filter"
+          compact
+          class="panel-filters"
+          :cards="activeCards"
+          :placeholder="t(`${K}panelFilterPlaceholder`)"
+        />
+
+        <p v-if="!visibleCards.length" class="no-matches panel-no-matches">
+          <font-awesome-icon icon="search" />
+          <span>{{ t(`${K}noCardMatches`) }}</span>
+          <button type="button" class="link" @click="clearFilter(filter)">
+            {{ t(`${K}clearFilter`) }}
+          </button>
+        </p>
+
+        <ul v-else class="library-list" :class="{ selecting: selecting && activeSetExportable }">
         <li
-          v-for="card in activeCards"
+          v-for="card in visibleCards"
           :key="card.def.cardCode"
           :class="{ editing: editingCode === card.def.cardCode }"
         >
-          <input type="checkbox" :checked="isSelected(card.def.cardCode)" @change="toggleSelected(card.def.cardCode)" />
-          <button type="button" class="library-card" @click="edit(card)">
+          <input
+            v-if="selecting && activeSetExportable"
+            type="checkbox"
+            :checked="isSelected(card.def.cardCode)"
+            @change="toggleSelected(card.def.cardCode)"
+          />
+          <!-- Titles are wider than the panel more often than not, so the
+               whole name is a hover away rather than only the half that fits. -->
+          <button
+            type="button"
+            class="library-card"
+            :class="{ numbered }"
+            :title="card.def.name.title"
+            @click="edit(card)"
+          >
+            <!-- Kept even when this card has none, so the pictures beside it
+                 line up with the ones above and below. -->
+            <span v-if="numbered" class="number">{{ printedNumber(card) }}</span>
             <img :src="cardArt(card)" :data-image-id="card.def.cardCode" alt="" />
             <span class="text">
-              <span class="name">{{ card.def.name.title }}</span>
-              <small>{{ card.def.cardType.replace(/Type$/, '') }}</small>
+              <!-- Two cards in a set can share a title and differ only in
+                   level, so the name says which one it is, the way the game
+                   writes it. It sits beside the name rather than under it with
+                   the type, where the panel's width would ellipsize away the
+                   one digit that tells the two rows apart. A card with no level
+                   says nothing rather than (0): an investigator is not a level
+                   0 card. -->
+              <span class="title">
+                <span class="name">{{ card.def.name.title }}</span>
+                <span v-if="card.def.level !== null && card.def.level !== undefined" class="level">
+                  ({{ card.def.level }})
+                </span>
+              </span>
+              <small>{{ cardKind(card.def.cardType) }}</small>
             </span>
           </button>
-          <div class="row-actions">
-            <button type="button" v-tooltip="t(`${K}exportCard`)" :aria-label="t(`${K}exportCard`)" @click="exportOne(card)">
-              <font-awesome-icon icon="download" />
-            </button>
-            <button type="button" class="delete" v-tooltip="t(`${K}deleteCard`)" :aria-label="t(`${K}deleteCard`)" @click="deletingCard = card">
-              <font-awesome-icon icon="trash" />
-            </button>
-          </div>
         </li>
-      </ul>
+        </ul>
+      </template>
       </div>
     </aside>
 
@@ -1265,7 +2144,7 @@ async function onImport(event: Event) {
     </div>
 
     <main class="builder">
-      <header class="builder-head">
+      <header ref="headEl" class="builder-head" :class="{ stuck: headStuck }">
         <!-- With the panel shut the seam is gone, so the way back in sits with
              the title of whatever you are editing. -->
         <button
@@ -1281,23 +2160,95 @@ async function onImport(event: Event) {
           <font-awesome-icon icon="layer-group" />
         </button>
         <h2>
-          {{ editingCode ? t(`${K}editingCard`) : t(`${K}newCard`) }}
-          <span v-if="dirty" class="unsaved" :title="t(`${K}unsavedTitle`)">
-            <span class="unsaved-dot" aria-hidden="true"></span>
-            {{ t(`${K}unsaved`) }}
-          </span>
+          <template v-if="editingDeclaration">{{ t(`${K}investigatorExpansion`) }}</template>
+          <!-- A locked set has no new card to start and nothing unsaved in it,
+               so its resting state is "nothing picked" and its open state is
+               just the card, read. -->
+          <template v-else-if="activeSetLocked">
+            {{ editingCode ? t(`${K}lockedReadingCard`) : t(`${K}lockedNothingPicked`) }}
+          </template>
+          <template v-else>
+            {{
+              editingCode
+                ? editingTitle
+                  ? t(`${K}editingNamedCard`, { name: editingTitle })
+                  : t(`${K}editingCard`)
+                : t(`${K}newCard`)
+            }}
+            <span v-if="dirty" class="unsaved" :title="t(`${K}unsavedTitle`)">
+              <span class="unsaved-dot" aria-hidden="true"></span>
+              {{ t(`${K}unsaved`) }}
+            </span>
+          </template>
           <small v-if="activeSet" class="in-set">{{ t(`${K}inSet`, { name: activeSet.name }) }}</small>
         </h2>
         <div class="builder-actions">
           <span v-if="status && !dirty" class="status">{{ status }}</span>
           <span v-if="error" class="error">{{ error }}</span>
-          <button type="button" class="save" :class="{ dirty }" :disabled="busy" @click="save">
+          <!-- Nothing to save on a set that follows somebody else's. Said
+               where the save button was, so the absence is an answer rather
+               than a thing that failed to render. -->
+          <span v-if="activeSetLocked" class="locked-note">
+            <font-awesome-icon icon="lock" />
+            {{ t(`${K}lockedEditorNote`) }}
+          </span>
+          <template v-else-if="editingDeclaration">
+            <button type="button" class="save dirty" @click="saveDeclaration(activeSet!)">
+              {{ t(`${K}saveSetDetails`) }}
+            </button>
+            <button type="button" class="secondary" @click="editingDeclaration = false">
+              {{ t(`${K}publishCancel`) }}
+            </button>
+          </template>
+          <button
+            v-else
+            type="button"
+            class="save"
+            :class="{ dirty }"
+            :disabled="busy"
+            @click="save"
+          >
             {{ editingCode ? t(`${K}saveChanges`) : t(`${K}createCard`) }}
+          </button>
+          <!-- The def behind the form, for the card the form is showing. Here
+               rather than on every row in the panel: reading a card's JSON is
+               part of editing that card, not something done to a list. -->
+          <button
+            v-if="editingRaw"
+            type="button"
+            class="secondary"
+            :class="{ on: !!rawCard }"
+            :aria-pressed="!!rawCard"
+            v-tooltip="t(`${K}rawCard`)"
+            :aria-label="t(`${K}rawCard`)"
+            @click="rawCard = rawCard ? null : editingRaw"
+          >
+            <font-awesome-icon icon="code" />
+          </button>
+          <button
+            v-if="editingRaw && activeSetExportable && !wholeSetOnly"
+            type="button"
+            class="secondary"
+            v-tooltip="t(`${K}exportCard`)"
+            :aria-label="t(`${K}exportCard`)"
+            @click="exportOne(editingRaw)"
+          >
+            <font-awesome-icon icon="download" />
+          </button>
+          <button
+            v-if="editingRaw && !activeSetLocked"
+            type="button"
+            class="secondary delete"
+            v-tooltip="t(`${K}deleteCard`)"
+            :aria-label="t(`${K}deleteCard`)"
+            @click="deletingCard = editingRaw"
+          >
+            <font-awesome-icon icon="trash" />
           </button>
           <!-- Only worth a slot up here while the panel's own "+ New card" is out
                of reach. -->
           <button
-            v-if="libraryCollapsed && editingCode"
+            v-if="!activeSetLocked && libraryCollapsed && editingCode"
             type="button"
             class="secondary"
             @click="startNew"
@@ -1307,9 +2258,45 @@ async function onImport(event: Event) {
         </div>
       </header>
 
-      <p v-if="editingCode" class="muted">{{ t(`${K}saveNote`) }}</p>
+      <template v-if="editingDeclaration">
+        <ExpansionDetails v-model="expansionDraft" />
+        <SetTextEditor v-if="activeSetId" :setId="activeSetId" :disabled="activeSetLocked" />
+      </template>
 
-      <CustomCardForm ref="form" />
+      <!-- Nothing picked, in a set whose cards can only be read. An empty form
+           here would be an invitation the set cannot accept. -->
+      <p v-else-if="activeSetLocked && !editingCode" class="locked-empty">
+        <font-awesome-icon icon="lock" />
+        <span>{{ t(`${K}lockedPickHint`) }}</span>
+      </p>
+
+      <template v-else>
+        <p v-if="editingCode && !rawCard" class="muted">{{ t(`${K}saveNote`) }}</p>
+
+        <!-- The same card, as the server holds it. It takes the editing area
+             rather than floating over it, since it is the editor for that card
+             and not a dialog about it. The form stays mounted underneath, so
+             anything typed into it is still there on the way back. -->
+        <RawCardEditor
+          v-if="rawCard"
+          :def="rawCard.def as unknown as Record<string, unknown>"
+          :title="rawCard.def.name.title"
+          :readonly="activeSetLocked"
+          :busy="rawBusy"
+          @save="saveRaw"
+          @close="rawCard = null"
+        />
+
+        <!-- A native disabled fieldset, which disables every control inside it:
+             the card reads as it is rather than as a form that will not take. -->
+        <fieldset v-show="!rawCard" class="card-form" :disabled="activeSetLocked">
+          <CustomCardForm
+            ref="form"
+            :setKeywords="openSetDeclaration.keywords"
+            :setTokens="openSetDeclaration.tokens"
+          />
+        </fieldset>
+      </template>
     </main>
   </div>
 
@@ -1392,6 +2379,34 @@ async function onImport(event: Event) {
     font-size: 1.6rem;
     opacity: 0.4;
   }
+
+  /* The way out of a filter that found nothing, not a second thing to try. */
+  .link {
+    background: none;
+    border: none;
+    color: var(--spooky-green);
+    cursor: pointer;
+    font-size: 0.8rem;
+    padding: 0.2rem 0;
+  }
+}
+
+/* The same sentence in the narrow panel, where three rems of padding above and
+   below it is most of what you can see. */
+.panel-no-matches {
+  font-size: 0.8rem;
+  gap: 0.4rem;
+  padding: 1.2rem 0.5rem;
+
+  svg {
+    font-size: 1.1rem;
+  }
+}
+
+/* The panel's own filters sit between the new-card button and the list, with
+   the list's gap above them rather than their own below. */
+.panel-filters {
+  margin-top: 0.6rem;
 }
 
 .set-cards {
@@ -1685,26 +2700,316 @@ async function onImport(event: Event) {
   }
 }
 
+/* A fieldset only here to carry `disabled`, so it must not look like one. */
+.card-form {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+/* The way out of a locked set, where the thing it replaces was: beside the row's
+   other actions on the sets page, and where "+ New card" sits in the panel. */
+.unlock {
+  align-items: center;
+  background: none;
+  border: 1px solid var(--box-border);
+  border-radius: 5px;
+  color: var(--title);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.8rem;
+  gap: 0.4rem;
+  padding: 0.3rem 0.7rem;
+
+  &:hover {
+    border-color: var(--background-mid);
+  }
+}
+
+.unlock-panel {
+  align-items: center;
+  background: none;
+  border: 1px solid var(--box-border);
+  border-radius: 6px;
+  color: var(--title);
+  cursor: pointer;
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+  padding: 0.5rem 0.65rem;
+  text-align: left;
+  width: 100%;
+
+  &:hover {
+    border-color: var(--background-mid);
+  }
+
+  .unlock-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
+
+    small {
+      color: color-mix(in srgb, var(--title) 60%, transparent);
+      font-size: 0.72rem;
+      line-height: 1.3;
+    }
+  }
+}
+
+/* The editor with nothing picked, in a set that can only be read. */
+.locked-empty {
+  align-items: center;
+  color: color-mix(in srgb, var(--title) 60%, transparent);
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+  padding: 3rem 1rem;
+
+  svg {
+    opacity: 0.6;
+  }
+}
+
+/* Why a shared set has no "make it mine" button, where that button would be. */
+.shared-note {
+  align-items: baseline;
+  border: 1px solid var(--box-border);
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--title) 65%, transparent);
+  display: flex;
+  font-size: 0.78rem;
+  gap: 0.45rem;
+  line-height: 1.35;
+  margin: 0 0 0.6rem;
+  padding: 0.5rem 0.65rem;
+
+  svg {
+    flex: none;
+    font-size: 0.85em;
+    opacity: 0.7;
+  }
+}
+
+/* Where the save button would be, saying why there isn't one. */
+.locked-note {
+  align-items: center;
+  color: color-mix(in srgb, var(--title) 65%, transparent);
+  display: inline-flex;
+  font-size: 0.8rem;
+  gap: 0.4rem;
+
+  svg {
+    font-size: 0.85em;
+    opacity: 0.7;
+  }
+}
+
+/* A chip that is a link. The chip carries all the appearance; this only has to
+   stop the anchor adding an underline and a color of its own. */
+.from-share {
+  color: inherit;
+  display: inline-flex;
+  text-decoration: none;
+}
+
+/* The share panel. Same seam and same paddings as the publish form above it:
+   they are the two things you do with a whole set, and they sit in the same
+   place under the same row. */
+.share {
+  border-top: 1px solid var(--box-border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.6rem 0.75rem;
+
+  .share-lede,
+  .share-help,
+  .share-nobody {
+    color: color-mix(in srgb, var(--title) 70%, transparent);
+    font-size: 0.75rem;
+    margin: 0;
+  }
+
+  .share-nobody {
+    font-style: italic;
+  }
+
+  /* The link, wide, selectable and read-only: it is something to copy, never to
+     edit, and a field you can put a cursor in is the one people reach for when
+     the button does not work. */
+  .share-link {
+    display: flex;
+    gap: 0.4rem;
+
+    input {
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--box-border);
+      border-radius: 4px;
+      color: var(--title);
+      flex: 1 1 18rem;
+      font-family: monospace;
+      font-size: 0.8rem;
+      min-width: 0;
+      padding: 0.3rem 0.5rem;
+    }
+  }
+
+  .share-people-title {
+    align-items: center;
+    color: color-mix(in srgb, var(--title) 85%, transparent);
+    display: flex;
+    font-size: 0.78rem;
+    font-weight: normal;
+    gap: 0.35rem;
+    margin: 0.3rem 0 0;
+
+    svg {
+      opacity: 0.7;
+    }
+  }
+
+  .share-people {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+
+    li {
+      align-items: center;
+      background: rgba(0, 0, 0, 0.18);
+      border: 1px solid var(--box-border);
+      border-radius: 4px;
+      display: flex;
+      gap: 0.5rem;
+      justify-content: space-between;
+      padding: 0.3rem 0.5rem;
+
+      /* Somebody who has been removed stays on the list -- that they had it is
+         the fact worth keeping -- but reads as past tense. */
+      &.off {
+        opacity: 0.5;
+      }
+    }
+
+    .who {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.1rem 0.5rem;
+      min-width: 0;
+    }
+
+    .name {
+      font-size: 0.85rem;
+    }
+
+    .standing {
+      color: color-mix(in srgb, var(--title) 60%, transparent);
+      font-size: 0.75rem;
+    }
+  }
+
+  .share-actions {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  /* What a button is about to do, where the buttons are: a confirmation the eye
+     reaches before the hand does. */
+  .confirm-line {
+    color: color-mix(in srgb, var(--title) 70%, transparent);
+    flex: 1 1 100%;
+    font-size: 0.75rem;
+  }
+
+  button {
+    align-items: center;
+    display: inline-flex;
+    font-size: 0.8rem;
+    gap: 0.35rem;
+    padding: 0.3rem 0.7rem;
+  }
+
+  .quiet,
+  .cancel {
+    background: none;
+    border: 1px solid var(--box-border);
+    color: color-mix(in srgb, var(--title) 85%, transparent);
+  }
+
+  /* A link wearing a button's clothes: same row, same job. */
+  .preview {
+    align-items: center;
+    border-radius: 4px;
+    display: inline-flex;
+    font-size: 0.8rem;
+    gap: 0.35rem;
+    padding: 0.3rem 0.7rem;
+    text-decoration: none;
+  }
+
+  .cancel {
+    border-color: transparent;
+  }
+
+  /* Red only where something stops working for other people. */
+  .danger {
+    color: var(--survivor);
+  }
+}
+
+/* `baseline`, not `center`: the chips beside this button line up on the set
+   name's baseline, and a centred flex container has no baseline of its own to
+   give them -- they dropped to the bottom of the button. The symbol opts out
+   with `align-self` so the name is what the row aligns to. */
 .set-open {
+  align-items: baseline;
   background: none;
   border: none;
   border-radius: 4px;
   color: inherit;
   cursor: pointer;
-  display: block;
+  display: flex;
+  gap: 0.4rem;
   max-width: 100%;
   min-width: 0;
   padding: 0;
   text-align: left;
+
+  /* A silhouette masked out of a solid fill rather than drawn as an image, so
+     the symbol takes the name's colour exactly. Sized to the name rather than
+     fixed, so it stays in proportion whatever the type scale does. */
+  .expansion-icon {
+    align-self: center;
+    background: currentColor;
+    flex: none;
+    height: 1.5em;
+    -webkit-mask: var(--set-icon-url) center / contain no-repeat;
+    mask: var(--set-icon-url) center / contain no-repeat;
+    width: 1.5em;
+  }
 
   .name {
     display: block;
     font-family: teutonic, sans-serif;
     font-size: 1.3em;
     line-height: 1.15;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* The symbol lights with the name: the whole button is the hover target, so
+     leaving it behind would read as the symbol not being part of it. */
+  &:hover .expansion-icon {
+    color: white;
   }
 
   &:hover .name {
@@ -1743,7 +3048,7 @@ async function onImport(event: Event) {
   background: var(--background-dark);
   border: 1px solid var(--box-border);
   border-radius: 8px;
-  flex: 0 0 300px;
+  flex: 0 0 380px;
   overflow: hidden;
   padding: 1rem;
   position: sticky;
@@ -1782,9 +3087,9 @@ async function onImport(event: Event) {
 .library-content {
   max-height: calc(100vh - var(--nav-height) - 5rem);
   overflow: auto;
-  /* The panel's 300px less its padding. Fixed, so the text does not re-wrap
+  /* The panel's 380px less its padding. Fixed, so the text does not re-wrap
      while the panel is sliding shut. */
-  width: 268px;
+  width: 348px;
 
   @media (max-width: 900px) {
     max-height: none;
@@ -1959,6 +3264,50 @@ async function onImport(event: Event) {
   white-space: nowrap;
 }
 
+/* One way in to everything the set declares. Sits with the panel's own buttons
+   rather than above the card list, because it is about the set and not about
+   which card is open. */
+.edit-expansion {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--box-border);
+  border-radius: 4px;
+  color: var(--title);
+  cursor: pointer;
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  width: 100%;
+
+  &:hover,
+  &.on {
+    background: rgba(255, 255, 255, 0.09);
+  }
+
+  svg {
+    flex: none;
+    opacity: 0.7;
+  }
+}
+
+.edit-expansion-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+
+  strong {
+    font-size: 0.78rem;
+    font-weight: 600;
+  }
+
+  small {
+    font-size: 0.68rem;
+    opacity: 0.6;
+  }
+}
+
 .back-to-sets {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--box-border);
@@ -2089,9 +3438,13 @@ async function onImport(event: Event) {
   }
 }
 
+/* The margin, rather than a leading `&#32;`: whether that entity survives
+   depends on whether the branch before it ends in an element or in text, which
+   is not a thing a space should depend on. */
 .in-set {
   font-family: sans-serif;
   font-size: 0.6em;
+  margin-left: 0.5em;
   opacity: 0.6;
 }
 
@@ -2129,6 +3482,10 @@ async function onImport(event: Event) {
   white-space: nowrap;
 }
 
+.library-list.selecting li {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
 .library-list {
   display: flex;
   flex-direction: column;
@@ -2147,16 +3504,16 @@ async function onImport(event: Event) {
   overflow-y: auto;
   overscroll-behavior: contain;
 
-  /* Checkbox, card, actions: a fixed grid so the type never collides with the
-   * buttons and the row never wraps to two lines. Two tracks for three children
-   * put the actions on a second row of their own. */
+  /* The card, and a checkbox in front of it while picking. What you do to a
+   * card is done in the editor, where the card you are doing it to is open, so
+   * the row has nothing in it but the card. */
   li {
     align-items: center;
     border: 1px solid transparent;
     border-radius: 6px;
     display: grid;
     gap: 0.5rem;
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     padding: 0.3rem 0.35rem;
 
     &:hover {
@@ -2182,16 +3539,37 @@ async function onImport(event: Event) {
   cursor: pointer;
   display: grid;
   gap: 0.55rem;
-  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-columns: 52px minmax(0, 1fr);
   min-width: 0;
   padding: 0;
   text-align: left;
 
+  &.numbered {
+    gap: 0.4rem 0.45rem;
+    grid-template-columns: 2.1rem 52px minmax(0, 1fr);
+  }
+
+  /* One width for every row, so the numbers read as a column of the panel
+     rather than as a label stuck on the front of each card. */
+  .number {
+    color: #9ca3af;
+    flex: none;
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-align: left;
+    text-overflow: ellipsis;
+  }
+
+  /* A box wide enough for the wider shape, filled by whichever shape the card
+     is. An investigator is landscape, and cropped to a portrait thumbnail it
+     was a slice out of the middle of its own art -- the one card in the panel
+     whose picture said nothing about which card it was. */
   img {
     border-radius: 3px;
     height: 46px;
-    object-fit: cover;
-    width: 34px;
+    object-fit: contain;
+    width: 52px;
   }
 
   /* Name over type rather than beside it: the name gets the whole width to
@@ -2202,15 +3580,31 @@ async function onImport(event: Event) {
     min-width: 0;
   }
 
+  /* The name gives way first: the level is one character wide and is the whole
+     reason the row is distinguishable, so it keeps its width. */
+  .title {
+    display: flex;
+    gap: 0.25rem;
+    min-width: 0;
+  }
+
   .name {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
+  .level {
+    flex: none;
+    opacity: 0.55;
+  }
+
   small {
     font-size: 0.7rem;
     opacity: 0.55;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 
@@ -2320,6 +3714,117 @@ async function onImport(event: Event) {
 
 /* The import review. Sits between the page head and the sets it is about to
    change, and reads top-down: what lands, what it costs, what it looks like. */
+/* The card-by-card half of a review: a list that stays a list until one row is
+   opened, since the whole of a set's defs is longer than the page by far. */
+.review-changes {
+  margin-top: 0.6rem;
+  max-height: 22rem;
+  overflow-y: auto;
+
+  .changed {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    list-style: none;
+    margin: 0.3rem 0 0;
+    padding: 0;
+  }
+}
+
+.change-head {
+  align-items: baseline;
+  background: none;
+  border: none;
+  color: inherit;
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.2rem 0.3rem;
+  text-align: left;
+  width: 100%;
+
+  &.plain {
+    cursor: default;
+  }
+}
+
+button.change-head:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+}
+
+.mark {
+  flex: none;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  min-width: 4.5rem;
+  text-transform: uppercase;
+
+  &.changed {
+    color: #fcd34d;
+  }
+
+  &.added {
+    color: #bef264;
+  }
+
+  &.removed {
+    color: #fca5a5;
+  }
+}
+
+.who {
+  flex: none;
+}
+
+.keys {
+  color: #9ca3af;
+  font-family: monospace;
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.change-body {
+  padding: 0.2rem 0.3rem 0.5rem 5rem;
+
+  .field + .field {
+    margin-top: 0.4rem;
+  }
+}
+
+.field-key {
+  color: #9ca3af;
+  font-size: 0.72rem;
+}
+
+.sides {
+  display: grid;
+  gap: 0.4rem;
+  grid-template-columns: 1fr 1fr;
+
+  pre {
+    background: #0b1220;
+    border: 1px solid #374151;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    margin: 0.2rem 0 0;
+    max-height: 12rem;
+    overflow: auto;
+    padding: 0.35rem 0.5rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .was {
+    border-color: #7a2020;
+  }
+
+  .now {
+    border-color: #2f5d3a;
+  }
+}
+
 .import-review {
   background: var(--background-dark);
   border: 1px solid var(--spooky-green);
@@ -2461,12 +3966,28 @@ async function onImport(event: Event) {
   }
 }
 
+/* Follows the card down. A def runs well past a screen, and the save button,
+   what is unsaved and which card this is are wanted from anywhere in it --
+   scrolling back to the top to save was the whole of the trip. Bled out to the
+   panel's edges so nothing passes between it and the border on the way by. */
 .builder-head {
   align-items: center;
+  background: var(--background-dark);
+  border-radius: 8px 8px 0 0;
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-  margin-bottom: 0.75rem;
+  margin: -1rem -1rem 0.75rem;
+  padding: 1rem 1rem 0.6rem;
+  position: sticky;
+  top: 0;
+  z-index: 4;
+
+  /* Drawn only once it has left its place, so the line means "there is more
+     above this" rather than decorating the heading. */
+  &.stuck {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  }
 
   h2 {
     font-family: teutonic, sans-serif;
@@ -2477,6 +3998,13 @@ async function onImport(event: Event) {
 
 /* Pushed right on its own, so the title stays hard left whether or not the
    expand button is in front of it — `space-between` shoved it to the middle. */
+/* The one button up here that cannot be undone. It wears what the panel's own
+   delete wore, since it is the same act moved rather than a new one. */
+.builder-actions .delete:hover {
+  border-color: var(--delete);
+  color: var(--delete);
+}
+
 .builder-actions {
   align-items: center;
   display: flex;

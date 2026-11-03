@@ -58,8 +58,8 @@ import Arkham.Window (Window (..), mkWhen)
 import Arkham.Window qualified as Window
 import Control.Lens (non)
 import Control.Monad.State.Strict (evalStateT, get, put)
-import Data.List qualified as List
 import Data.List.Extra (nubOrd)
+import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 
 getAdditionalActionCosts :: HasGame m => InvestigatorId -> Target -> Action -> m [Cost]
@@ -417,8 +417,9 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
       AdditionalActionsCost {} -> pure True
       AdditionalActionsCostThatReducesResourceCostBy n cost -> do
         spendableActions <- field InvestigatorRemainingActions iid
+        blockedActions <- getUnspendableActionCount iid
         let totalActions = totalActionCost cost
-        let reduction = max 0 ((spendableActions - totalActions) * n)
+        let reduction = max 0 ((spendableActions - blockedActions - totalActions) * n)
         withModifiers iid (toModifiers source [ExtraResources reduction]) do
           getCanAffordCost_ iid source actions windows' canModify cost
       RevealCost {} -> pure True
@@ -426,9 +427,11 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
         -- We need to check and make sure the costs don't try to exhaust the same thing twice
         let targets = mapMaybe (preview _ExhaustCost) xs
         let ok = length targets == length (Set.fromList targets)
-        if ok
-          then and <$> traverse (getCanAffordCost_ iid source actions windows' canModify) xs
-          else pure False
+        andM
+          [ pure ok
+          , and <$> traverse (getCanAffordCost_ iid source actions windows' canModify) xs
+          , canAffordCombinedClueCosts iid source xs
+          ]
       OrCost xs ->
         or <$> traverse (getCanAffordCost_ iid source actions windows' canModify) xs
       ExhaustCost target -> case target of
@@ -438,13 +441,28 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
           elem eid <$> select Matcher.EventReady
         EnemyTarget eid ->
           elem eid <$> select Matcher.ReadyEnemy
-        _ -> error $ "Not handled " <> show target
+        -- "this card" is authored as a 'CardIdTarget': the one target that matches
+        -- the card in every zone. 'isTarget' already honours it, so the exhaust that
+        -- gets pushed lands -- which leaves affordability as the only half that has
+        -- to learn it.
+        CardIdTarget cid ->
+          orM
+            [ selectAny $ Matcher.AssetWithCardId cid <> Matcher.AssetReady
+            , selectAny $ Matcher.EventWithCardId cid <> Matcher.EventReady
+            , selectAny $ Matcher.EnemyWithCardId cid <> Matcher.ReadyEnemy
+            ]
+        -- A target with nothing to exhaust is an unpayable cost, not a crash: the
+        -- card builder lets an author pick any 'Target' here.
+        _ -> pure False
       ExhaustAssetCost matcher ->
         selectAny $ Matcher.replaceYouMatcher iid matcher <> Matcher.AssetReady
       ExhaustXAssetCost matcher ->
         selectAny $ Matcher.replaceYouMatcher iid matcher <> Matcher.AssetReady
       DiscardAssetCost matcher ->
         selectAny $ Matcher.replaceYouMatcher iid matcher <> Matcher.DiscardableAsset
+      -- No 'DiscardableAsset' counterpart: exiling is not leaving play by
+      -- discard, so what the matcher names is the whole of what can be paid.
+      ExileAssetCost matcher -> selectAny $ Matcher.replaceYouMatcher iid matcher
       UseCost assetMatcher uType n -> do
         assets <- select (Matcher.replaceYouMatcher iid assetMatcher)
         uses <- getSpendableUseCount assets uType
@@ -489,7 +507,8 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
             additionalActions <- field InvestigatorAdditionalActions iid
             additionalActionCount <- countM (additionalActionCovers source actions) additionalActions
             actionCount <- field InvestigatorRemainingActions iid
-            pure $ actionCount + additionalActionCount >= modifiedActionCost
+            blockedActions <- getUnspendableActionCount iid
+            pure $ max 0 (actionCount + additionalActionCount - blockedActions) >= modifiedActionCost
       AdditionalActionCost -> getCanAffordCost_ iid source actions windows' canModify (ActionCost 1)
       AssetClueCost _ aMatcher gv -> do
         totalClueCost <- getPlayerCountValue gv
@@ -514,13 +533,14 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
       DiscoveredCluesCost -> pure True
       PlaceClueOnLocationCost gv -> do
         n <- getPlayerCountValue gv
-        canParallelRex <- iid <=~> Matcher.InvestigatorIs "90078"
-        z <-
-          if canParallelRex
-            then (`div` 2) <$> getRemainingCurseTokens
-            else pure 0
-        clues <- field InvestigatorClues iid
-        pure $ (clues + z) >= n
+        placeable <- getPlaceableClueCount iid
+        pure $ placeable >= n
+      GroupPlaceClueOnLocationCost gv locationMatcher -> do
+        n <- getPlayerCountValue gv
+        let lm = Matcher.replaceYouMatcher iid locationMatcher
+        iids <- select $ Matcher.InvestigatorAt lm
+        totalPlaceable <- sum <$> traverse getPlaceableClueCount iids
+        pure $ totalPlaceable >= n
       InvestigatorPlaceClueOnLocationCost investigatorMatcher gv -> do
         n <- getPlayerCountValue gv
         -- Unaffordable when the matcher resolves to nobody, so an ability whose
@@ -772,6 +792,51 @@ getSpendableResources iid = do
   pooledResources <- sum <$> traverse (field AssetResources) [aid | AsIfResourcePool aid <- mods]
   fieldMap InvestigatorResources (+ (pooledResources + extraResources)) iid
 
+-- Separate clue costs must not count the same clues twice. Payer pools may
+-- overlap without being identical (Rear Corridors restricts its printed cost
+-- to Side Building, while The Boundary's surcharge can be paid anywhere).
+-- Each subset of demands must fit within the union of its eligible payers;
+-- checking only the grand total would miss a shortage in a restricted pool.
+canAffordCombinedClueCosts :: HasGame m => InvestigatorId -> Source -> [Cost] -> m Bool
+canAffordCombinedClueCosts iid source costs
+  | sum (map clueCostCount costs) < 2 = pure True
+  | otherwise = do
+      demands <- concat <$> traverse (clueDemands source) costs
+      let pools = Map.toList $ Map.fromListWith (+) demands
+      allM canPay $ filter (not . null) $ subsequences pools
+ where
+  clueCostCount :: Cost -> Int
+  clueCostCount = \case
+    Costs xs -> sum $ map clueCostCount xs
+    CostToEnterUnrevealed c -> clueCostCount c
+    NonBlankedCost c -> clueCostCount c
+    LabeledCost _ c -> clueCostCount c
+    SourcedCost _ c -> clueCostCount c
+    ClueCost {} -> 1
+    GroupClueCost {} -> 1
+    _ -> 0
+
+  canPay demands = do
+    available <- getSpendableClueCount $ Set.toList $ foldMap fst demands
+    pure $ available >= sum (map snd demands)
+
+  clueDemands s = \case
+    Costs xs -> concat <$> traverse (clueDemands s) xs
+    CostToEnterUnrevealed c -> clueDemands s c
+    NonBlankedCost c -> do
+      blank <- hasModifier (sourceToTarget s) Blank
+      if blank then pure [] else clueDemands s c
+    LabeledCost _ c -> clueDemands s c
+    SourcedCost s' c -> clueDemands s' c
+    ClueCost value -> do
+      n <- getPlayerCountValue value
+      pure [(Set.singleton iid, n)]
+    GroupClueCost value matcher -> do
+      n <- getPlayerCountValue value
+      payers <- select $ Matcher.InvestigatorAt $ Matcher.replaceYouMatcher iid matcher
+      pure [(Set.fromList payers, n)]
+    _ -> pure []
+
 getSpendableClueCount :: HasGame m => [InvestigatorId] -> m Int
 getSpendableClueCount investigatorIds =
   getSum <$> foldMapM (fmap Sum . Investigator.getSpendableClueCount) investigatorIds
@@ -779,17 +844,33 @@ getSpendableClueCount investigatorIds =
 getSpendableClueCountOf :: HasGame m => Matcher.InvestigatorMatcher -> m Int
 getSpendableClueCountOf = select >=> getSpendableClueCount
 
+{- | How many clues this investigator can put on a location to pay a cost.
+
+Placing is not spending, so this is the clue pool itself rather than
+'getSpendableClueCount'. Parallel Rex turns 2 curse tokens into 1 placed clue at
+the @WouldPlaceClueOnLocation@ window, so he can pay past his pool.
+
+Shared by 'PlaceClueOnLocationCost' and 'GroupPlaceClueOnLocationCost' so the
+group cost counts a contributor exactly as the single cost counts a payer.
+-}
+getPlaceableClueCount :: HasGame m => InvestigatorId -> m Int
+getPlaceableClueCount iid = do
+  canParallelRex <- iid <=~> Matcher.InvestigatorIs "90078"
+  z <- if canParallelRex then (`div` 2) <$> getRemainingCurseTokens else pure 0
+  fieldMap InvestigatorClues (+ z) iid
+
+{- | The same 'Matcher.matchTarget' payment uses in
+'Arkham.ActiveCost.getActionCostSurcharges', so what is charged and what is checked
+for affordability cannot drift. Spelling out only 'IsAction' and
+'FirstOneOfPerformed' here left 'AnyActionTarget' unmatched, so Artificial Gravity
+Malfunction's surcharge was invisible until payment and a move was offered with one
+action left (#5895).
+-}
 applyActionCostModifier :: [[Action]] -> [[Action]] -> [Action] -> ModifierType -> Int -> Int
-applyActionCostModifier _ _ actions (ActionCostOf (IsAction action') m) n
-  | action' `elem` actions = n + m
-applyActionCostModifier _ performedActions actions (ActionCostOf (FirstOneOfPerformed as) m) n
-  | notNull (actions `List.intersect` as) && all (\a -> all (notElem a) performedActions) as =
-      n + m
-applyActionCostModifier _ _ actions (AdditionalActionCostOf (IsAction action') m) n
-  | action' `elem` actions = n + m
-applyActionCostModifier _ performedActions actions (AdditionalActionCostOf (FirstOneOfPerformed as) m) n
-  | notNull (actions `List.intersect` as) && all (\a -> all (notElem a) performedActions) as =
-      n + m
+applyActionCostModifier takenActions performedActions actions (ActionCostOf match m) n
+  | any (Matcher.matchTarget takenActions performedActions match) actions = n + m
+applyActionCostModifier takenActions performedActions actions (AdditionalActionCostOf match m) n
+  | any (Matcher.matchTarget takenActions performedActions match) actions = n + m
 applyActionCostModifier _ _ _ (ActionCostModifier m) n = n + m
 applyActionCostModifier _ _ _ _ n = n
 

@@ -6,8 +6,9 @@ import Api.Arkham.Helpers
 import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Arkham.Game
 import Database.Esqueleto.Experimental
+import Entity.Arkham.LogEntry
 import Entity.Arkham.Step
-import Import hiding (delete, on, (==.))
+import Import hiding (delete, on, (<.), (==.))
 import Network.HTTP.Types.Status qualified as Status
 
 data GetReplayJson = GetReplayJson
@@ -36,14 +37,24 @@ getApiV1ArkhamGameReplayR gameId step = do
     (isJust <$> runDB (getBy $ UniquePlayer userId gameId))
     notFound
     $ do
-      (ge, allChoices) <- runDB do
+      (ge, allChoices, gameLog) <- runDB do
         ge <- get404 gameId
         allChoices <- select do
           steps <- from $ table @ArkhamStep
           where_ $ steps.arkhamGameId ==. val gameId
           orderBy [asc steps.step]
           pure steps
-        pure (ge, allChoices)
+        -- Logs are stamped with the pre-action step. Only show actions already
+        -- included in this replay snapshot, using stored step IDs rather than indices.
+        let replayStep = maybe 0 (arkhamStepStep . entityVal) $ headMay $ reverse $ take step allChoices
+        gameLog <-
+          GameLog . map (toLogRow . entityVal) <$> select do
+            entries <- from $ table @ArkhamLogEntry
+            where_ $ entries.arkhamGameId ==. val gameId
+            where_ $ entries.step <. val replayStep
+            orderBy [asc entries.step, asc entries.id]
+            pure entries
+        pure (ge, allChoices, gameLog)
       let gameJson = arkhamGameCurrentData ge
       let choices = map (arkhamStepChoice . entityVal) $ reverse $ drop step allChoices
       case replayChoices gameJson [mconcat $ map choicePatchDown choices] of
@@ -70,5 +81,6 @@ getApiV1ArkhamGameReplayR gameId step = do
                     (arkhamGameMultiplayerVariant ge)
                     (arkhamGameCreatedAt ge)
                     (arkhamGameUpdatedAt ge)
+                    (arkhamGameAllowSpectators ge)
               )
-              mempty
+              gameLog

@@ -61,6 +61,7 @@ import Arkham.Custom.Overlay (DeckOverlay)
 import Arkham.Customization
 import Arkham.DamageEffect
 import Arkham.Debug.CardDestination
+import Arkham.Debug.SkillTest
 import Arkham.Deck
 import Arkham.DeckBuilding.Adjustment
 import Arkham.Decklist.Type
@@ -81,6 +82,7 @@ import Arkham.Exception
 import Arkham.Exhaust
 import Arkham.Field
 import Arkham.Fight.Types
+import Arkham.Game.Outcome (Verdict)
 import Arkham.Game.Settings (AsIfRuling)
 import Arkham.Game.State
 import Arkham.Helpers
@@ -577,6 +579,8 @@ data Message
     window triggers. Set from the hidden-cards stack.
     -}
     SetCardSilenced InvestigatorId CardCode Bool
+  | SetCustomRandomWeaknessPool Bool [Text]
+  | SetPlayerCustomRandomWeaknessPool PlayerId Bool [Text]
   | SetAsIfRuling AsIfRuling
   | SetUltimatumsAndBoonsEnabled Bool
   | -- | Ultimatum of The Scream: ban this ally for the rest of the campaign
@@ -816,6 +820,18 @@ data Message
   | PreScenarioSetup
   | StandaloneSetup
   | ChoosePlayer InvestigatorId ChoosePlayerChoice
+  | {- | Offer the next investigator's turn in the investigation phase. The one
+    place that decision is made: the phase pushes it for the first turn and the
+    queue-drain fallback in "Arkham.Game" pushes it for every turn after, so a
+    modifier that reorders turns ('Arkham.Modifier.ResumesSuspendedTurn') has a
+    single place to be honored.
+
+    Deferred rather than a pre-built @ChooseOne@ because the phase builds its
+    steps before the "when the investigation phase begins" window runs, and a
+    card in that window (/Ritual Circle: A Harnessed Future/) is what decides
+    who may take the first turn.
+    -}
+    ChooseTurnPlayer
   | SetPlayerOrder
   | ChoosePlayerOrder InvestigatorId [InvestigatorId] [InvestigatorId]
   | ChooseRandomLocation Target [LocationId]
@@ -944,6 +960,11 @@ data Message
   | SetXP InvestigatorId Int
   | SpendXP InvestigatorId Int
   | GameOver
+  | {- | The game ends and the ending says what it was. Use this wherever the
+    printed ending states a verdict; bare 'GameOver' leaves the outcome to be
+    inferred (see "Arkham.Game.Outcome").
+    -}
+    GameOverWith Verdict
   | HandlePointOfFailure InvestigatorId Target Int -- Really do x n times, does not have to be failure
   | ApplyHealing Source
   | ReportXp XpBreakdown
@@ -1018,11 +1039,20 @@ data Message
   | LookAtTopOfDeck InvestigatorId Target Int
   | LoseActions InvestigatorId Source Int
   | LoseResources InvestigatorId Source Int
-  | {- | Like 'LoseActions', but only standard actions can be taken away: the
-    investigator's remaining actions and any additional action without a
-    limitation on its use (see 'isStandardAdditionalAction').
+  | {- | Like 'LoseActions', but only unrestricted actions can be taken away:
+    the investigator's remaining actions and any additional action without a
+    limitation on its use (see 'isUnrestrictedAdditionalAction') -- what Ages
+    Unwound calls a "standard action", which is not the core rules' sense of
+    the word.
+
+    This is NOT what "lose N actions" means. Losing follows the core rule --
+    remaining actions go first, and an investigator left with only additional
+    actions loses those, whatever their limitation (FAQ 1.10) -- which is plain
+    'LoseActions'. Use this only for /spending/ actions on an ability a
+    restricted additional action could not be used on, where Ages Unwound's
+    "spend X actions" wording lands.
     -}
-    LoseStandardActions InvestigatorId Source Int
+    LoseUnrestrictedActions InvestigatorId Source Int
   | LoseTokens InvestigatorId Source Token TokenLoss
   | SpendActions InvestigatorId Source [Action] Int
   | -- | Handles complex movement for a target, triggers Moves windows, and uses MoveFrom, MoveTo messages
@@ -1074,6 +1104,12 @@ data Message
   | PlacedLocationDirection LocationId Direction LocationId
   | LocationMoved LocationId
   | PlayCard InvestigatorId Card (Maybe Target) Payment [Window] Bool
+  | {- | A card play has begun and its costs are about to be paid. Nothing else
+    reports that moment with the card in hand, and an effect waiting for "the
+    next card you play" needs it to bind itself to that card.
+    -}
+    NextCardPlayed InvestigatorId Card
+  | RescuedCard InvestigatorId Card
   | CardEnteredPlay InvestigatorId Card
   | CardIsEnteringPlay InvestigatorId Card
   | ResolvedCard InvestigatorId Card
@@ -1088,6 +1124,11 @@ data Message
   | PutCardOnBottomOfDeck InvestigatorId DeckSignifier Card
   | PutOnBottomOfDeck InvestigatorId DeckSignifier Target
   | Record CampaignLogKey
+  | {- | Forget a key entirely: recorded, crossed out, counted and as a set.
+    No card does this yet; the game crosses entries out instead.
+    -}
+    ForgetRecord CampaignLogKey
+  | ForgetRecordForInvestigator InvestigatorId CampaignLogKey
   | RecordForInvestigator InvestigatorId CampaignLogKey
   | {- | Adjust a per-investigator tally in that investigator's own campaign log
     (e.g. Dark Matter "Memories"). Negative values cross off tallies; the
@@ -1240,12 +1281,24 @@ data Message
     @InvestigatorActionsPerformed@, so nothing downstream can work out who
     charged what. Nothing in the engine reads this; it exists so the log can
     say "+1 action from Frozen in Fear" instead of leaving the player to
-    wonder where their action went. -}
+    wonder where their action went.
+    -}
     AdditionalCostPaid InvestigatorId Source Cost
+  | {- | Log only: open a block, so everything narrated until it closes is filed
+    under it rather than scattered beside it.
+
+    For an action that resolves in several steps and asks in between -- Against
+    the Wendigo's Navigate -- where neither the narrator nor a skill test can
+    hold the context. See 'Arkham.Game.Base.gameLogBlockStack'. Nothing in the
+    engine reads either of these.
+    -}
+    OpenLogBlock Text
+  | CloseLogBlock Text
   | WhenWillEnterLocation InvestigatorId LocationId
-  | -- | Carries the 'Movement' that caused it, when there was one, so the log
-    -- can tell a move the investigator chose from one a card forced on them.
-    -- 'Nothing' for the synthesised entries: vehicles and @PlaceInvestigator@.
+  | {- | Carries the 'Movement' that caused it, when there was one, so the log
+    can tell a move the investigator chose from one a card forced on them.
+    'Nothing' for the synthesised entries: vehicles and @PlaceInvestigator@.
+    -}
     EnterLocation InvestigatorId LocationId (Maybe Movement)
   | Will Message
   | -- must be called on instance directly
@@ -1380,6 +1433,8 @@ data Message
     that is no longer in the bag is a no-op instead of a fabricated seal.
     -}
     DebugSealChaosToken ChaosTokenId Target
+  | -- Debug: start a real skill test with no card behind it.
+    DebugBeginSkillTest DebugSkillTestSpec
   | DebugCustomize InvestigatorId CardId
   | DebugIncreaseCustomization InvestigatorId CardCode Customization [CustomizationChoice]
   | SetScenarioDifficulty Difficulty
@@ -1388,6 +1443,8 @@ data Message
   | -- Debug: register a runtime-authored card (see "Arkham.Card.CustomCard") on
     -- the game, so its def resolves for every player and survives a reload.
     DebugRegisterCustomCard CustomCard
+  | -- Open a fixed collection pool and snapshot its custom definitions once.
+    AskCollection InvestigatorId Source [CardCode]
   | DebugRemoveCustomCard CardCode
   | -- Debug: resolve an already-created card the way drawing it would --
     -- spawn an enemy, reveal a treachery, put a location on the board, deal a
@@ -1612,6 +1669,9 @@ pattern SkillTestUncommitCard iid c = SkillTestMessage (SkillTestUncommitCard_ i
 pattern AfterSkillTestQuiet :: [Message] -> Message
 pattern AfterSkillTestQuiet ms = SkillTestMessage (AfterSkillTestQuiet_ ms)
 
+pattern NotifyResultAgain :: Target -> Message
+pattern NotifyResultAgain t = SkillTestMessage (NotifyResultAgain_ t)
+
 pattern AfterSkillTestOption :: InvestigatorId -> Text -> [Message] -> Message
 pattern AfterSkillTestOption iid t ms = SkillTestMessage (AfterSkillTestOption_ iid t ms)
 
@@ -1716,6 +1776,12 @@ pattern ForceChaosTokenDrawToken t = ChaosBagMessage (ForceChaosTokenDrawToken_ 
 
 pattern DebugSetForcedChaosTokenDraws :: [ChaosTokenFace] -> Message
 pattern DebugSetForcedChaosTokenDraws fs = ChaosBagMessage (DebugSetForcedChaosTokenDraws_ fs)
+
+pattern DebugRevealChaosTokens :: InvestigatorId -> Int -> Message
+pattern DebugRevealChaosTokens iid n = ChaosBagMessage (DebugRevealChaosTokens_ iid n)
+
+pattern DebugReturnChaosTokens :: Message
+pattern DebugReturnChaosTokens = ChaosBagMessage DebugReturnChaosTokens_
 
 pattern SetChaosTokens :: [ChaosTokenFace] -> Message
 pattern SetChaosTokens fs = ChaosBagMessage (SetChaosTokens_ fs)
@@ -1967,6 +2033,10 @@ pattern EnemyAttackIfEngaged eid miid = EnemyAttackMessage (EnemyAttackIfEngaged
 
 pattern EnemyAttacks :: [Message] -> Message
 pattern EnemyAttacks msgs = EnemyAttackMessage (EnemyAttacks_ msgs)
+
+-- | The entire attack batch has resolved, including attacks that were skipped.
+pattern FinishedEnemyAttacks :: [EnemyId] -> Message
+pattern FinishedEnemyAttacks eids = EnemyAttackMessage (FinishedEnemyAttacks_ eids)
 
 pattern ChangeEnemyAttackTarget :: EnemyId -> Target -> Message
 pattern ChangeEnemyAttackTarget eid t = EnemyAttackMessage (ChangeEnemyAttackTarget_ eid t)
@@ -2539,9 +2609,15 @@ mconcat
             "ResolveStory" -> do
               (a, b, c) <- o .: "contents"
               pure $ StoryMessage $ ResolveStory a b c
+            -- Used to carry only the mode and the story; the resolving investigator
+            -- was added so the story resolution window can name a "you". A message
+            -- queued before that has no one to name, and no card of that era could
+            -- have been watching the window, so the placeholder id is inert.
             "ResolvedStory" -> do
-              (a, b) <- o .: "contents"
-              pure $ StoryMessage $ ResolvedStory a b
+              contents <- (Right <$> o .: "contents") <|> (Left <$> o .: "contents")
+              case contents of
+                Right (a, b, c) -> pure $ StoryMessage $ ResolvedStory a b c
+                Left (b, c) -> pure $ StoryMessage $ ResolvedStory (InvestigatorId "00000") b c
             "PlaceStory" -> do
               (a, b) <- o .: "contents"
               pure $ StoryMessage $ PlaceStory a b
@@ -2581,6 +2657,11 @@ mconcat
               pure $ case contents of
                 Right (a, b, c, d, s) -> FindEncounterCard a b c d s
                 Left (a, b, c, d) -> FindEncounterCard a b c d LeadChooses
+            -- Renamed from LoseStandardActions: "standard action" is the base
+            -- three in the core rules, not what this message counts.
+            "LoseStandardActions" -> do
+              (iid, source, n) <- o .: "contents"
+              pure $ LoseUnrestrictedActions iid source n
             -- Legacy: saves written before the details object stored the bare face
             "AddChaosToken" -> AddChaosToken <$> o .: "contents"
             -- Legacy: pre-Message-refactor saves tagged entity-specific removals
@@ -2955,10 +3036,13 @@ chooseOrRunOne _ [x] = uiToRun x
 chooseOrRunOne pid msgs = chooseOne pid msgs
 
 questionLabel :: Text -> PlayerId -> Question Message -> Message
-questionLabel lbl pid q = Ask pid (QuestionLabel lbl Nothing q)
+questionLabel lbl pid q = Ask pid (QuestionLabel lbl [] q)
 
 questionLabelWithCard :: Text -> CardCode -> PlayerId -> Question Message -> Message
-questionLabelWithCard lbl cCode pid q = Ask pid (QuestionLabel lbl (Just cCode) q)
+questionLabelWithCard lbl cCode pid q = questionLabelWithCards lbl [cCode] pid q
+
+questionLabelWithCards :: Text -> [CardCode] -> PlayerId -> Question Message -> Message
+questionLabelWithCards lbl cCodes pid q = Ask pid (QuestionLabel lbl cCodes q)
 
 questionWithSource :: Source -> PlayerId -> Question Message -> Message
 questionWithSource s pid q = Ask pid (QuestionWithSource s Nothing q)
@@ -2995,7 +3079,7 @@ chooseOrRunOneAtATime pid msgs = Ask pid (ChooseOneAtATime msgs)
 chooseOrRunOneAtATimeWithLabel :: Text -> PlayerId -> [UI Message] -> Message
 chooseOrRunOneAtATimeWithLabel _ _ [] = throw $ InvalidState "No messages for chooseOneAtATime"
 chooseOrRunOneAtATimeWithLabel _ _ [x] = uiToRun x
-chooseOrRunOneAtATimeWithLabel lbl pid msgs = Ask pid (QuestionLabel lbl Nothing $ ChooseOneAtATime msgs)
+chooseOrRunOneAtATimeWithLabel lbl pid msgs = Ask pid (QuestionLabel lbl [] $ ChooseOneAtATime msgs)
 
 {- | 'chooseOrRunOneAtATimeWithLabel' plus a single "resolve everything still
 listed, in the order shown" choice rendered with @autoLbl@.
@@ -3012,7 +3096,7 @@ chooseOrRunOneAtATimeWithAutoLabel :: Text -> Text -> PlayerId -> [UI Message] -
 chooseOrRunOneAtATimeWithAutoLabel _ _ _ [] = throw $ InvalidState "No messages for chooseOneAtATime"
 chooseOrRunOneAtATimeWithAutoLabel _ _ _ [x] = uiToRun x
 chooseOrRunOneAtATimeWithAutoLabel lbl autoLbl pid msgs =
-  Ask pid (QuestionLabel lbl Nothing $ ChooseOneAtATimeWithAuto autoLbl msgs)
+  Ask pid (QuestionLabel lbl [] $ ChooseOneAtATimeWithAuto autoLbl msgs)
 
 chooseSome :: PlayerId -> Text -> [UI Message] -> Message
 chooseSome _ _ [] = throw $ InvalidState "No messages for chooseSome"
@@ -3062,7 +3146,7 @@ chooseAmountsLabeled
   -> m Message
 chooseAmountsLabeled pid title label total choiceMap (toTarget -> target) = do
   rs <- getRandoms
-  pure $ Ask pid (QuestionLabel title Nothing $ ChooseAmounts label total (amountChoices rs) target)
+  pure $ Ask pid (QuestionLabel title [] $ ChooseAmounts label total (amountChoices rs) target)
  where
   amountChoices rs = zipWith (curry toAmountChoice) rs choiceMap
   toAmountChoice (choiceId, (l, (m, n))) = AmountChoice choiceId l m n

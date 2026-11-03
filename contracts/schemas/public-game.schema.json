@@ -65,7 +65,8 @@
     "roundHistory",
     "phaseHistory",
     "turnHistory",
-    "enemyAttackTargets"
+    "enemyAttackTargets",
+    "outcome"
   ],
   "properties": {
     "tag": {
@@ -348,6 +349,17 @@
       "additionalProperties": {
         "$ref": "./investigator.schema.json"
       }
+    },
+    "outcome": {
+      "description": "How the game ended (Arkham.Game.Outcome.GameOutcome): null while the game is unfinished or when no verdict was recorded. Same shape as GameDetails.outcome in the game list.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "./game-list.schema.json#/$defs/gameOutcome"
+        }
+      ]
     }
   },
   "$defs": {
@@ -400,6 +412,7 @@
         "settingsAbilitiesCannotReactToThemselves",
         "settingsAchievementsEnabled",
         "settingsAsIfRuling",
+        "settingsCustomRandomWeaknessPools",
         "settingsRolledUltimatumOrBoon",
         "settingsScreamedAllies",
         "settingsStrictAsIfAt",
@@ -418,6 +431,29 @@
             "chapter1",
             "chapter2"
           ]
+        },
+        "settingsCustomRandomWeaknessPools": {
+          "description": "Per-player custom random basic weakness pools, keyed by PlayerId: [enabled, card codes in the pool].",
+          "type": "object",
+          "propertyNames": {
+            "format": "uuid"
+          },
+          "additionalProperties": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          }
         },
         "settingsRolledUltimatumOrBoon": {
           "type": [

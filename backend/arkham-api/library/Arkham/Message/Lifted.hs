@@ -46,6 +46,16 @@ import Arkham.Evade qualified as Evade
 import Arkham.Exhaust qualified as Exhaust
 import Arkham.Fight
 import Arkham.Fight qualified as Fight
+
+{- The vocabulary an ending needs to state its verdict, re-exported so every
+scenario and campaign that can end a game has it alongside 'gameOverWith' and
+friends.
+
+Only the types and 'plainly'. The note constants stay out: they read like
+ordinary prose, and three Circle Undone scenarios already bind
+@neverSeenOrHeardFromAgain@ as a local, which @-Werror=name-shadowing@ makes
+fatal. A scenario that needs one imports "Arkham.Game.Outcome" for it. -}
+import Arkham.Game.Outcome as X (Certainty (..), GameResult (..), Verdict (..), plainly)
 import Arkham.GameEnv
 import Arkham.Helpers.Act
 import Arkham.Helpers.Agenda
@@ -66,7 +76,7 @@ import Arkham.Helpers.Message.Discard qualified as HandDiscard
 import Arkham.Helpers.Modifiers qualified as Msg
 import Arkham.Helpers.Query
 import Arkham.Helpers.Ref (sourceToTarget)
-import Arkham.Helpers.Scenario (getEncounterDeckKey, getInResolution)
+import Arkham.Helpers.Scenario (getEncounterDeckKey, getInResolutionMaybe)
 import Arkham.Helpers.Shuffle qualified as Shuffle
 import Arkham.Helpers.SkillTest qualified as Msg
 import Arkham.Helpers.UI qualified as Msg
@@ -348,7 +358,7 @@ killRemaining (toSource -> source) = do
   remaining <- select UneliminatedInvestigator
   resigned <- select ResignedInvestigator
   for_ remaining $ kill source
-  gameOverIf (null resigned)
+  when (null resigned) gameOverLost
   pure remaining
 
 addCampaignCardToDeck
@@ -388,6 +398,23 @@ addCampaignCardToDeckChoiceWith choices shouldShuffleIn card f = do
   lead <- getLeadPlayer
   card' <- fetchCard card
   push $ Msg.addCampaignCardToDeckChoiceWith lead choices shouldShuffleIn card' f
+
+{- | Like 'addCampaignCardToDeckChoiceWith', but the prompt shows @alsoShow@
+beside the offered card.
+-}
+addCampaignCardToDeckChoiceAlsoShowing
+  :: (FetchCard card, FetchCard shown, ReverseQueue m)
+  => [InvestigatorId]
+  -> ShuffleIn
+  -> card
+  -> [shown]
+  -> (InvestigatorId -> [Message])
+  -> m ()
+addCampaignCardToDeckChoiceAlsoShowing choices shouldShuffleIn card alsoShow f = do
+  lead <- getLeadPlayer
+  card' <- fetchCard card
+  alsoShow' <- fetchCards alsoShow
+  push $ Msg.addCampaignCardToDeckChoiceAlsoShowing lead choices shouldShuffleIn card' alsoShow' f
 
 {- | Like 'addCampaignCardToDeckChoice', with a continuation for the players
 DECLINING the card (e.g. the "I Don't Trust Her" achievement).
@@ -837,8 +864,15 @@ drawAnotherChaosToken iid = do
 
 eachInvestigator :: HasGame m => (InvestigatorId -> m ()) -> m ()
 eachInvestigator f = do
-  inResolution <- getInResolution
-  investigators <- if inResolution then allInvestigators else getInvestigators
+  investigators <-
+    getInResolutionMaybe >>= \case
+      -- Outside a scenario -- campaign steps, interludes, preludes -- the
+      -- elimination flags belong to the scenario that just ended, so reading them
+      -- here skips whoever was defeated or resigned when it did. That cost an
+      -- investigator all four XP from Innsmouth's Interlude I (#5917).
+      Nothing -> campaignInvestigators
+      Just True -> allInvestigators
+      Just False -> getInvestigators
   for_ investigators f
 
 forInvestigator :: ReverseQueue m => InvestigatorId -> Message -> m ()
@@ -944,9 +978,13 @@ aspect iid source a action = Msg.aspect iid source a action >>= pushAll . Msg.le
 
 questionLabelWithCard
   :: ReverseQueue m => Text -> CardCode -> InvestigatorId -> Question Message -> m ()
-questionLabelWithCard lbl cCode iid q = do
+questionLabelWithCard lbl cCode iid q = Arkham.Message.Lifted.questionLabelWithCards lbl [cCode] iid q
+
+questionLabelWithCards
+  :: ReverseQueue m => Text -> [CardCode] -> InvestigatorId -> Question Message -> m ()
+questionLabelWithCards lbl cCodes iid q = do
   pid <- getPlayer iid
-  push $ Ask pid (QuestionLabel lbl (Just cCode) q)
+  push $ Ask pid (QuestionLabel lbl cCodes q)
 
 selectOneToHandle
   :: (HasCallStack, ReverseQueue m, Targetable (QueryElement matcher), Query matcher, Sourceable source)
@@ -2423,14 +2461,17 @@ resolveAbilityAndThen mref body = do
         Nothing -> pushAll msgs
         Just msg -> insertAfterMatching msgs (== msg)
 
+-- | As 'afterSkillTest', but also handles there being no skill test in progress.
 afterMaybeSkillTest
   :: ( MonadTrans t
      , HasQueue Message m
      , HasQueue Message (t m)
      , HasGame (t m)
+     , HasCardCode card
+     , Named card
      )
-  => InvestigatorId -> Text -> QueueT Message (t m) a -> t m ()
-afterMaybeSkillTest iid lbl body = do
+  => InvestigatorId -> card -> QueueT Message (t m) a -> t m ()
+afterMaybeSkillTest iid card body = do
   mst <- getSkillTest
   case mst of
     Nothing -> do
@@ -2448,7 +2489,7 @@ afterMaybeSkillTest iid lbl body = do
         Just (EventSource e) ->
           insertAfterMatchingOrNow msgs (== FinishedEvent e)
         _ -> insertAfterMatchingOrNow msgs (== EndSkillTestWindow)
-    Just _ -> afterSkillTest iid lbl body
+    Just _ -> afterSkillTest iid card body
 
 afterMaybeSkillTestQuiet
   :: ( MonadTrans t
@@ -2477,15 +2518,25 @@ afterMaybeSkillTestQuiet body = do
         _ -> insertAfterMatchingOrNow msgs (== EndSkillTestWindow)
     Just _ -> afterSkillTestQuiet body
 
+{- | Queue @body@ to run after the current skill test, offered to the investigator
+as a named option.
+
+The name is taken from the card offering it rather than written out, so the
+option is localized like every other label; a hand-typed English card name here
+would be the one untranslated string in the prompt.
+-}
 afterSkillTest
   :: ( MonadTrans t
      , HasQueue Message m
      , HasQueue Message (t m)
      , HasGame (t m)
      , ToId investigator InvestigatorId
+     , HasCardCode card
+     , Named card
      )
-  => investigator -> Text -> QueueT Message (t m) a -> t m ()
-afterSkillTest investigator lbl body = do
+  => investigator -> card -> QueueT Message (t m) a -> t m ()
+afterSkillTest investigator card body = do
+  let lbl = withI18n $ cardNameVar card $ ikey' "label.afterSkillTestOption"
   msgs <- capture body
   let
     option = [AfterSkillTestOption (asId investigator) lbl msgs]
@@ -2593,8 +2644,14 @@ gainActions
 gainActions (asId -> iid) (toSource -> source) n = push $ Msg.GainActions iid source n
 
 takeActionAsIfTurn :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> m ()
-takeActionAsIfTurn iid (toSource -> source) = do
+takeActionAsIfTurn iid source = do
   gainActions iid source 1
+  takeActionAsIfTurnFromCurrentPool iid source
+
+-- Use an action already in the investigator's pool instead of granting an extra one.
+takeActionAsIfTurnFromCurrentPool
+  :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> m ()
+takeActionAsIfTurnFromCurrentPool iid (toSource -> source) = do
   mactive <- selectOne ActiveInvestigator
   temporaryModifier iid source (AsIfTurn iid) do
     push $ SetActiveInvestigator iid
@@ -3450,9 +3507,9 @@ loseActions iid source n = push $ LoseActions iid (toSource source) n
 spendActions :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> Int -> m ()
 spendActions = loseActions
 
-loseStandardActions
+loseUnrestrictedActions
   :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> Int -> m ()
-loseStandardActions iid source n = push $ LoseStandardActions iid (toSource source) n
+loseUnrestrictedActions iid source n = push $ LoseUnrestrictedActions iid (toSource source) n
 
 requestChaosTokens :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> Int -> m ()
 requestChaosTokens iid source n = do

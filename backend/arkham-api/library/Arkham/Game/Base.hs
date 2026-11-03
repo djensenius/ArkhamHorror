@@ -11,6 +11,7 @@ import {-# SOURCE #-} Arkham.Card (Card, CardCode, CardId)
 import Arkham.Card.CustomCard (CustomCard)
 import Arkham.ChaosToken.Types
 import {-# SOURCE #-} Arkham.Entities
+import Arkham.Game.Outcome
 import Arkham.Game.Settings
 import Arkham.Game.State
 import Arkham.Git (GitSha)
@@ -127,6 +128,15 @@ data Game = Game
   , gameRemovedFromPlay :: [Card]
   , gameInSetup :: Bool
   , gameGameState :: GameState
+  , -- How a finished game ended. 'Nothing' while it is still running, and
+    -- also for every game that finished before outcomes were recorded; see
+    -- "Arkham.Game.Outcome" for why those are reconstructed on read rather
+    -- than written back.
+    gameOutcome :: Maybe GameOutcome
+  , -- The most recent scenario resolution the game saw, kept so a finished
+    -- game can name the ending it stopped on. The campaign keeps a resolution
+    -- per scenario but not which was last, and a standalone keeps none at all.
+    gameLastResolution :: Maybe Ending
   , gameSkillTestResults :: Maybe SkillTestResultsData
   , gameEnemyMoving :: Maybe EnemyId
   , gameEnemyEvading :: Maybe EnemyId
@@ -156,6 +166,8 @@ data Game = Game
     gameActionSnapshot :: Transient Game
   , gameInAction :: Bool
   , gameCards :: Map CardId Card
+  , gameCollectionCards :: Transient (Map CardCode CustomCard)
+  -- ^ The answering player's library, available to collection searches only at runtime.
   , gameCustomCards :: Map CardCode CustomCard
   {- ^ Cards invented at runtime from the debug menu. The engine's def and
   builder maps are compile-time, so these are the authority for any card code
@@ -195,6 +207,18 @@ data Game = Game
 
     A stack, not a @Maybe@: playing a card can play another one, and a drawn
     treachery can surge into the next one.
+  -}
+  , gameLogBlockStack :: [Text]
+  {- ^ The log blocks a resolving action has opened, innermost last.
+
+    The same job as 'gameCardPlayStack' and here for the same reason: a block
+    that spans an ask cannot be held by the narrator, whose ref is rebuilt every
+    action. A multi-step action (Against the Wendigo's Navigate) opens one so
+    everything the step does is filed under it rather than scattered beside it.
+
+    Opened and closed by 'Arkham.Message.OpenLogBlock' \/
+    'Arkham.Message.CloseLogBlock', and swept whenever the active abilities are,
+    so an action that never finishes cannot leave one capturing later rows.
   -}
   }
   deriving stock (Eq, Show)

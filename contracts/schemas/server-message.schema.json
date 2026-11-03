@@ -251,6 +251,54 @@
       ],
       "properties": {
         "tag": {
+          "const": "GameUnarchived"
+        }
+      },
+      "description": "The game's undo history was restored from cold storage; the board itself is unchanged."
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "GameUnarchiveFailed"
+        },
+        "contents": {
+          "type": "string"
+        }
+      },
+      "description": "Restoring the game's undo history failed; contents says why."
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "GameWatcherCount"
+        },
+        "contents": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "description": "How many spectators (subscribers without a seat) are watching. Sent to the whole room, watchers included, on every spectator connect and disconnect."
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
           "const": "EventChanged"
         }
       }

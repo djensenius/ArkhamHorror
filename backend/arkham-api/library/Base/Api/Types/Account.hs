@@ -27,6 +27,7 @@ instance FromJSON PasswordResetUpdate where
 data UserSettings = UserSettings
   { betaSetting :: Maybe Bool
   , phaseTransitionNotificationsSetting :: Maybe Bool
+  , allowSpectatorsByDefaultSetting :: Maybe Bool
   }
   deriving stock (Eq, Show)
 
@@ -35,12 +36,17 @@ instance FromJSON UserSettings where
     UserSettings
       <$> o .:? "beta"
       <*> o .:? "phaseTransitionNotifications"
+      <*> o .:? "allowSpectatorsByDefault"
 
 data SettingsUser = SettingsUser
   { username :: Text
   , email :: Text
   , beta :: Bool
   , phaseTransitionNotifications :: Bool
+  , allowSpectatorsByDefault :: Bool
+  {- ^ what the "allow spectators" switch starts as on the new-game form. Only
+  a starting point: the form still sends the value it was left at.
+  -}
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass ToJSON
