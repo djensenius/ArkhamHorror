@@ -117,7 +117,11 @@ persistentStoreWith validate database = ArkhamDBStore
       active <- sameAccountGeneration userId generation
       -- Overlay PUT/DELETE only lock this row, not the account. No pre-I/O
       -- overlay or adoption decision may cross this transaction boundary.
-      rows <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? FOR UPDATE"
+      -- NO KEY UPDATE matches lockDeck: it does not skip enqueue's deck
+      -- key-share fence. Known gap: the link UPDATE below still conflicts with
+      -- enqueue's link FOR SHARE SKIP LOCKED; an enqueue reaching the link
+      -- after that UPDATE and before this commit skips the deck's push.
+      rows <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? FOR NO KEY UPDATE"
         [toPersistValue deckId] :: ReaderT SqlBackend Handler [Entity ArkhamDeck]
       mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
       case (active, viaNonEmpty head rows, mapping) of
