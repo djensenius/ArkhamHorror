@@ -9,7 +9,8 @@ import Arkham.ArkhamDB.Service
 import Arkham.Decklist (ArkhamDBDecklist)
 import Arkham.Decklist qualified as Decklist
 import Arkham.Custom.Overlay (DeckOverlay (..))
-import Control.Concurrent (ThreadId, myThreadId, modifyMVar, modifyMVar_, killThread)
+import Control.Concurrent (ThreadId, forkIOWithUnmask, modifyMVar, modifyMVar_, withMVar, killThread)
+import Control.Exception (finally, mask_)
 import System.Timeout (timeout)
 import Control.Monad.Except
 import Data.Aeson
@@ -32,36 +33,62 @@ import Settings (ArkhamDBSettings)
 -- One worker per application/process, with a single coalescing wake-up slot.
 -- Neither gameplay boundaries nor retries allocate a worker while it is running.
 data ArkhamDBExecutor = ArkhamDBExecutor
-  { executorStarted :: MVar Bool
+  { executorState :: MVar ArkhamDBExecutorState
   , executorWake :: MVar ()
-  , executorThread :: MVar (Maybe ThreadId)
+  }
+
+data ArkhamDBExecutorState = ArkhamDBExecutorState
+  { executorStopped :: Bool
+  , executorThread :: Maybe (ThreadId, MVar ())
   }
 
 newArkhamDBExecutor :: IO ArkhamDBExecutor
-newArkhamDBExecutor = ArkhamDBExecutor <$> newMVar False <*> newEmptyMVar <*> newMVar Nothing
+newArkhamDBExecutor = ArkhamDBExecutor <$> newMVar (ArkhamDBExecutorState False Nothing) <*> newEmptyMVar
 
+-- A wake only fills the coalescing slot; it is never permission to fork.
 wakeArkhamDBExecutor :: ArkhamDBExecutor -> IO Bool
-wakeArkhamDBExecutor executor = modifyMVar executor.executorStarted \started -> do
-  void $ tryPutMVar executor.executorWake ()
-  pure (True, not started)
+wakeArkhamDBExecutor executor = withMVar executor.executorState \current ->
+  if current.executorStopped then pure False else tryPutMVar executor.executorWake ()
+
+-- Publish the child under the same lock as stop, before startup returns. The
+-- child inherits masking until its outermost completion handler is installed.
+startArkhamDBExecutor :: ArkhamDBExecutor -> IO () -> IO ()
+startArkhamDBExecutor executor action = mask_ $ modifyMVar_ executor.executorState \current ->
+  if current.executorStopped then pure current else do
+    running <- case current.executorThread of
+      Nothing -> pure False
+      Just (_, done) -> isNothing <$> tryReadMVar done
+    void $ tryPutMVar executor.executorWake ()
+    if running then pure current else do
+      done <- newEmptyMVar
+      tid <- forkIOWithUnmask \unmask ->
+        unmask (do
+          stopped <- (.executorStopped) <$> readMVar executor.executorState
+          unless stopped action)
+          `finally` putMVar done ()
+      pure current {executorThread = Just (tid, done)}
 
 runArkhamDBExecutor :: MonadIO m => ArkhamDBExecutor -> m () -> m ()
 runArkhamDBExecutor executor sweep = do
-  tid <- liftIO myThreadId
-  liftIO $ modifyMVar_ executor.executorThread $ const $ pure $ Just tid
-  forever do
+  stopped <- liftIO $ (.executorStopped) <$> readMVar executor.executorState
+  unless stopped do
     -- Poll durable pending work after restart and throttled claims, even without
     -- another gameplay boundary. Coalesced signals make active work wake sooner.
     _ <- liftIO $ timeout 30000000 $ takeMVar executor.executorWake
-    sweep
+    stopping <- liftIO $ (.executorStopped) <$> readMVar executor.executorState
+    unless stopping $ sweep >> runArkhamDBExecutor executor sweep
 
 stopArkhamDBExecutor :: ArkhamDBExecutor -> IO ()
-stopArkhamDBExecutor executor = readMVar executor.executorThread >>= traverse_ killThread
-
-resetArkhamDBExecutor :: ArkhamDBExecutor -> IO ()
-resetArkhamDBExecutor executor = do
-  modifyMVar_ executor.executorThread $ const $ pure Nothing
-  modifyMVar_ executor.executorStarted $ const $ pure False
+stopArkhamDBExecutor executor = mask_ do
+  (cancel, running) <- modifyMVar executor.executorState \current ->
+    pure (current {executorStopped = True}, (not current.executorStopped, current.executorThread))
+  for_ running \(tid, done) -> do
+    -- Repeated/concurrent stops join without interrupting cleanup a second time.
+    when cancel $ killThread tid
+    readMVar done
+  -- Keep the completed handle: clearing it before signaling done would let a
+  -- concurrent stop miss the finalizer. A non-stopped start can replace it only
+  -- once done is full; a stopped executor can never start again.
 
 writeBackRetryDelay :: Int -> Int
 writeBackRetryDelay failures = min 300 $ 30 * (2 ^ min 4 (max 0 failures))

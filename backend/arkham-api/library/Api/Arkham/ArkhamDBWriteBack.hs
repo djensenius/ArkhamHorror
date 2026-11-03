@@ -24,10 +24,9 @@ import Database.Persist qualified as P
 import Database.Persist.Sql (Single (..), rawSql, rawExecute, updateWhereCount)
 import Import hiding (state)
 import Entity.Arkham.Step
-import Control.Concurrent (forkIO)
 import Control.Monad.Logger (logWarnN)
 import Control.Monad.Except (throwError)
-import UnliftIO.Exception (finally, try)
+import UnliftIO.Exception (try)
 
 writeBackStore :: ArkhamDBWriteBackStore Handler
 writeBackStore = ArkhamDBWriteBackStore
@@ -401,12 +400,10 @@ startCampaignWriteBack :: App -> IO ()
 startCampaignWriteBack foundation =
   for_ ((,) <$> appArkhamDB (appSettings foundation) <*> appArkhamDBClient foundation) \(settings, transport) -> do
     let executor = appArkhamDBWriteBackExecutor foundation
-    start <- wakeArkhamDBExecutor executor
-    when start $ void $ forkIO $
+    startArkhamDBExecutor executor $
       runArkhamDBExecutor executor (unsafeHandler foundation do
         result <- try @_ @SomeException $ sweep settings transport Nothing
         when (isLeft result) $ logWarnN "ArkhamDB write-back sweep failed; pending work will be retried")
-        `finally` resetArkhamDBExecutor executor
  where
   sweep settings transport cursor = do
     sweepTime <- liftIO getCurrentTime

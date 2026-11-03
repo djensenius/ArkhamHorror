@@ -15,7 +15,7 @@ import Arkham.Entities (entitiesInvestigators)
 import Arkham.Investigator (lookupInvestigator)
 import Arkham.Investigator.Types (investigatorXp)
 import Arkham.Helpers (Deck (..))
-import Control.Exception (try, throwIO, IOException, finally)
+import Control.Exception (try, throwIO, IOException, AsyncException, finally)
 import System.IO.Error (userError)
 import Arkham.Game qualified as Game
 import Arkham.Game.State (GameState (IsActive))
@@ -1729,20 +1729,108 @@ spec = describe "ArkhamDB campaign write-back" do
     workers <- newIORef (0 :: Int)
     let sweep = do
           atomically $ readTBQueue pool
-          modifyIORef' workers (+1)
-          void $ tryPutMVar started ()
-          takeMVar release
-          atomically $ writeTBQueue pool ()
-        signal = do
-          launch <- wakeArkhamDBExecutor executor
-          when launch $ void $ forkIO $ runArkhamDBExecutor executor sweep
-    signal
-    timeout 2000000 (takeMVar started) `shouldReturn` Just ()
-    replicateM_ 10000 signal
-    readIORef workers `shouldReturn` 1
-    timeout 100000 (atomically $ readTBQueue pool) `shouldReturn` Just ()
-    tid <- readMVar executor.executorThread
-    traverse_ killThread tid
+          (do
+            modifyIORef' workers (+1)
+            void $ tryPutMVar started ()
+            takeMVar release)
+            `finally` atomically (writeTBQueue pool ())
+        start = startArkhamDBExecutor executor $ runArkhamDBExecutor executor sweep
+    flip finally (void $ timeout 2000000 $ stopArkhamDBExecutor executor) do
+      start
+      timeout 2000000 (takeMVar started) `shouldReturn` Just ()
+      replicateM_ 10000 do
+        start
+        void $ wakeArkhamDBExecutor executor
+      readIORef workers `shouldReturn` 1
+      timeout 100000 (atomically $ readTBQueue pool) `shouldReturn` Just ()
+      timeout 2000000 (stopArkhamDBExecutor executor) `shouldReturn` Just ()
+
+  it "publishes an executor before its child can sweep and joins an immediate stop" do
+    executor <- newArkhamDBExecutor
+    gate <- newEmptyMVar
+    sweeps <- newIORef (0 :: Int)
+    flip finally (void $ timeout 2000000 $ stopArkhamDBExecutor executor) do
+      startArkhamDBExecutor executor do
+        -- Even if cancellation is caught during startup, the stopped flag must
+        -- prevent entering the loop. The empty gate makes scheduling irrelevant.
+        void (try (takeMVar gate) :: IO (Either AsyncException ()))
+        runArkhamDBExecutor executor $ modifyIORef' sweeps (+1)
+      state <- readMVar executor.executorState
+      (tid, done) <- maybe (fail "Startup returned without publishing its child") pure state.executorThread
+      timeout 2000000 (stopArkhamDBExecutor executor) `shouldReturn` Just ()
+      tryReadMVar done `shouldReturn` Just ()
+      putMVar gate ()
+      wakeArkhamDBExecutor executor `shouldReturn` False
+      startArkhamDBExecutor executor $ modifyIORef' sweeps (+1)
+      fmap (fmap fst . (.executorThread)) (readMVar executor.executorState) `shouldReturn` Just tid
+      readIORef sweeps `shouldReturn` 0
+
+  it "joins blocked executor cleanup, including concurrent stop callers" do
+    executor <- newArkhamDBExecutor
+    entered <- newEmptyMVar
+    blocked <- newEmptyMVar
+    cleaning <- newEmptyMVar
+    releaseCleanup <- newEmptyMVar
+    cleaned <- newIORef False
+    stoppers <- newIORef []
+    firstStop <- newEmptyMVar
+    secondStop <- newEmptyMVar
+    let sweep =
+          (putMVar entered () >> takeMVar blocked)
+            `finally` do
+              putMVar cleaning ()
+              takeMVar releaseCleanup
+              writeIORef cleaned True
+        stop returned = do
+          tid <- forkIO $ stopArkhamDBExecutor executor >> putMVar returned ()
+          modifyIORef' stoppers (tid :)
+        cleanup = do
+          void $ tryPutMVar releaseCleanup ()
+          void $ timeout 2000000 $ stopArkhamDBExecutor executor
+          readIORef stoppers >>= traverse_ killThread
+    flip finally cleanup do
+      startArkhamDBExecutor executor $ runArkhamDBExecutor executor sweep
+      timeout 2000000 (takeMVar entered) `shouldReturn` Just ()
+      stop firstStop
+      timeout 2000000 (takeMVar cleaning) `shouldReturn` Just ()
+      stop secondStop
+      timeout 100000 (readMVar firstStop) `shouldReturn` Nothing
+      timeout 100000 (readMVar secondStop) `shouldReturn` Nothing
+      readIORef cleaned `shouldReturn` False
+      putMVar releaseCleanup ()
+      timeout 2000000 (readMVar firstStop) `shouldReturn` Just ()
+      timeout 2000000 (readMVar secondStop) `shouldReturn` Just ()
+      readIORef cleaned `shouldReturn` True
+
+  it "stops promptly when an executor was woken but no worker was ever started" do
+    executor <- newArkhamDBExecutor
+    void $ wakeArkhamDBExecutor executor
+    timeout 2000000 (stopArkhamDBExecutor executor) `shouldReturn` Just ()
+    timeout 2000000 (stopArkhamDBExecutor executor) `shouldReturn` Just ()
+
+  it "never starts or wakes an executor stopped before startup" do
+    executor <- newArkhamDBExecutor
+    sweeps <- newIORef (0 :: Int)
+    timeout 2000000 (stopArkhamDBExecutor executor) `shouldReturn` Just ()
+    replicateM_ 10 do
+      startArkhamDBExecutor executor $ runArkhamDBExecutor executor $ modifyIORef' sweeps (+1)
+      wakeArkhamDBExecutor executor `shouldReturn` False
+    isNothing . (.executorThread) <$> readMVar executor.executorState `shouldReturn` True
+    tryReadMVar executor.executorWake `shouldReturn` Nothing
+    readIORef sweeps `shouldReturn` 0
+
+  it "can replace a completed executor run only before it has been stopped" do
+    executor <- newArkhamDBExecutor
+    entered <- newEmptyMVar
+    blocked <- newEmptyMVar
+    flip finally (void $ timeout 2000000 $ stopArkhamDBExecutor executor) do
+      startArkhamDBExecutor executor $ pure ()
+      state <- readMVar executor.executorState
+      (_, done) <- maybe (fail "Missing completed executor run") pure state.executorThread
+      timeout 2000000 (readMVar done) `shouldReturn` Just ()
+      startArkhamDBExecutor executor $ runArkhamDBExecutor executor (putMVar entered () >> takeMVar blocked)
+      timeout 2000000 (takeMVar entered) `shouldReturn` Just ()
+      timeout 2000000 (stopArkhamDBExecutor executor) `shouldReturn` Just ()
 
   it "throttles per-user write-back attempts and backs off repeated failures" do
     (store, _) <- Linking.newStore
