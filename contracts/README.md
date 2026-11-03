@@ -1146,6 +1146,15 @@ mapping. It also covers expiry cleanup: bounded batches that leave active
 authorizations and the account intact, an unrelated user's link start that does
 not purge the global backlog, deadline-bounded progress amid 200,000 active
 authorizations, and skipping a locked expired row until its transaction ends.
+Deck sync coverage drops an unchanged 404 mapping and falls back to the public
+URL exactly once, refuses a delayed 404 or sync result once a write-back has
+retargeted or re-marked the mapping or the mapping row was replaced, and
+serializes public and linked sync before and after an overlay add, replace,
+removal or invalid change on the locked deck row. Every actual overlay PUT, even
+a byte-identical one, gets a fresh private attachment identity that DELETE
+clears and a later provenance-free sync keeps; incorporated overlay provenance
+is consumed through actual public and linked sync; and overlay removal that
+would expose unsupported base cards is rejected without changing the saved deck.
 The launcher's checks also round-trip the expiry-index migration and refuse to
 adopt or drop a same-named foreign index. Lock-contention cases use separate
 sessions and observe real PostgreSQL lock waits rather than timing sleeps. The
