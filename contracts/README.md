@@ -1140,7 +1140,9 @@ the cluster afterwards. The `arkhamdb-postgres` suite runs the production
 only the ArkhamDB HTTP transport stubbed. It covers nonce claim/finalize exactly
 once and competing claims, rollback of nonce consumption with account creation,
 refresh compare-and-update, the refresh lock held against a concurrent unlink,
-callbacks during and after unlink, an import racing unlink/relink to a new
+refresh lock contention returning `remoteUnavailable` only at the five-second
+lock deadline, failed, rejected and token-less refreshes that leave credentials,
+generation and mappings unchanged, callbacks during and after unlink, an import racing unlink/relink to a new
 generation, and competing imports converging on one deck and user/remote
 mapping. It also covers expiry cleanup: bounded batches that leave active
 authorizations and the account intact, an unrelated user's link start that does
@@ -1172,9 +1174,7 @@ HTTP-connection stubs; callback response tests dispatch the production callback
 body through Yesod/WAI. The logging probe covers both the production request
 logger's `Detailed True` and Apache modes, including encoded-separator and
 case-variant ArkhamDB paths. The cleanup worker's retry, timeout and shutdown
-lifecycle is unit-tested. The refresh lock-deadline (`remoteUnavailable`) and
-refresh-failure paths are not yet covered against PostgreSQL; that is tracked
-in Backlog task-2.55.
+lifecycle is unit-tested.
 
 List, import and sync use the linked account's OAuth API, so private decks do
 not require public sharing. Expired tokens (including a 60-second safety window)
