@@ -64,6 +64,47 @@ protectedPaths =
   , "/api/auth/%61rkham-build/callback"
   , "/api/auth%2Farkham-build/callback"
   ]
+    <> dotSegmentPaths
+
+-- Dot segments and ';' path parameters must not bypass the exclusion for any
+-- credential route, whether matched literally or after dot resolution.
+dotSegmentPaths :: [ByteString]
+dotSegmentPaths =
+  [ -- ArkhamDB
+    "/api/v1/arkham/arkhamdb/./callback"
+  , "/api/v1/arkham/./arkhamdb/callback"
+  , "/./api/v1/arkham/arkhamdb/link/complete"
+  , "/api/v1/arkham/arkhamdb/link/./complete/."
+  , "/api/v1/arkham/%2E/arkhamdb/callback"
+  , "/api/v1/arkham/x/../arkhamdb/callback"
+  , "/../api/v1/arkham/arkhamdb/callback"
+  , "/api/v1/arkham/arkhamdb/../arkhamdb/link/complete"
+  , "/api/v1/arkham/arkhamdb/../decks"
+  , "/api/v1/arkham/arkhamdb;x=1/callback"
+  , "/api;x/v1/arkham/arkhamdb/callback"
+  , "/api/v1/arkham/arkhamdb/callback;x=1"
+  , "/api/v1/;x/arkham/arkhamdb/link/complete"
+  , "/api/v1/arkham/arkhamdb%3Bx/callback"
+  , "/api/v1/./arkham/x;y/../arkhamdb;z/./callback"
+  , "/api/v1/arkham/.;x/arkhamdb/callback"
+  , "/api/v1/arkham/x/..;y/arkhamdb/link/complete"
+  , -- arkham.build login callback
+    "/api/auth/./arkham-build/callback"
+  , "/./api/auth/arkham-build/callback"
+  , "/api/auth/x/../arkham-build/callback"
+  , "/../api/auth/arkham-build/callback"
+  , "/api/auth/arkham-build;x=1/callback"
+  , "/api;x/auth/arkham-build/callback"
+  , "/api/./auth;x/y/../arkham-build/./callback"
+  , -- arkham.build authorize and verify
+    "/api/v1/./arkham-build/authorize"
+  , "/api/v1/arkham-build/./verify"
+  , "/api/v1/x/../arkham-build/verify"
+  , "/../api/v1/arkham-build/authorize"
+  , "/api/v1/arkham-build;x=1/authorize"
+  , "/api/v1;x/arkham-build/verify"
+  , "/api/./v1;x/y/../arkham-build;z/./verify"
+  ]
 
 -- Empty segments must not suppress logging of ordinary routes.
 ordinaryPaths :: [ByteString]
@@ -77,6 +118,17 @@ ordinaryPaths =
   , "/api/auth/arkham-build-other/callback"
   , "/api/v1/arkham-builder/verify"
   , "/api/v1/site-settings"
+  -- Dot segments and path parameters must not suppress ordinary routes, nor
+  -- may resolution that leaves no credential prefix.
+  , "/api/v1/./arkham/decks"
+  , "/api/v1/arkham/decks;x=1"
+  , "/api/v1/arkham/arkhamdb-other;x=1"
+  , "/api/v1/arkham/./arkhamdb2"
+  , "/api/v1/arkham/x/../games"
+  , "/api/v1/arkham/arkhamdb-other/../decks"
+  , "/api/v1/arkham/../arkhamdb/callback"
+  , "/api/auth/./arkham-build-other/callback"
+  , "/api/v1/arkham-builder;x/../verify"
   ]
 
 -- Use the production middleware, including its body-capture path, for both
