@@ -425,7 +425,7 @@ makeLogWare settings requestLogger =
 -- bodies are logged in Detailed mode.
 skipArkhamDBLogging :: Middleware -> Middleware
 skipArkhamDBLogging logWare app req sendResponse
-  | any (`isPrefixOf` credentialPath) credentialRoutes = app req sendResponse
+  | any isCredentialPath [credentialPath, resolvedCredentialPath] = app req sendResponse
   | otherwise = logWare app req sendResponse
  where
   credentialRoutes =
@@ -437,8 +437,20 @@ skipArkhamDBLogging logWare app req sendResponse
   -- variants conservatively for privacy, without changing route dispatch or
   -- suppressing similarly named ordinary routes such as "arkhamdb-other".
   -- Drop empty segments so doubled or leading slashes, which are logged before
-  -- Yesod's clean-path redirect, still match.
-  credentialPath = filter (not . T.null) $ concatMap (T.splitOn "/" . T.toCaseFold) (pathInfo req)
+  -- Yesod's clean-path redirect, still match. Cut each segment at its first
+  -- ';' so path parameters ("arkhamdb;x=1") are ignored, and drop "." segments.
+  isCredentialPath path = any (`isPrefixOf` path) credentialRoutes
+  credentialPath =
+    filter (`notElem` ["", "."])
+      $ map (T.takeWhile (/= ';'))
+      $ concatMap (T.splitOn "/" . T.toCaseFold) (pathInfo req)
+  -- Match both the literal view (".." kept) and the RFC 3986 dot-resolved view
+  -- (".." pops a segment, never above the root), so neither form bypasses the
+  -- exclusion. A path that climbs out of a credential prefix, such as
+  -- "arkhamdb/../games", is still skipped: privacy wins over logging it.
+  resolvedCredentialPath = reverse $ foldl' resolveSegment [] credentialPath
+  resolveSegment segments ".." = drop 1 segments
+  resolveSegment segments segment = segment : segments
 
 -- | Warp settings for the given foundation value.
 warpSettings :: App -> Settings
