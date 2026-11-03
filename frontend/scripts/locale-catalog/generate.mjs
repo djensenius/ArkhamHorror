@@ -96,6 +96,10 @@ const MAX_CHUNKS_PER_LOCALE = 256
 const MAX_CATALOG_BYTES = 192 * 1024 * 1024
 
 const PACK_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
+// src/locales/<locale>/narratives/<variant>/<campaignScope>.json (see
+// `src/locales/narratives.ts`): merged at runtime, never composed.
+const NARRATIVE_VARIANT_FILE = /^src\/locales\/[^/]+\/narratives\/[^/]+\/[^/]+\.json$/
+const ABOUT_SECTION_FLAG = /(?:^|\.)about\.sections\.\d+\.spoiler$/
 const LOCALE_PATTERN = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/
 const CANONICAL_LOCALE_PATTERN = /^[a-z]{2,3}(?:-(?:[A-Z]{2}|[A-Z][a-z]{3}|(?![a-z]{2}(?:-|$))(?![a-z]{4}(?:-|$))[a-z0-9]{2,8}))*$/
 
@@ -214,6 +218,12 @@ function assertSourceIntegrity(frontendDir, sourceFiles, sources, ownership) {
     }
     const composesHomebrew = JSON.stringify(Object.keys(composed)).length > 0 && localeComposesHomebrew(composed, ownership.ownerKey)
     const contributors = files.filter((file) => {
+      // Narrative variants are a runtime overlay, not part of the composition:
+      // `src/locales/narratives.ts` globs them and `useNarrative` merges one
+      // over a campaign scope only for a game that opted into that variant.
+      // `loadLocaleMessages` never imports them, so they own no published key
+      // here by design rather than because something overrode them.
+      if (NARRATIVE_VARIANT_FILE.test(file.path)) return false
       if (file.path.startsWith(`src/locales/${locale}/`)) return true
       return composesHomebrew && file.path.startsWith('homebrew/')
     })
@@ -284,6 +294,11 @@ function flattenMessages(value, prefix, out) {
     }
     return
   }
+  // A campaign's About block (`<scope>.about.sections.<n>.spoiler`) carries a
+  // boolean presentation flag beside its prose. The Vue client reads it off the
+  // raw tree with `tm()` and never renders it as a message, so it is not text
+  // and is not published. Any other non-string leaf is still a build failure.
+  if (typeof value === 'boolean' && ABOUT_SECTION_FLAG.test(prefix)) return
   fail(`non-string leaf at ${prefix} (${value === null ? 'null' : typeof value})`)
 }
 
