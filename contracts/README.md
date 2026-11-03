@@ -1115,9 +1115,19 @@ lock contention returns sanitized HTTP 502 `remoteUnavailable` for retry.
 ArkhamDB HTTP calls have a ten-second deadline including decoding and fully
 evaluated results, and a 1 MiB decoded response limit (also for gzip/chunked bodies).
 
-Expired pending token rows cannot be finalized, but are only purged when a
-subsequent link-start request runs expired-state cleanup. Periodic cleanup of
-abandoned pending credentials is deferred to a follow-up.
+Expired pending token rows cannot be finalized. The server purges them, and
+expired link nonces, with a periodic background sweep: an immediate first pass,
+then one pass every 60 seconds. Each pass has a five-second deadline (which also
+bounds acquiring a pooled connection) and deletes at most 128 expired
+`arkhamdb_link_states` rows in `(expires_at, id)` order, using the
+`idx_arkhamdb_link_states_expiry` index. Locked rows are skipped, and the pass
+runs under transaction-local one-second lock and two-second statement deadlines.
+It never touches accounts, generations or deck mappings. Failures and timeouts
+log a fixed warning without exception contents and are retried on the next pass.
+The server stops the sweep before closing its database pool. A link-start
+request now only replaces the requesting user's own pending state, so it no
+longer deletes other users' expired rows inside its user lock. A large backlog
+drains at the per-pass batch rate.
 
 Haskell CI (`.github/workflows/haskell.yml`) installs PostgreSQL server tools,
 runs the launcher's own safety and lifecycle checks, and runs `stack test` under
@@ -1132,14 +1142,21 @@ once and competing claims, rollback of nonce consumption with account creation,
 refresh compare-and-update, the refresh lock held against a concurrent unlink,
 callbacks during and after unlink, an import racing unlink/relink to a new
 generation, and competing imports converging on one deck and user/remote
-mapping. Lock-contention cases use separate sessions and observe real
-PostgreSQL lock waits rather than timing sleeps. The unit `spec` suite still uses the in-memory
-transactional store and HTTP-connection stubs; callback response tests dispatch
-the production callback body through Yesod/WAI, and the logging probe captures
-the production request logger in `Detailed True` mode. Lock-deadline
-(`remoteUnavailable`) and refresh-failure paths, expiry cleanup and write-back
-SQL are not yet covered against PostgreSQL; that remains tracked in Backlog
-task-2.46.
+mapping. It also covers expiry cleanup: bounded batches that leave active
+authorizations and the account intact, an unrelated user's link start that does
+not purge the global backlog, deadline-bounded progress amid 200,000 active
+authorizations, and skipping a locked expired row until its transaction ends.
+The launcher's checks also round-trip the expiry-index migration and refuse to
+adopt or drop a same-named foreign index. Lock-contention cases use separate
+sessions and observe real PostgreSQL lock waits rather than timing sleeps. The
+unit `spec` suite still uses the in-memory transactional store and
+HTTP-connection stubs; callback response tests dispatch the production callback
+body through Yesod/WAI. The logging probe covers both the production request
+logger's `Detailed True` and Apache modes, including encoded-separator and
+case-variant ArkhamDB paths. The cleanup worker's retry, timeout and shutdown
+lifecycle is unit-tested. Lock-deadline (`remoteUnavailable`) and
+refresh-failure paths and write-back SQL are not yet covered against
+PostgreSQL; that remains tracked in Backlog task-2.46.
 
 List, import and sync use the linked account's OAuth API, so private decks do
 not require public sharing. Expired tokens (including a 60-second safety window)

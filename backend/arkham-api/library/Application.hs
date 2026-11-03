@@ -31,6 +31,7 @@ import Api.Arkham.Helpers (
   roomHeartbeat,
  )
 import Api.Arkham.ArkhamDBWriteBack (startCampaignWriteBack)
+import Api.Arkham.ArkhamDBCleanup (withArkhamDBCleanup)
 import Arkham.ArkhamDB.WriteBack (newArkhamDBExecutor, stopArkhamDBExecutor)
 import Arkham.Metrics qualified as Metrics
 import Config
@@ -328,8 +329,13 @@ makeLogWare settings requestLogger =
 -- captures both, so never pass these routes through the request logger.
 skipArkhamDBLogging :: Middleware -> Middleware
 skipArkhamDBLogging logWare app req sendResponse
-  | ["api", "v1", "arkham", "arkhamdb"] `isPrefixOf` pathInfo req = app req sendResponse
+  | ["api", "v1", "arkham", "arkhamdb"] `isPrefixOf` credentialPath = app req sendResponse
   | otherwise = logWare app req sendResponse
+ where
+  -- WAI has decoded each segment already. Treat encoded separators and case
+  -- variants conservatively for privacy, without changing route dispatch or
+  -- suppressing similarly named ordinary routes such as "arkhamdb-other".
+  credentialPath = concatMap (T.splitOn "/" . T.toCaseFold) (pathInfo req)
 
 -- | Warp settings for the given foundation value.
 warpSettings :: App -> Settings
@@ -381,14 +387,15 @@ appMain = do
     Just v | v /= "" && v /= "0" && v /= "false" -> void Metrics.enableMetrics
     _ -> pure ()
 
-  -- Generate the foundation from the settings
-  foundation <- makeFoundation settings
-
-  -- Generate a WAI Application from the foundation
-  app <- makeApplication foundation
-
-  -- Run the application with Warp
-  runSettings (warpSettings foundation) app
+  -- The server owns the periodic credential sweep. Join it before releasing
+  -- the foundation's pool, including when WAI construction or Warp fails.
+  Exception.bracket (makeFoundation settings) shutdownApp \foundation ->
+    withArkhamDBCleanup (appConnPool foundation)
+      (messageLoggerSource foundation (appLogger foundation)
+        $(qLocation >>= liftLoc) "arkhamdb-cleanup" LevelWarn
+        "ArkhamDB expired-authorization cleanup failed; retrying on the next scheduled pass") do
+      app <- makeApplication foundation
+      runSettings (warpSettings foundation) app
 
 --------------------------------------------------------------
 -- Functions for DevelMain.hs (a way to run the app from GHCi)
