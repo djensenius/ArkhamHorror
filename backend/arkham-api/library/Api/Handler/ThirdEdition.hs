@@ -25,6 +25,11 @@ module Api.Handler.ThirdEdition (
   getApiV1ThirdEditionExportR,
   postApiV1ThirdEditionBugR,
   postApiV1ThirdEditionImportR,
+
+  -- * Exposed for tests
+  withTableAccess,
+  getApiV1ThirdEditionExportWith,
+  postApiV1ThirdEditionBugWith,
 ) where
 
 import AH3e.Engine (GameOptions (..), answer, applyDebug, newGame, runEngine, withSeedFrom)
@@ -34,7 +39,7 @@ import AH3e.Types.Ids (PlayerId (..), ScenarioCode)
 import AH3e.Types.State (DebugAction, GameMode)
 import AH3e.View (catalogView, gameView)
 import Api.Arkham.Helpers (joinRoomIn, releaseRoomIfEmpty)
-import Api.BugUpload (uploadBugExport)
+import Api.Handler.Arkham.Game.Bug (BugUploadTransport, awsBugUpload, uploadBugExportUsing)
 import Api.Handler.Arkham.Games.Shared (publishOrWarn, streamRoom, websocketConnectionOptions)
 import Control.Monad.Random (getRandomR)
 import Data.Aeson qualified as Aeson
@@ -220,24 +225,61 @@ filed bug carries. Not the game /view/ the table endpoint serves, which is what
 a player may see rather than what the engine is holding.
 -}
 getApiV1ThirdEditionExportR :: UUID -> Handler Value
-getApiV1ThirdEditionExportR tid = Aeson.toJSON <$> exportTable tid
+getApiV1ThirdEditionExportR = getApiV1ThirdEditionExportWith isAdminUser
+
+-- | 'getApiV1ThirdEditionExportR' with the admin lookup supplied.
+getApiV1ThirdEditionExportWith :: (UserId -> Handler Bool) -> UUID -> Handler Value
+getApiV1ThirdEditionExportWith isAdmin tid = Aeson.toJSON <$> exportTable isAdmin tid
 
 -- | File a bug: the export goes to the bug bucket and its URL into the issue.
 postApiV1ThirdEditionBugR :: UUID -> Handler Value
-postApiV1ThirdEditionBugR tid = do
-  table <- exportTable tid
-  url <- uploadBugExport "ah3e-" (Aeson.encode table)
+postApiV1ThirdEditionBugR = postApiV1ThirdEditionBugWith isAdminUser awsBugUpload
+
+{- | 'postApiV1ThirdEditionBugR' with the admin lookup and S3 transport
+supplied. The upload is the Arkham bug endpoint's hardened one: a sanitized 502
+rather than a raw AWS error, and no PUT unless HeadObject confirmed the object
+absent.
+-}
+postApiV1ThirdEditionBugWith :: (UserId -> Handler Bool) -> BugUploadTransport -> UUID -> Handler Value
+postApiV1ThirdEditionBugWith isAdmin transport tid = do
+  table <- exportTable isAdmin tid
+  url <- uploadBugExportUsing transport ("third-edition table " <> UUID.toText tid) "ah3e-" (Aeson.encode table)
   pure (object ["url" .= url])
 
-exportTable :: UUID -> Handler TableExport
-exportTable tid = do
-  _ <- getRequestUserId
+{- | The full engine state, hidden information included, is for the table's
+own players, its host and admins. Anyone else gets the same 404 as a table
+that does not exist: table ids are listed publicly, so a different answer
+would disclose which ones are real.
+-}
+exportTable :: (UserId -> Handler Bool) -> UUID -> Handler TableExport
+exportTable isAdmin tid = do
+  userId <- getRequestUserId
   store <- getStore
   liftIO (store.getTable tid) >>= \case
-    Nothing -> failWith status404 "No such table"
-    -- the earlier states ride along, so a filed bug can be rewound rather than
-    -- only looked at: third edition has no replay runner
-    Just (t, _) -> TableExport t <$> liftIO (store.getHistory tid)
+    Nothing -> noSuchTable
+    Just (t, _) ->
+      withTableAccess userId t (isAdmin userId) noSuchTable
+        -- the earlier states ride along, so a filed bug can be rewound rather than
+        -- only looked at: third edition has no replay runner
+        (TableExport t <$> liftIO (store.getHistory tid))
+ where
+  noSuchTable = failWith status404 "No such table"
+
+{- | Run protected table work only for a seated player, the host (who may have
+left their seat) or an admin. As with
+'Api.Handler.Arkham.Games.Shared.withGameAccess', rejection and protected
+work share a result type, so a denial cannot fall through to the protected
+work; the admin lookup runs only for someone who is neither.
+-}
+withTableAccess :: Monad m => UserId -> Table -> m Bool -> m a -> m a -> m a
+withTableAccess userId t lookupAdmin reject protected
+  | t.host == userId || isSeated userId t = protected
+  | otherwise = do
+      admin <- lookupAdmin
+      if admin then protected else reject
+
+isAdminUser :: UserId -> Handler Bool
+isAdminUser userId = maybe False (\(Entity _ user) -> user.admin) <$> runDB (getEntity userId)
 
 {- | Load an exported table as a new one. The importer hosts it and holds every
 seat, so they can answer for each player on their own, as an imported Arkham

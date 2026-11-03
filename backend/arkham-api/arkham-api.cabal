@@ -39,7 +39,6 @@ library
       Api.Arkham.Types.Game
       Api.Arkham.Types.GameStep
       Api.Arkham.Types.MultiplayerVariant
-      Api.BugUpload
       Api.Handler.ApiKeys
       Api.Handler.Arkham.Achievements
       Api.Handler.Arkham.Admin.Archives
@@ -9849,6 +9848,7 @@ test-suite arkhamdb-postgres
       Postgres.PayloadSpec
       Postgres.Production
       Postgres.Remote
+      Postgres.ThirdEditionSpec
       Postgres.WriteBackSpec
       Paths_arkham_api
   hs-source-dirs:
@@ -9884,9 +9884,13 @@ test-suite arkhamdb-postgres
   build-depends:
       aeson
     , aeson-diff
+    , ah3e
+    , amazonka
+    , amazonka-core
     , arkham-api
     , base
     , bugsnag
+    , bytestring
     , containers
     , directory
     , fast-logger
