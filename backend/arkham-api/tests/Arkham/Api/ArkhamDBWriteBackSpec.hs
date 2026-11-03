@@ -982,19 +982,26 @@ spec = describe "ArkhamDB campaign write-back" do
       Right _ -> expectationFailure "Ambiguous upgrade must not persist"
 
   for_ [("single-step", 5), ("multi-step", 2)] \(kind, restoredStep) -> do
-    it ("skips all write-back queries for unconfigured " <> kind <> " undo") do
-      calls <- newIORef ([] :: [Text])
-      let participates = modifyIORef' calls (<> ["exists"]) >> pure True
-          cancel _ = modifyIORef' calls (<> ["cancel"])
-      cancelCampaignWriteBackIfNeeded False participates cancel restoredStep
-      readIORef calls `shouldReturn` []
+    for_ [False, True] \configured -> do
+      it ("cancels durable work for " <> kind <> " undo, configured=" <> show configured) do
+        h <- newHarness
+        modifyIORef' h.job \job -> job {arkhamDBPushEventKey = "game/" <> tshow (restoredStep + 1) <> "/iid/row"}
+        calls <- newIORef ([] :: [Text])
+        let participates = modifyIORef' calls (<> ["exists"]) >> pure True
+            cancel step = modifyIORef' calls (<> ["cancel"]) >> cancelHarnessUndo h step
+        cancelCampaignWriteBackIfNeeded configured participates cancel restoredStep
+        readIORef calls `shouldReturn` ["exists", "cancel"]
+        -- Restoring credentials/restarting the executor cannot export the undo.
+        h.run False
+        assertState h "cancelled"
+        readIORef h.calls `shouldReturn` []
 
-    it ("only checks indexed participation for ordinary " <> kind <> " undo") do
-      calls <- newIORef ([] :: [Text])
-      let participates = modifyIORef' calls (<> ["exists"]) >> pure False
-          cancel _ = modifyIORef' calls (<> ["cancel"])
-      cancelCampaignWriteBackIfNeeded True participates cancel restoredStep
-      readIORef calls `shouldReturn` ["exists"]
+      it ("only checks indexed participation for ordinary " <> kind <> " undo, configured=" <> show configured) do
+        calls <- newIORef ([] :: [Text])
+        let participates = modifyIORef' calls (<> ["exists"]) >> pure False
+            cancel _ = modifyIORef' calls (<> ["cancel"])
+        cancelCampaignWriteBackIfNeeded configured participates cancel restoredStep
+        readIORef calls `shouldReturn` ["exists"]
 
   it "retires only boundaries strictly above the restored history step" do
     let events = ["game/4/iid", "game/5/iid/row", "game/6/iid/row"]

@@ -168,13 +168,13 @@ boundaryWasUndone restoredStep event = case T.splitOn "/" event of
   _ : step : _ -> maybe False (> restoredStep) (readMaybe $ toString step :: Maybe Int)
   _ -> False
 
--- Shared by single- and multi-step undo. Unconfigured installations perform no
--- lookup; ordinary games need only an indexed existence check, never job reads.
+-- Shared by single- and multi-step undo. Durable work outlives OAuth settings:
+-- local cancellation must still run while remote dispatch is unconfigured.
+-- Ordinary games need only an indexed existence check, never job reads.
 cancelCampaignWriteBackIfNeeded :: Monad m => Bool -> m Bool -> (Int -> m ()) -> Int -> m ()
-cancelCampaignWriteBackIfNeeded configured participates cancel restoredStep =
-  when configured do
-    outstanding <- participates
-    when outstanding $ cancel restoredStep
+cancelCampaignWriteBackIfNeeded _configured participates cancel restoredStep = do
+  outstanding <- participates
+  when outstanding $ cancel restoredStep
 
 -- Read identifiers only, then serialize cancellation with request admission.
 -- The game lock prevents a new boundary from being enqueued during undo.
