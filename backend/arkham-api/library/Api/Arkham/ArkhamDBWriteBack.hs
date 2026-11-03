@@ -1,8 +1,13 @@
 module Api.Arkham.ArkhamDBWriteBack where
 
 import Api.Arkham.ArkhamDBStore
+import Api.Arkham.Deck (toDeckErrorsWith)
+import Api.Handler.Arkham.CustomCards (userCustomCards)
 import Arkham.ArkhamDB
-import Arkham.Card.CardCode (unCardCode)
+import Arkham.ArkhamDB.Service (ArkhamDBAction, ArkhamDBError (..))
+import Arkham.Card.CardCode (CardCode, unCardCode)
+import Arkham.Card.CustomCard (CustomCard)
+import Arkham.Decklist (ArkhamDBDecklist)
 import Arkham.Id (InvestigatorId (..), PlayerId (..))
 import Arkham.ArkhamDB.Campaign (campaignWriteBackSnapshot, campaignWriteBackSeatIdentity)
 import Arkham.ArkhamDB.WriteBack
@@ -21,6 +26,7 @@ import Import hiding (state)
 import Entity.Arkham.Step
 import Control.Concurrent (forkIO)
 import Control.Monad.Logger (logWarnN)
+import Control.Monad.Except (throwError)
 import UnliftIO.Exception (finally, try)
 
 writeBackStore :: ArkhamDBWriteBackStore Handler
@@ -354,8 +360,15 @@ startCampaignWriteBack foundation =
       (toPersistValue (addUTCTime (-60) sweepTime) : maybe [] (pure . toPersistValue) cursor) :: Handler [(Single UserId, Single ArkhamDeckId, Single ArkhamDBPushId)]
     for_ rows \(Single uid, Single deckId, _) -> do
       now <- liftIO getCurrentTime
-      void $ try @_ @SomeException $ runWriteBack (persistentStore $ const $ pure ()) writeBackStore
-        (hoistArkhamDBClient liftIO transport) settings now False uid deckId
+      void $ try @_ @SomeException do
+        cards <- userCustomCards uid
+        runWriteBack (persistentStore $ validateWriteBackDeck cards) writeBackStore
+          (hoistArkhamDBClient liftIO transport) settings now False uid deckId
     case viaNonEmpty last rows of
       Just (_, _, Single key) | length rows == 32 -> sweep settings transport $ Just key
       _ -> pure ()
+
+validateWriteBackDeck :: Monad m => Map CardCode CustomCard -> ArkhamDBDecklist -> ArkhamDBAction m ()
+validateWriteBackDeck cards deck =
+  unless (null $ toDeckErrorsWith (`Map.member` cards) deck) $
+    throwError $ ArkhamDBError "validationFailed" "Deck contains unsupported cards"

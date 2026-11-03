@@ -34,6 +34,8 @@ import Arkham.CampaignStep (CampaignStep (..))
 import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Card (Card (..), toCardCode)
 import Arkham.Card.CardCode (unCardCode)
+import Arkham.Card.CustomCard (CustomCard (..), missingCustomCardDef, registerCustomCards)
+import Arkham.Card.CardType (CardType (AssetType))
 import Arkham.Card.EncounterCard (EncounterCard (..))
 import Arkham.Card.Id (unsafeMakeCardId)
 import Arkham.Card.PlayerCard (PlayerCard (..))
@@ -53,7 +55,7 @@ import Control.Concurrent (forkIO, killThread)
 import Control.Concurrent.STM.TBQueue
 
 import Data.UUID qualified as UUID
-import Database.Persist (Entity (..), Update (..), PersistUpdate (Assign), fieldLens)
+import Database.Persist (Entity (..), Update (..), PersistUpdate (Assign), fieldLens, toPersistFields, toPersistValue)
 import Database.Persist.Sql (toSqlKey)
 import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
@@ -95,7 +97,7 @@ newHarness = newHarnessWithKey pushKey
 newHarnessWithKey :: ArkhamDBPushId -> IO Harness
 newHarnessWithKey pushKey = do
   (baseStore, linked) <- Linking.newStore
-  let store = baseStore
+  let store = baseStore {validateDeck = PersistentWriteBack.validateWriteBackDeck mempty}
   Linking.linkAccount store
   imported <- runExceptT $ importRemoteDeck store Linking.stubClient Linking.settings Linking.now Linking.userId "123" Linking.forbiddenPublic
   imported `shouldSatisfy` isRight
@@ -1574,6 +1576,71 @@ spec = describe "ArkhamDB campaign write-back" do
     assertNoPush h
     state <- readIORef h.linked
     fmap arkhamDeckList (Map.lookup Linking.deckId state.storedDecks) `shouldBe` Just (remoteDecklist Linking.settings Linking.remote)
+
+  for_ [False, True] \owned ->
+    it ("validates keep-remote custom cards against the owner library, " <> if owned then "accepting owned cards" else "rejecting globally registered foreign cards") do
+      h <- newHarness
+      let code = if owned then "*write-back-owned-validation" else "*write-back-foreign-validation"
+          cards = Map.singleton code $ CustomCard (missingCustomCardDef AssetType code) Nothing
+          incoming = Linking.remote {deck = Linking.remote.deck
+            {Decklist.slots = Map.fromList [("01006", 1), (code, 1)]}, dateUpdate = Just "edited"}
+          store = h.store {validateDeck = PersistentWriteBack.validateWriteBackDeck $ if owned then cards else mempty}
+      unless owned $ registerCustomCards cards
+      writeIORef h.remotes $ Map.singleton "123" incoming
+      h.run False
+      h.writes.resolvePush Linking.now Linking.userId Linking.deckId "keep" `shouldReturn` True
+      runWriteBack store h.writes h.client Linking.settings Linking.now False Linking.userId Linking.deckId
+      assertState h $ if owned then "cancelled" else "failed"
+      assertNoPush h
+      state <- readIORef h.linked
+      if owned then do
+        fmap arkhamDeckList (Map.lookup Linking.deckId state.storedDecks)
+          `shouldBe` Just (remoteDecklist Linking.settings incoming)
+        readIORef h.baseline `shouldReturn` 5
+      else do
+        arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "validationFailed"
+        fmap arkhamDeckList (Map.lookup Linking.deckId state.storedDecks)
+          `shouldBe` Just (remoteDecklist Linking.settings Linking.remote)
+        readIORef h.baseline `shouldReturn` 0
+
+  for_ [False, True] \uncertain ->
+    it ("preserves deck, link, queued work and " <> (if uncertain then "uncertain" else "created") <> " XP checkpoints when keep-remote validation fails") do
+      (h, rows) <- newQueuedHarness
+      writeIORef h.baseline 2
+      let failed = if uncertain then h.client {upgradeDeck = \token source xp metadata -> do
+            _ <- h.client.upgradeDeck token source xp metadata
+            pure $ Left $ ArkhamDBRemoteError "lost reply"}
+            else h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "unavailable"}
+      runWith h failed False
+      intent <- readIORef h.job
+      arkhamDBPushStage intent `shouldBe` if uncertain then "creating" else "saving"
+      let laterKey = ArkhamDBPushKey $ UUID.fromWords 0 0 0 999
+          later = intent {arkhamDBPushEventKey = "game/2/iid", arkhamDBPushStatus = "pending",
+            arkhamDBPushStage = "ready", arkhamDBPushCreatedAt = addUTCTime 60 Linking.now}
+      modifyIORef' rows $ Map.insert laterKey later
+      before <- readIORef h.linked
+      beforeCalls <- readIORef h.calls
+      beforeXp <- readIORef h.baseline
+      modifyIORef' h.remotes $ Map.adjust (\remote -> remote
+        {deck = remote.deck {Decklist.slots = Map.singleton "unimplemented-card" 1}}) "124"
+      h.writes.resolvePush Linking.now Linking.userId Linking.deckId "keep" `shouldReturn` True
+      h.run False
+      assertState h "failed"
+      retained <- readIORef h.job
+      arkhamDBPushError retained `shouldBe` Just "validationFailed"
+      let persisted value = map toPersistValue $ toPersistFields value
+      persisted retained {arkhamDBPushStatus = arkhamDBPushStatus intent, arkhamDBPushError = arkhamDBPushError intent,
+        arkhamDBPushMode = arkhamDBPushMode intent, arkhamDBPushUpdatedAt = arkhamDBPushUpdatedAt intent}
+        `shouldBe` persisted intent
+      after <- readIORef h.linked
+      fmap persisted after.storedDecks `shouldBe` fmap persisted before.storedDecks
+      fmap persisted after.storedLinks `shouldBe` fmap persisted before.storedLinks
+      readIORef h.baseline `shouldReturn` beforeXp
+      fmap persisted . Map.lookup laterKey <$> readIORef rows `shouldReturn` Just (persisted later)
+      fmap persisted . Map.lookup pushKey <$> readIORef rows `shouldReturn` Just (persisted retained)
+      filter (not . T.isPrefixOf "load/") <$> readIORef h.calls
+        `shouldReturn` filter (not . T.isPrefixOf "load/") beforeCalls
+      h.writes.resolvePush Linking.now Linking.userId Linking.deckId "overwrite" `shouldReturn` False
 
   it "keeps a materialized remote snapshot without applying its overlay twice" do
     h <- newHarness

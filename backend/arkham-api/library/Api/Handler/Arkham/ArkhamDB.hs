@@ -49,7 +49,7 @@ configuredClient = getsYesod appArkhamDBClient >>= maybe
 persistentStore :: ArkhamDBStore Handler
 persistentStore = Store.persistentStore \decklist -> case toDeckErrors decklist of
   [] -> pure ()
-  errors -> sendStatusJSON Status.status400 errors
+  errors -> lift $ sendStatusJSON Status.status400 errors
 
 postApiV1ArkhamArkhamDBLinkStartR :: Handler ArkhamDBLinkStartResponse
 postApiV1ArkhamArkhamDBLinkStartR = do

@@ -1289,8 +1289,12 @@ load→write interval. Resolution uses
 
 - `{"resolution":"keepRemote"}` re-syncs the saved local deck from the latest
   remote version and cancels outstanding local snapshots only after the read and
-  local adoption succeed. Failed reads preserve any creation checkpoint and
-  continue to refuse overwrite. Successful adoption also advances the
+  local adoption succeed. Before adoption, the remote play list must pass the
+  supported-card check against the queued owner's custom-card library (not
+  another user's globally registered cards). A rejection reports
+  `failed`/`validationFailed` without changing the saved deck, link, other pending
+  work or XP baseline. Failed reads or validation preserve any creation checkpoint
+  and continue to refuse overwrite. Successful adoption also advances the
   campaign's XP baseline to the discarded snapshot's total, even if no remote
   version was created: that snapshot's earned XP is never pushed later. It never
   rewrites a running campaign's deck or gameplay state. **This choice lasts only

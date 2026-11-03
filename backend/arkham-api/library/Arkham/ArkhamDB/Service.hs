@@ -48,7 +48,7 @@ data ArkhamDBStore m = ArkhamDBStore
   , saveSyncedDeck :: ArkhamDBAccountId -> ArkhamDeckId -> ArkhamDBDeckLink -> ArkhamDBRemoteDeck -> UTCTime
       -> (ArkhamDeck -> m (Either ArkhamDBError ArkhamDeck)) -> m (Either ArkhamDBError (Entity ArkhamDeck))
   , dropDeckLink :: ArkhamDBAccountId -> UserId -> ArkhamDeckId -> m Bool
-  , validateDeck :: ArkhamDBDecklist -> m ()
+  , validateDeck :: ArkhamDBDecklist -> ArkhamDBAction m ()
   }
 
 data ArkhamDBError = ArkhamDBError
@@ -216,7 +216,7 @@ importRemoteDeck store client settings now userId remoteId publicSync = do
       remote <- withAccessToken store client settings now userId (\token -> client.loadDeck token remoteId)
       let decklist = remoteDecklist settings remote
           deck = ArkhamDeck userId decklist.url (fromMaybe decklist.investigator_name decklist.decklist_name) decklist.investigator_name decklist Nothing Nothing Nothing
-      lift $ store.validateDeck $ arkhamDeckPlayList deck
+      store.validateDeck $ arkhamDeckPlayList deck
       lift (store.saveImportedDeck generation deck remote now) >>= maybe (throwError linkChanged) pure
 
 -- | Missing or inaccessible mappings use the existing public URL sync path.
@@ -244,7 +244,7 @@ syncRemoteDeck store client settings now userId deckId publicSync = do
                   , arkhamDeckName = fromMaybe (arkhamDeckName current) remote.deck.decklist_name
                   , arkhamDeckInvestigatorName = remote.deck.investigator_name
                   }
-            lift $ store.validateDeck $ arkhamDeckPlayList updated
+            store.validateDeck $ arkhamDeckPlayList updated
             pure updated
 
 -- A newer adoption may save into the same remote id. Do not downgrade its

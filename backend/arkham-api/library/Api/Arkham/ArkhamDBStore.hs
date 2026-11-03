@@ -10,12 +10,12 @@ import Import hiding (state)
 -- | Each runDB action is a transaction, including nonce consumption and the
 -- paired local deck/link writes. Claiming prevents concurrent callbacks from
 -- exchanging a state twice; finalizing refuses a claim removed by unlink.
-persistentStore :: (ArkhamDBDecklist -> Handler ()) -> ArkhamDBStore Handler
+persistentStore :: (ArkhamDBDecklist -> ArkhamDBAction Handler ()) -> ArkhamDBStore Handler
 persistentStore validate = persistentStoreWith validate runDB
 
 -- The locked callback reuses this connection, never borrowing another pool
 -- connection (which could deadlock behind waiting refresh transactions).
-persistentStoreWith :: (ArkhamDBDecklist -> Handler ()) -> (forall a. ReaderT SqlBackend Handler a -> Handler a) -> ArkhamDBStore Handler
+persistentStoreWith :: (ArkhamDBDecklist -> ArkhamDBAction Handler ()) -> (forall a. ReaderT SqlBackend Handler a -> Handler a) -> ArkhamDBStore Handler
 persistentStoreWith validate database = ArkhamDBStore
   { withRefreshLock = \userId action -> database do
       -- Bound cross-process contention before waiting on the user row. This

@@ -116,7 +116,7 @@ handlerStore store = ArkhamDBStore
   , saveSyncedDeck = \generation key expected remoteDeck time adopt -> withRunInIO \run ->
       store.saveSyncedDeck generation key expected remoteDeck time (run . adopt)
   , dropDeckLink = \generation uid key -> liftIO $ store.dropDeckLink generation uid key
-  , validateDeck = liftIO . store.validateDeck
+  , validateDeck = ExceptT . liftIO . runExceptT . store.validateDeck
   }
 
 -- The real logger configuration, including Detailed True and its destination.
@@ -345,7 +345,7 @@ spec = describe "ArkhamDB account linking and private decks" do
           validated <- newIORef Nothing
           inWriter <- newIORef False
           let checking = store
-                { validateDeck = \deck -> do
+                { validateDeck = \deck -> liftIO do
                     readIORef inWriter `shouldReturn` True
                     writeIORef validated $ Just deck
                 , saveSyncedDeck = \generation key uid value time adopt ->
@@ -382,7 +382,7 @@ spec = describe "ArkhamDB account linking and private decks" do
     runExceptT (importRemoteDeck store stubClient settings now userId "123" forbiddenPublic) >>= (`shouldSatisfy` isRight)
     validated <- newIORef Nothing
     let overlay = DeckOverlay Nothing mempty (Map.singleton "01008" 1) mempty
-        rejecting = store {validateDeck = \deck -> do
+        rejecting = store {validateDeck = \deck -> liftIO do
           writeIORef validated $ Just deck
           throwIO $ userError "current overlay validation failed"}
         client = stubClient {loadDeck = \_ _ -> do
@@ -907,7 +907,7 @@ spec = describe "ArkhamDB account linking and private decks" do
           then importRemoteDeck store client settings now userId "123" forbiddenPublic
           else syncRemoteDeck store client settings now userId deckId forbiddenPublic
         validating store = store {validateDeck = \decklist ->
-          unless (null $ toDeckErrors decklist) $ throwIO $ userError "unimplemented effective deck"}
+          unless (null $ toDeckErrors decklist) $ liftIO $ throwIO $ userError "unimplemented effective deck"}
 
     it ("rejects a newly activated unsupported overlay swap through " <> entryPoint) do
       (store, ref) <- newStore

@@ -586,8 +586,10 @@ runWriteBackWithClock clock store writes client settings now retry userId deckId
           link <- ensureGeneration job
           if arkhamDBPushMode job == "keep" then do
             remote <- load job (arkhamDBDeckLinkRemoteDeckId link) >>= latestVersion job [arkhamDBDeckLinkRemoteDeckId link]
+            let adopted = remote {deck = remoteDecklist settings remote}
+            store.validateDeck adopted.deck
             current <- currentClaim entity
-            saved <- lift $ writes.keepRemoteDeck current remote {deck = remoteDecklist settings remote}
+            saved <- lift $ writes.keepRemoteDeck current adopted
             unless saved $ throwError linkChanged
           else processDeck entity link
         processDeck entity link = do

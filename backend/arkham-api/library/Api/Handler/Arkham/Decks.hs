@@ -22,6 +22,7 @@ import Import hiding (delete, on, update, (=.), (==.))
 import Import qualified as P
 
 import Api.Arkham.ArkhamDBWriteBack (queueCampaignWriteBack, dispatchCampaignWriteBack)
+import Api.Arkham.Deck (DeckError (..), toDeckErrors)
 import Api.Arkham.Helpers
 import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
 import Api.Handler.Arkham.Games.Shared (publishToRoom, requireGameAccess)
@@ -33,7 +34,7 @@ import Entity.Arkham.ArkhamDBAccount
 import Arkham.CampaignLog (CampaignLog, campaignLogRecordedSets)
 import Arkham.CampaignLogKey (CampaignLogKey (DrivenInsaneInvestigators, KilledInvestigators), recordedCardCodes)
 import Arkham.Card.CardCode
-import Arkham.Card.CustomCard (arkhamBuildCustomCardCode, isArkhamBuildCardId, lookupCustomCardDef)
+import Arkham.Card.CustomCard (arkhamBuildCustomCardCode, isArkhamBuildCardId)
 import Arkham.Classes.Entity (attr)
 import Arkham.Classes.HasQueue
 import Arkham.Custom.Overlay (DeckOverlay)
@@ -46,7 +47,6 @@ import Arkham.Id
 import Arkham.Investigator.Cards (allInvestigatorCards)
 import Arkham.Investigator.Types (investigatorDeckUrl, investigatorDrivenInsane, investigatorKilled, investigatorPlayerId)
 import Arkham.Message
-import Arkham.PlayerCard
 import Arkham.Queue
 import Control.Exception (evaluate)
 import Control.Lens (view)
@@ -171,20 +171,6 @@ data UpgradeDeckPost = UpgradeDeckPost
 
 instance FromJSON UpgradeDeckPost where
   parseJSON = genericParseJSON $ aesonOptions $ Just "udp"
-
-newtype DeckError = UnimplementedCard CardCode
-  deriving stock (Show, Eq, Generic)
-
-instance ToJSON DeckError where
-  toJSON = genericToJSON $ defaultOptions {tagSingleConstructors = True}
-
-toDeckErrors :: ArkhamDBDecklist -> [DeckError]
-toDeckErrors decklist = flip mapMaybe cardCodes \cardCode ->
-  if isJust (Map.lookup cardCode allPlayerCards) || isJust (lookupCustomCardDef cardCode)
-    then Nothing
-    else Just $ UnimplementedCard cardCode
- where
-  cardCodes = Map.keys $ slots decklist
 
 postApiV1ArkhamDecksR :: Handler (Entity ArkhamDeck)
 postApiV1ArkhamDecksR = do
