@@ -204,10 +204,17 @@ withCampaignWriteBackBoundary gameRef drain = do
 campaignDeckSnapshot :: Decklist.ArkhamDBDecklist -> [PlayerCard] -> [Card] -> [CardCode] -> Maybe [PlayerCard] -> Maybe TabooList -> Decklist.ArkhamDBDecklist
 campaignDeckSnapshot original cards story invalid _side taboo = original
   { Decklist.slots = counts $ fst (partitionReloadedDeck story invalid cards) <> onlyPlayerCards story
-  , Decklist.taboo_id = find (\n -> fromTabooId (Just n) == taboo) [1..10] <|> original.taboo_id
+  , Decklist.taboo_id = campaignTabooId original.taboo_id taboo
   }
  where
   counts = Map.fromListWith (+) . map (\card -> (toCardCode card, 1))
+
+-- No campaign taboo overrides a known saved list. An unrecognized original
+-- id also loads as Nothing, so preserve that information rather than erase it.
+campaignTabooId :: Maybe Int -> Maybe TabooList -> Maybe Int
+campaignTabooId original = \case
+  Just taboo -> find (\n -> fromTabooId (Just n) == Just taboo) [1..10]
+  Nothing -> if isNothing (fromTabooId original) then original else Nothing
 
 -- Use the provenance of the latest materialization, not a forever-valid seat
 -- capture. Whole-deck replacements reset it; incremental campaign edits retain
