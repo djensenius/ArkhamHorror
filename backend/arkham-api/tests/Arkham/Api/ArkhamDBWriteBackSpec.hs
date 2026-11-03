@@ -1018,7 +1018,7 @@ spec = describe "ArkhamDB campaign write-back" do
     for_ [False, True] \configured -> do
       it ("cancels durable work for " <> kind <> " undo, configured=" <> show configured) do
         h <- newHarness
-        modifyIORef' h.job \job -> job {arkhamDBPushEventKey = "game/" <> tshow (restoredStep + 1) <> "/iid/row"}
+        modifyIORef' h.job \job -> job {arkhamDBPushEventKey = "game/" <> T.pack (show $ restoredStep + 1) <> "/iid/row"}
         calls <- newIORef ([] :: [Text])
         let participates = modifyIORef' calls (<> ["exists"]) >> pure True
             cancel step = modifyIORef' calls (<> ["cancel"]) >> cancelHarnessUndo h step
