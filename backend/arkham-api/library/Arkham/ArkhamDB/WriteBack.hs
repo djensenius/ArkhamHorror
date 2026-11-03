@@ -409,13 +409,18 @@ encodePushDeck :: ArkhamDBDecklist -> Text
 encodePushDeck = decodeUtf8 . toStrict . encode
 
 data PushRemoteFields = PushRemoteFields
-  { descriptionMd :: Text
-  , tags :: Text
-  , ignoreDeckLimitSlots :: Map Text Int
-  , problem :: Maybe Text
+  { preservedDescriptionMd :: Text
+  , preservedTags :: Text
+  , preservedIgnoreDeckLimitSlots :: Map Text Int
+  , preservedProblem :: Maybe Text
   }
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass ToJSON
+  deriving stock (Eq, Show)
+
+instance ToJSON PushRemoteFields where
+  toJSON fields = object
+    [ "descriptionMd" .= fields.preservedDescriptionMd, "tags" .= fields.preservedTags
+    , "ignoreDeckLimitSlots" .= fields.preservedIgnoreDeckLimitSlots, "problem" .= fields.preservedProblem
+    ]
 
 instance FromJSON PushRemoteFields where
   parseJSON = withObject "Push remote fields" \o -> PushRemoteFields
@@ -435,8 +440,8 @@ emptyPushRemoteFields = PushRemoteFields "" "" mempty Nothing
 withPushRemoteFields :: Maybe PushRemoteFields -> ArkhamDBRemoteDeck -> ArkhamDBRemoteDeck
 withPushRemoteFields Nothing remote = remote
 withPushRemoteFields (Just fields) remote = remote
-  { descriptionMd = fields.descriptionMd, tags = fields.tags
-  , ignoreDeckLimitSlots = fields.ignoreDeckLimitSlots, problem = fields.problem
+  { descriptionMd = fields.preservedDescriptionMd, tags = fields.preservedTags
+  , ignoreDeckLimitSlots = fields.preservedIgnoreDeckLimitSlots, problem = fields.preservedProblem
   }
 
 -- Internal, versioned storage envelope; never sent to ArkhamDB or clients.
