@@ -3,6 +3,7 @@
 
 module Arkham.ArkhamDB.WriteBack where
 
+import Api.Arkham.Deck (toDeckErrors)
 import Arkham.ArkhamDB
 import Arkham.ArkhamDB.Service
 import Arkham.Decklist (ArkhamDBDecklist)
@@ -213,6 +214,8 @@ savedDeckUpgradeTargets getDeck findByUrl uid association oldUrl = case associat
 savedDeckUpgradeUpdates :: UTCTime -> ArkhamDeck -> ArkhamDBDecklist -> Either ArkhamDBError [Update ArkhamDeck]
 savedDeckUpgradeUpdates now deck incoming = do
   adopted <- adoptDecklist deck incoming
+  unless (null $ toDeckErrors $ arkhamDeckPlayList adopted) $
+    Left $ ArkhamDBError "validationFailed" "Deck contains unsupported cards"
   pure $
     [ ArkhamDeckList =. arkhamDeckList adopted
     , ArkhamDeckOverlay =. arkhamDeckOverlay adopted

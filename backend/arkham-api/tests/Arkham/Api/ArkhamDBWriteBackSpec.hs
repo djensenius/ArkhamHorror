@@ -3,6 +3,7 @@
 module Arkham.Api.ArkhamDBWriteBackSpec where
 
 import Api.Arkham.Helpers (GameApp (..), runGameApp)
+import Api.Arkham.Deck (toDeckErrors)
 import Api.Arkham.ArkhamDBWriteBack qualified as PersistentWriteBack
 import Arkham.Campaign (lookupCampaign)
 import Arkham.Campaign.Types (campaignStep, campaignDecks, campaignStoryCards, campaignStore)
@@ -980,6 +981,38 @@ spec = describe "ArkhamDB campaign write-back" do
     case savedDeckUpgradeUpdates Linking.now saved {arkhamDeckOverlay = Just overlay} incoming of
       Left err -> arkhamDBErrorCode err `shouldBe` "validationFailed"
       Right _ -> expectationFailure "Ambiguous upgrade must not persist"
+
+  for_ ["unimplemented-card", "01007"] \target ->
+    it ("validates an overlay swap activated by the actual upgrade builder: " <> toString target) do
+      h <- newHarness
+      saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
+      let overlay = DeckOverlay Nothing (Map.singleton "01016" target) mempty mempty
+          locked = attachDeckOverlay UUID.nil overlay saved
+          incoming = Linking.remote.deck {Decklist.slots = Map.singleton "01016" 1}
+      toDeckErrors (arkhamDeckPlayList locked) `shouldBe` []
+      toDeckErrors incoming `shouldBe` []
+      case savedDeckUpgradeUpdates Linking.now locked incoming of
+        Left err -> do
+          target `shouldBe` "unimplemented-card"
+          arkhamDBErrorCode err `shouldBe` "validationFailed"
+        Right updates -> do
+          target `shouldBe` "01007"
+          let adopted = applyDeckUpdates updates locked
+          Decklist.slots (arkhamDeckPlayList adopted) `shouldBe` Map.singleton target 1
+          arkhamDeckOverlay adopted `shouldBe` Just overlay
+
+  it "validates after consuming a proven overlay rather than reapplying its unsupported swap" do
+    h <- newHarness
+    saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
+    let overlay = DeckOverlay Nothing (Map.singleton "01016" "unimplemented-card") mempty mempty
+        locked = attachDeckOverlay UUID.nil overlay saved
+    incoming <- either (fail . show) pure $ markedDeck pushKey $ withExportedAttachment (Just UUID.nil) (Just overlay)
+      Linking.remote.deck {Decklist.slots = Map.singleton "01016" 1}
+    updates <- either (fail . show) pure $ savedDeckUpgradeUpdates Linking.now locked incoming
+    let adopted = applyDeckUpdates updates locked
+    arkhamDeckOverlay adopted `shouldBe` Nothing
+    arkhamDeckOverlayAttachmentId adopted `shouldBe` Nothing
+    Decklist.slots (arkhamDeckPlayList adopted) `shouldBe` Map.singleton "01016" 1
 
   for_ [("single-step", 5), ("multi-step", 2)] \(kind, restoredStep) -> do
     for_ [False, True] \configured -> do
