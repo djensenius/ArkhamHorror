@@ -143,7 +143,7 @@ writeBackStore = ArkhamDBWriteBackStore
         rawExecute
           ("UPDATE arkhamdb_pushes SET status = 'cancelled', error = NULL WHERE deck_id = ? " <>
            "AND status IN ('pending', 'failed', 'conflict', 'running') AND NOT (" <> orphanedLegacyPushSQL <> ")")
-          [toPersistValue deckId]
+          ([toPersistValue deckId] <> orphanedLegacyPushParameters)
         association <- getBy $ UniqueArkhamDBCampaignDeck $ arkhamDBPushCampaignKey job
         for_ association \(Entity associationId campaign) ->
           P.update associationId [ArkhamDBCampaignDeckLastPushedXp P.=. acknowledgedCampaignXp job (arkhamDBCampaignDeckLastPushedXp campaign)]
@@ -233,7 +233,7 @@ oldestPush deckId = do
       rows <- rawSql
         ("SELECT ?? FROM arkhamdb_pushes WHERE deck_id = ? AND status NOT IN ('succeeded', 'cancelled') " <>
          "AND NOT (" <> orphanedLegacyPushSQL <> ") ORDER BY created_at, id LIMIT 1")
-        [toPersistValue deckId]
+        ([toPersistValue deckId] <> orphanedLegacyPushParameters)
       pure $ viaNonEmpty head rows
   case oldest of
     Nothing -> pure Nothing
@@ -254,10 +254,14 @@ oldestPush deckId = do
 -- current_data read. Guard the cast even for malformed historical keys.
 orphanedLegacyPushSQL :: Text
 orphanedLegacyPushSQL =
-  "status = 'failed' AND error IS NOT DISTINCT FROM 'validationFailed' " <>
+  "status = ? AND error IS NOT DISTINCT FROM ? " <>
   "AND campaign_key ~ '^[0-9a-fA-F-]+/[^/]+$' AND NOT EXISTS (SELECT 1 FROM arkham_games WHERE id = " <>
   "CASE WHEN split_part(campaign_key, '/', 1) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' " <>
   "THEN split_part(campaign_key, '/', 1)::uuid ELSE NULL END)"
+
+orphanedLegacyPushParameters :: [PersistValue]
+orphanedLegacyPushParameters =
+  [toPersistValue ambiguousCampaignStatus, toPersistValue ambiguousCampaignReason]
 
 -- Survives account deletion: neither a new generation nor another queued
 -- campaign may acknowledge/cancel an unresolved old generation's remote call.

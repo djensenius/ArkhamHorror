@@ -268,13 +268,20 @@ hasCreationIntent job = arkhamDBPushStage job == "creating" || isJust (arkhamDBP
 accountingFencedPush :: ArkhamDBPush -> Bool
 accountingFencedPush job = arkhamDBPushError job `elem` [Just "boundaryUndone", Just "accountChanged"]
 
+ambiguousCampaignStatus, ambiguousCampaignReason :: Text
+ambiguousCampaignStatus = "failed"
+ambiguousCampaignReason = "validationFailed"
+
 -- Identity cannot be repaired by retry/keep/overwrite/save-as-new. Keep the
 -- complete intent for explicit repair. This is identity fencing reusing the
 -- existing validationFailed reason, not a new public reason. Preserve stronger
 -- accounting fences.
 ambiguousCampaignPush :: ArkhamDBPush -> ArkhamDBPush
 ambiguousCampaignPush job | accountingFencedPush job = job
-ambiguousCampaignPush job = job {arkhamDBPushStatus = "failed", arkhamDBPushError = Just "validationFailed"}
+ambiguousCampaignPush job = job
+  { arkhamDBPushStatus = ambiguousCampaignStatus
+  , arkhamDBPushError = Just ambiguousCampaignReason
+  }
 
 admitCampaignPush
   :: Map ArkhamGameId CampaignGameIdentity -> [Text] -> ArkhamDBPush -> Either ArkhamDBPush ()

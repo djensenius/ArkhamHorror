@@ -1019,6 +1019,14 @@ spec = describe "ArkhamDB campaign write-back" do
       games <- loadCampaignIdentitiesWith (const $ fail "Undo re-read a game it already holds") known keys
       games `shouldBe` known
 
+  it "binds orphan filtering from the same identity-fence values the transition writes" do
+    h <- newHarness
+    fenced <- ambiguousCampaignPush <$> readIORef h.job
+    PersistentWriteBack.orphanedLegacyPushParameters `shouldBe`
+      [toPersistValue $ arkhamDBPushStatus fenced, toPersistValue $ arkhamDBPushError fenced]
+    T.count "?" PersistentWriteBack.orphanedLegacyPushSQL `shouldBe`
+      length PersistentWriteBack.orphanedLegacyPushParameters
+
   it "keeps deleted-game associations inert for enqueue, claim, retry, resolve, saved upgrades and undo" do
     h <- newHarness
     original <- readIORef h.job
