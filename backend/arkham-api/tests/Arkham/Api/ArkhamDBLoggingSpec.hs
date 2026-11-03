@@ -50,7 +50,9 @@ protectedPaths =
   , "//api/v1/arkham/arkhamdb/link/complete"
   , "/api%2F%2Fv1/arkham/arkhamdb"
   , "/api/v1/arkham/arkhamdb%2F%2Fcallback"
+  , "/api/v1%2F%2Farkham/arkhamdb/callback"
   , "/api/v1/arkham/arkhamdb/link%2F%2Fcomplete"
+  , "/api/v1/arkham%2F%2Farkhamdb/link/complete"
   ]
 
 -- Empty segments must not suppress logging of ordinary routes.
