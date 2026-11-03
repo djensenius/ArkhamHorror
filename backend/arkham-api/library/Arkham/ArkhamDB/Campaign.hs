@@ -25,7 +25,7 @@ import Data.Aeson.Types (parseMaybe)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.UUID qualified as UUID
-import Entity.Arkham.Game (ArkhamGameId)
+import Entity.Arkham.Game
 import Arkham.Card.CardCode (unCardCode)
 import Relude
 

@@ -337,12 +337,7 @@ cancelCampaignWriteBack configured gameId restoredStep = cancelCampaignWriteBack
         current <- P.get key
         for_ current \job -> unless (arkhamDBPushStatus job `elem` ["succeeded", "cancelled"]) do
           safe <- writeBackCampaignsSafe (arkhamDBPushDeckId job) [arkhamDBPushCampaignKey job]
-          let retired = undonePush job
-          -- Preserve ambiguous legacy rows even if no creation was recorded.
-          -- Repair must not make an undone snapshot runnable again.
-          replace key $ if not safe && arkhamDBPushStatus retired == "cancelled"
-            then retired {arkhamDBPushStatus = "conflict", arkhamDBPushError = Just "boundaryUndone"}
-            else retired)
+          replace key $ if safe then undonePush job else undoneAmbiguousCampaignPush job)
       toStep
 
 -- One bounded executor, no game lock, no per-boundary/per-retry forks. Only

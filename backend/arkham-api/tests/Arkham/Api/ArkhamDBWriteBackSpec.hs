@@ -35,7 +35,6 @@ import Arkham.ArkhamDB.WriteBack
 import Arkham.CampaignStep (CampaignStep (..))
 import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Card (Card (..), toCardCode)
-import Arkham.Card.CardCode (unCardCode)
 import Arkham.Card.CustomCard (CustomCard (..), missingCustomCardDef, registerCustomCards)
 import Arkham.Card.CardType (CardType (AssetType))
 import Arkham.Card.EncounterCard (EncounterCard (..))
@@ -900,6 +899,19 @@ spec = describe "ArkhamDB campaign write-back" do
       campaignKeyIsSafeWith (const $ pure $ Just "") (const $ fail "No legacy probe for ordinary campaigns")
         legacyIdentityKey `shouldReturn` True
 
+  it "keeps the game-first undo index, numeric boundary step and replacement ancestry for both parts" do
+    h <- newHarness
+    for_ [Dream.TheDreamQuest, Dream.TheWebOfDreams] \part -> do
+      key <- maybe (fail "Missing part") pure $
+        campaignWriteBackKey identityGameId (dreamIdentityGame Dream.FullMode $ Just part) "01001"
+      T.takeWhile (/= '/') key `shouldBe` UUID.toText UUID.nil
+      let event = boundaryEventKey identityGameId 5 "01001" $ ArkhamStepKey UUID.nil
+      modifyIORef' h.job \job -> job {arkhamDBPushCampaignKey = key, arkhamDBPushEventKey = event}
+      job <- readIORef h.job
+      let replacement = saveAsNewPush Linking.now job
+      replacement `supersedesPush` job `shouldBe` True
+      map (\step -> boundaryWasUndone step $ arkhamDBPushEventKey replacement) [4,5,6] `shouldBe` [True,False,False]
+
   for_ [Null, object ["campaignMode" .= Dream.FullMode],
         object ["campaignMode" .= Dream.FullMode, "currentCampaignMode" .= ("unknown" :: Text)]] \metadata ->
     it ("fails closed for unknown/malformed full-campaign identity: " <> show metadata) do
@@ -936,6 +948,14 @@ spec = describe "ArkhamDB campaign write-back" do
       let persisted value = map toPersistValue $ toPersistFields value
       persisted retained {arkhamDBPushStatus = arkhamDBPushStatus original, arkhamDBPushError = arkhamDBPushError original}
         `shouldBe` persisted original
+      let undone = undoneAmbiguousCampaignPush retained
+      arkhamDBPushStatus undone `shouldBe` "conflict"
+      arkhamDBPushError undone `shouldBe` Just "boundaryUndone"
+      persisted undone {arkhamDBPushStatus = arkhamDBPushStatus original, arkhamDBPushError = arkhamDBPushError original}
+        `shouldBe` persisted original
+      persisted (ambiguousCampaignPush undone) `shouldBe` persisted undone
+      pushCanRun Linking.now True undone `shouldBe` False
+      for_ ["keep", "overwrite", "new"] \mode -> canResolvePush mode undone `shouldBe` False
       readIORef h.baseline `shouldReturn` 4
       after <- readIORef h.linked
       fmap persisted after.storedDecks `shouldBe` fmap persisted before.storedDecks
@@ -1175,6 +1195,22 @@ spec = describe "ArkhamDB campaign write-back" do
             cancel _ = modifyIORef' calls (<> ["cancel"])
         cancelCampaignWriteBackIfNeeded configured participates cancel restoredStep
         readIORef calls `shouldReturn` ["exists"]
+
+  it "preserves an unconfigured undo's creation fence after remote configuration is restored" do
+    h <- newHarness
+    runWith h h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "save failed"} False
+    original <- readIORef h.job
+    calls <- readIORef h.calls
+    cancelCampaignWriteBackIfNeeded False (pure True) (cancelHarnessUndo h) 0
+    h.run True
+    retained <- readIORef h.job
+    arkhamDBPushStatus retained `shouldBe` "conflict"
+    arkhamDBPushError retained `shouldBe` Just "boundaryUndone"
+    arkhamDBPushStage retained `shouldBe` arkhamDBPushStage original
+    arkhamDBPushTargetId retained `shouldBe` arkhamDBPushTargetId original
+    arkhamDBPushPayload retained `shouldBe` arkhamDBPushPayload original
+    readIORef h.baseline `shouldReturn` 0
+    readIORef h.calls `shouldReturn` calls
 
   it "retires only boundaries strictly above the restored history step" do
     let events = ["game/4/iid", "game/5/iid/row", "game/6/iid/row"]

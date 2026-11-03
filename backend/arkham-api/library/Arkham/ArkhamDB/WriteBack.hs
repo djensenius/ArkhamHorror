@@ -289,6 +289,15 @@ undonePush job = job
   , arkhamDBPushError = if hasCreationIntent job then Just "boundaryUndone" else Nothing
   }
 
+-- Even targetless ambiguous rows must survive pruning for explicit repair;
+-- repairing identity must never resurrect an already-undone boundary.
+undoneAmbiguousCampaignPush :: ArkhamDBPush -> ArkhamDBPush
+undoneAmbiguousCampaignPush job =
+  let retired = undonePush job
+  in if arkhamDBPushStatus retired == "cancelled"
+    then retired {arkhamDBPushStatus = "conflict", arkhamDBPushError = Just "boundaryUndone"}
+    else retired
+
 -- Called under the same user lock as imports and completion. Return a durable
 -- conflict instead of attempting a UNIQUE(user_id, remote_deck_id) violation.
 targetLinkConflict :: ArkhamDBPush -> ArkhamDBRemoteDeck -> Maybe ArkhamDBDeckLink -> Maybe ArkhamDBPush
