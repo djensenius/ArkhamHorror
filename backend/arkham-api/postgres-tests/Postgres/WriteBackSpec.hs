@@ -278,7 +278,7 @@ spec harness app remote seed relinkImport = describe "Production write-back queu
           pendingAt second f.deckId `shouldReturn` 0
           pendingAt second copied `shouldReturn` 0
 
-  it "saves an overlay without waiting on an in-flight enqueue's deck key-share fence" $
+  it "saves an overlay without waiting on an in-flight campaign write-back enqueue's deck key-share fence" $
     withConnection harness \first -> withConnection harness \second -> withConnection harness \observer -> do
       f <- fixture seed app first "overlay-behind-enqueue"
       let overlay = DeckOverlay Nothing mempty (Map.singleton "01008" 1) mempty
@@ -297,7 +297,7 @@ spec harness app remote seed relinkImport = describe "Production write-back queu
       pendingAt observer f.deckId `shouldReturn` 1
       transaction observer (arkhamDeckOverlay <$> P.getJust f.deckId) `shouldReturn` Just overlay
 
-  it "enqueues a game answer's push while an overlay save holds its deck lock" $
+  it "enqueues a campaign write-back push while an overlay save holds its deck lock" $
     withConnection harness \first -> withConnection harness \second -> withConnection harness \observer -> do
       f <- fixture seed app first "enqueue-behind-overlay"
       let overlay = DeckOverlay Nothing mempty (Map.singleton "01008" 1) mempty
