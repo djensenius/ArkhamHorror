@@ -10,8 +10,10 @@ import test from 'node:test'
 
 import {
   CARD_NAMES_PACK,
+  CARD_ONLY_LOCALES,
   cardNameEntries,
   cardNameKey,
+  cardSourcePath,
   resolveCardNames,
 } from '../scripts/locale-catalog/card-names.mjs'
 import { addCardNames, assertNoCardNameClaims, buildCatalog } from '../scripts/locale-catalog/generate.mjs'
@@ -96,16 +98,28 @@ function cardNamesChunk(locale) {
 }
 
 test('every catalog locale publishes the names resolved from its own card file', () => {
-  const sourceLocales = ['de', 'en', 'es', 'fr', 'it', 'ko', 'zh', 'zh-cn']
-  assert.deepEqual(manifest.locales.map((entry) => entry.locale.toLowerCase()).sort(), sourceLocales)
-  for (const source of sourceLocales) {
+  // The UI locales plus the card-only ones; pt reads the web's cards_po.json.
+  const cardFiles = {
+    de: 'de', en: 'en', es: 'es', fr: 'fr', it: 'it', ko: 'ko', pl: 'pl', pt: 'po', ru: 'ru', uk: 'uk', zh: 'zh', 'zh-cn': 'zh-cn',
+  }
+  assert.deepEqual(manifest.locales.map((entry) => entry.locale.toLowerCase()).sort(), Object.keys(cardFiles).sort())
+  for (const [source, file] of Object.entries(cardFiles)) {
+    assert.equal(cardSourcePath(source), `public/cards_${file}.json`)
     const locale = manifest.locales.find((entry) => entry.locale.toLowerCase() === source).locale
-    const cards = JSON.parse(readFileSync(resolve('public', `cards_${source}.json`), 'utf8'))
+    const cards = JSON.parse(readFileSync(resolve('public', `cards_${file}.json`), 'utf8'))
     const expected = Object.fromEntries(cardNameEntries(cards, source))
     const chunk = cardNamesChunk(locale)
     assert.equal(chunk.locale, locale)
-    assert.deepEqual(chunk.entries, expected, `${locale} cardNames differ from cards_${source}.json`)
+    assert.deepEqual(chunk.entries, expected, `${locale} cardNames differ from cards_${file}.json`)
   }
+})
+
+test('pt is read from cards_po.json, and ja (an empty card file) is not published', () => {
+  assert.deepEqual({ ...CARD_ONLY_LOCALES }, { pl: 'pl', pt: 'po', ru: 'ru', uk: 'uk' })
+  assert.ok(!manifest.locales.some((entry) => entry.locale === 'ja'))
+  const pt = cardNamesChunk('pt').entries
+  const po = Object.fromEntries(cardNameEntries(JSON.parse(readFileSync(resolve('public', 'cards_po.json'), 'utf8')), 'po'))
+  assert.deepEqual(pt, po)
 })
 
 test('de and en differ where the card data does', () => {
@@ -149,9 +163,11 @@ function nightOfTheZealotNameCodes() {
 test('the contract fixture card names are what the real generator resolves', () => {
   const fixtures = resolve('..', 'contracts', 'fixtures')
   const expectedKeys = nightOfTheZealotNameCodes()
-  for (const locale of ['en', 'de']) {
+  // pl is the fixture's card-only locale: card names and nothing else.
+  for (const locale of ['en', 'de', 'pl']) {
     const source = JSON.parse(readFileSync(resolve(fixtures, `locale-catalog-source-${locale}.json`), 'utf8'))
     const pinned = Object.entries(source).filter(([key]) => key.startsWith(`${CARD_NAMES_PACK}.`))
+    if (locale === 'pl') assert.equal(pinned.length, Object.keys(source).length, 'pl fixture holds only card names')
     assert.deepEqual(pinned.map(([key]) => key).sort(), expectedKeys, `${locale} fixture card-name coverage`)
     const real = cardNamesChunk(locale).entries
     for (const [key, name] of pinned) {
