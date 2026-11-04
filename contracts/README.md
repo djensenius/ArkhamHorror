@@ -79,6 +79,14 @@ constructor.
   and the response identifies the current active player for rendering. Its
   WebSocket upgrade is server-enforced read-only: spectator frames are ignored
   without being decoded or applied to the game.
+- The spectate route checks that the game exists before anything else. An
+  unknown game ID answers `404` before any WebSocket upgrade, so it never
+  opens or joins a game room, subscribes to its updates, or changes a watcher
+  count. A game deleted between that check and the read also answers `404`.
+- Spectators receive the full `PublicGame`, the same snapshot the web client
+  renders for spectators, including every investigator's hand. Redacting
+  hidden information (other players' hands, deck order) is tracked separately
+  in TASK-2.22 and is not part of this contract revision.
 - The `PublicGame` schema governs all 58 top-level snapshot fields shared by
   REST game reads and WebSocket `GameUpdate`. Deep entity, question, target,
   source, and campaign unions remain intentionally broad until their dedicated

@@ -24,10 +24,19 @@ This spec:
 * narrowly checks the real route still authenticates, delegates to the gate,
   contains no direct stream upgrade, and uses the authorized participant id
   for multiplayer projection.
+
+TASK-2.67 adds the same shape for spectating: 'withSpectatableGameIn' runs
+the game-existence lookup before the spectator upgrade, so an unknown id is
+rejected without opening a room, and the spectate route delegates to it
+without requiring sign-in.
 -}
 module Arkham.Api.GameStreamAuthSpec (spec) where
 
-import Api.Handler.Arkham.Games (gameParticipantGate, withGameParticipantIn)
+import Api.Handler.Arkham.Games (
+  gameParticipantGate,
+  withGameParticipantIn,
+  withSpectatableGameIn,
+ )
 import Arkham.Prelude
 import Data.List qualified as List
 import Data.Text qualified as T
@@ -187,7 +196,66 @@ spec = do
         (const $ record effectsNew "continuation")
       readIORef effectsNew.steps `shouldReturn` ["membershipLookup", "rejected"]
 
-  describe "static structure of Api.Handler.Arkham.Games" do
+  describe "withSpectatableGameIn (spectate existence check, TASK-2.67)" do
+    it "looks up the game before rejecting an unknown id without attempting the upgrade" do
+      effects <- newStreamEffects
+      withSpectatableGameIn
+        (record effects "existenceLookup" >> pure False)
+        (attemptUpgrade effects)
+        (record effects "rejected")
+        (record effects "continuation")
+      readIORef effects.steps `shouldReturn` ["existenceLookup", "rejected"]
+
+    it "looks up the game before upgrading, then runs the REST continuation, for an existing game" do
+      effects <- newStreamEffects
+      withSpectatableGameIn
+        (record effects "existenceLookup" >> pure True)
+        (attemptUpgrade effects)
+        (record effects "rejected")
+        (record effects "continuation")
+      readIORef effects.steps
+        `shouldReturn`
+          [ "existenceLookup"
+          , "roomJoined"
+          , "memberCountIncremented"
+          , "snapshotDelivered"
+          , "answerSubmitted"
+          , "continuation"
+          ]
+
+    it "runs the continuation after the lookup for an existing game when the upgrade is a no-op (plain GET)" do
+      effects <- newStreamEffects
+      withSpectatableGameIn
+        (record effects "existenceLookup" >> pure True)
+        (pure ())
+        (record effects "rejected")
+        (record effects "continuation")
+      readIORef effects.steps `shouldReturn` ["existenceLookup", "continuation"]
+
+  describe "static structure of the spectate handler (TASK-2.67)" do
+    it "delegates the spectate handler to the existence gate without requiring sign-in" do
+      src <- readGamesHsSource
+      let ls = T.lines src
+          -- The handler's own top-level block: its signature line up to the
+          -- next unindented line that does not belong to it.
+          start = case List.findIndex ("getApiV1ArkhamGameSpectateR ::" `T.isPrefixOf`) ls of
+            Just i -> i
+            Nothing -> error "no getApiV1ArkhamGameSpectateR signature in Games.hs"
+          isOwnLine l =
+            T.null l
+              || " " `T.isPrefixOf` l
+              || "getApiV1ArkhamGameSpectateR" `T.isPrefixOf` l
+          spectateBody = T.unlines $ takeWhile isOwnLine $ drop start ls
+          normalized = T.unwords $ T.words spectateBody
+
+      T.isInfixOf "withSpectatableGame gameId $" normalized `shouldBe` True
+      T.isInfixOf "get404 gameId" normalized `shouldBe` True
+      T.count "servePongAware" spectateBody `shouldBe` 0
+      T.count "spectatorStream" spectateBody `shouldBe` 0
+      T.count "getRequestUserId" spectateBody `shouldBe` 0
+      T.count "requireAuth" spectateBody `shouldBe` 0
+
+
     it "authenticates, delegates participant authorization, and preserves the authorized multiplayer identity" do
       src <- readGamesHsSource
       let ls = T.lines src
