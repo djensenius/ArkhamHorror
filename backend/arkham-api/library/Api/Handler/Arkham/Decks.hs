@@ -36,7 +36,6 @@ import Arkham.Campaign.Types (campaignLog)
 import Arkham.ArkhamDB.Campaign (withCampaignWriteBackBoundary, campaignWriteBackKey)
 import Arkham.ArkhamDB.WriteBack (selectSavedDeckUpgradeTargets, savedDeckUpgradeUpdates)
 import Arkham.ArkhamDB.Service (ArkhamDBError (..), adoptDecklist, arkhamDBErrorStatus)
-import Entity.Arkham.ArkhamDBAccount
 import Arkham.CampaignLog (CampaignLog, campaignLogRecordedSets)
 import Arkham.CampaignLogKey (CampaignLogKey (DrivenInsaneInvestigators, KilledInvestigators), recordedCardCodes)
 import Arkham.Card.CardCode
@@ -76,7 +75,6 @@ import Data.UUID.V4 qualified as UUID
 import Data.Traversable (for)
 import Database.Esqueleto.Experimental hiding (isNothing, (<&>))
 import Database.Persist qualified as Persist
-import Database.Persist.Sql (rawSql)
 import Entity.Arkham.Step
 import Json hiding (Success)
 import Network.HTTP.Conduit (
