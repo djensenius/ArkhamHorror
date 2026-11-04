@@ -10,9 +10,10 @@ import Arkham.ArkhamDB
 import Api.Arkham.ArkhamDBCleanup (cleanupBatchSize, purgeExpiredLinks)
 import Api.Arkham.ArkhamDBStore (persistentStoreWith)
 import Api.Arkham.ArkhamDBWriteBack (writeBackStore)
+import Api.Arkham.Maintenance (Maintenance (..))
 import Api.Handler.Arkham.ArkhamDB (runArkhamDB)
 import Api.Handler.Arkham.Decks
-  ( deleteApiV1ArkhamDeckOverlayR, putApiV1ArkhamDeckOverlayR, saveDeckOverlay, savePublicSyncedDeck
+  ( saveDeckOverlay, savePublicSyncedDeck
   , validatePlayableDecklist )
 import Arkham.ArkhamDB.WriteBack
 import Arkham.ArkhamDB.Service
@@ -20,7 +21,7 @@ import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Control.Concurrent.MVar qualified as MVar
 import Control.Exception (throwIO)
-import Data.Aeson (Value, decode, encode, object, toJSON, (.=))
+import Data.Aeson (Value (Bool), decode, encode, object, toJSON, (.=))
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time.Clock (UTCTime, addUTCTime)
@@ -33,10 +34,9 @@ import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
 import Entity.Arkham.Game
 import Entity.User (UserId)
-import Foundation (App, Handler, unsafeHandler, userIdToToken)
+import Foundation (App (appMaintenance), Handler, unsafeHandler)
 import GHC.Clock (getMonotonicTime)
-import Network.HTTP.Types (Status, status400, status409, status502)
-import Network.Wai (defaultRequest, requestHeaders, requestMethod, setRequestBodyChunks)
+import Network.HTTP.Types (Status, status200, status400, status401, status404, status405, status409, status502, status503)
 import Postgres.Harness
 import Postgres.HarnessSpec qualified as Harness
 import Postgres.DispatchSpec qualified as DispatchSQL
@@ -608,21 +608,65 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
             maybe (fail "Expected a persisted overlay attachment id") (pure . (,) persisted) $
               arkhamDeckOverlayAttachmentId persisted
       deckId <- transaction connection $ P.insert deck
-      firstSaved <- either (fail . show) pure =<< overlayRoute app uid deckId (Just body)
+      -- The response omits the private attachment id; it must equal the row.
+      void $ expectSaved connection deckId =<< overlayRoute app uid deckId (Just body)
       (firstPersisted, firstId) <- persistedAttachment deckId
-      arkhamDeckOverlayAttachmentId (P.entityVal firstSaved) `shouldBe` Just firstId
       -- A second PUT of the same bytes is a NEW attachment, not a no-op.
-      secondSaved <- either (fail . show) pure =<< overlayRoute app uid deckId (Just body)
+      void $ expectSaved connection deckId =<< overlayRoute app uid deckId (Just body)
       (secondPersisted, secondId) <- persistedAttachment deckId
       secondId `shouldNotBe` firstId
-      arkhamDeckOverlayAttachmentId (P.entityVal secondSaved) `shouldBe` Just secondId
       toJSON secondPersisted `shouldBe` toJSON firstPersisted
-      removed <- either (fail . show) pure =<< overlayRoute app uid deckId Nothing
-      persisted <- transaction connection (P.getJust deckId)
+      persisted <- expectSaved connection deckId =<< overlayRoute app uid deckId Nothing
       arkhamDeckOverlay persisted `shouldBe` Nothing
       arkhamDeckOverlayAttachmentId persisted `shouldBe` Nothing
-      arkhamDeckOverlayAttachmentId (P.entityVal removed) `shouldBe` Nothing
       toJSON persisted `shouldBe` toJSON deck
+
+  it "dispatches overlay PUT and DELETE through WAI routing, JWT authentication, ownership and maintenance" $
+    withConnection harness \connection -> do
+      owner <- seedUser connection "overlay-route-owner"
+      stranger <- seedUser connection "overlay-route-stranger"
+      let overlay = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
+          replacement = DeckOverlay Nothing mempty (Map.singleton "01008" 1) mempty
+          body = encode replacement
+          seeded = UUID.fromWords 0 0 0 7
+          deck = ArkhamDeck owner Nothing "Roland Banks" "Overlay routes" remote.deck (Just overlay) (Just seeded) Nothing
+          json = [("Content-Type", "application/json")]
+      deckId <- transaction connection $ P.insert deck
+      let route method path headers = routeRequest app method (deckPath deckId path) headers
+          snapshot = transaction connection (P.getJust deckId) <&> \d -> (toJSON d, arkhamDeckOverlayAttachmentId d)
+      original <- snapshot
+      snd original `shouldBe` Just seeded
+      ownerToken <- authorizationFor app owner
+      strangerToken <- authorizationFor app stranger
+      for_ [("PUT", body), ("DELETE", "")] \(method, payload) -> do
+        let refused expected path headers = do
+              (status, _) <- route method path (headers <> json) payload
+              (method, path, status) `shouldBe` (method, path, expected)
+              snapshot `shouldReturn` original
+        refused status401 "/overlay" []
+        refused status401 "/overlay" [("Authorization", "Token not-a-jwt")]
+        refused status404 "/overlays" [ownerToken]
+        (status, response) <- route method "/overlay" (strangerToken : json) payload
+        (status, decode @Value response) `shouldBe`
+          (status400, Just $ object ["errorMsg" .= ("Deck does not belong to this user" :: Text)])
+        snapshot `shouldReturn` original
+        missing <- routeRequest app method (deckPath (ArkhamDeckKey $ UUID.fromWords 0 0 0 99) "/overlay") (ownerToken : json) payload
+        fst missing `shouldBe` status404
+        snapshot `shouldReturn` original
+      (patched, _) <- route "PATCH" "/overlay" (ownerToken : json) body
+      patched `shouldBe` status405
+      snapshot `shouldReturn` original
+      -- A foundation copy with its own maintenance flag; the shared app is untouched.
+      since <- currentTimeMicros
+      maintenance <- newTVarIO $ Just $ Maintenance since Nothing
+      for_ [("PUT", body), ("DELETE", "")] \(method, payload) -> do
+        (status, response) <- routeRequest app {appMaintenance = maintenance} method (deckPath deckId "/overlay") (ownerToken : json) payload
+        (status, decode @(Map.Map Text Value) response >>= Map.lookup "maintenance") `shouldBe` (status503, Just (Bool True))
+        snapshot `shouldReturn` original
+      -- The same owner request is accepted once routed normally.
+      saved <- expectSaved connection deckId =<< route "PUT" "/overlay" (ownerToken : json) body
+      arkhamDeckOverlay saved `shouldBe` Just replacement
+      arkhamDeckOverlayAttachmentId saved `shouldSatisfy` maybe False (/= seeded)
 
   for_ [False, True] \public ->
     it ("keeps an actual overlay PUT's attachment id through a later provenance-free "
@@ -639,9 +683,9 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
         void $ seedAccount app connection now uid label encrypted
         Entity deckId _ <- either (fail . show) pure =<< runStoreActionsWith validatePlayableDecklist app connection
           (\store -> runExceptT $ importRemoteDeck store initialClient settings now uid "123" forbiddenPublic)
-        attached <- either (fail . show) pure =<< overlayRoute app uid deckId (Just $ toStrict $ encode overlay)
+        attached <- expectSaved connection deckId =<< overlayRoute app uid deckId (Just $ toStrict $ encode overlay)
         attachment <- maybe (fail "Expected the PUT to assign an attachment id") pure $
-          arkhamDeckOverlayAttachmentId (P.entityVal attached)
+          arkhamDeckOverlayAttachmentId attached
         result <- if public
           then unsafeHandler app $ runSqlConn (savePublicSyncedDeck uid deckId incoming.deck) connection
           else runStoreActionsWith validatePlayableDecklist app connection \store ->
@@ -1072,20 +1116,18 @@ transport = ArkhamDBClient
 forbiddenPublic :: MonadIO m => ArkhamDeckId -> m (Entity ArkhamDeck)
 forbiddenPublic _ = liftIO $ fail "Unexpected public fallback"
 
--- The actual JWT-authenticated overlay PUT (with a JSON body) or DELETE handler,
--- not saveDeckOverlay alone. Every call builds a fresh request whose body
--- yields exactly the given bytes once, as WAI does for a real client request.
-overlayRoute :: App -> UserId -> ArkhamDeckId -> Maybe ByteString -> IO (Either Status (Entity ArkhamDeck))
+-- The JWT-authenticated overlay PUT (with a JSON body) or DELETE request,
+-- dispatched by the production WAI application rather than calling a handler.
+overlayRoute :: App -> UserId -> ArkhamDeckId -> Maybe ByteString -> IO (Status, LByteString)
 overlayRoute app uid deckId body = do
-  token <- unsafeHandler app $ userIdToToken uid
-  chunks <- newIORef $ maybeToList body
-  let nextChunk = atomicModifyIORef' chunks \case
-        chunk : rest -> (rest, chunk)
-        [] -> ([], "")
-      request = setRequestBodyChunks nextChunk defaultRequest
-        { requestMethod = maybe "DELETE" (const "PUT") body
-        , requestHeaders = ("Authorization", "Token " <> encodeUtf8 token)
-            : [("Content-Type", "application/json") | isJust body]
-        }
-  runHandlerResponse app $ withRequest request $
-    maybe deleteApiV1ArkhamDeckOverlayR (const putApiV1ArkhamDeckOverlayR) body deckId
+  authorization <- authorizationFor app uid
+  routeRequest app (maybe "DELETE" (const "PUT") body) (deckPath deckId "/overlay")
+    (authorization : [("Content-Type", "application/json") | isJust body]) (maybe "" toLazy body)
+
+-- A 200 response whose JSON is exactly the committed row (ToJSON omits the
+-- private attachment id, so callers read that from the returned row).
+expectSaved :: SqlBackend -> ArkhamDeckId -> (Status, LByteString) -> IO ArkhamDeck
+expectSaved connection deckId (status, body) = do
+  persisted <- transaction connection (P.getJust deckId)
+  (status, decode @Value body) `shouldBe` (status200, Just $ toJSON $ Entity deckId persisted)
+  pure persisted
