@@ -104,6 +104,9 @@ spec harness app settings unexpected source seed = describe "Actual Games.Shared
         let foundation = app {appArkhamDBWriteBackExecutor = executor}
         seen <- MVar.newEmptyMVar
         swept <- MVar.newEmptyMVar
+        -- Holds the executor thread inside its startup sweep until the
+        -- precommit checks are done, so it cannot take (and hide) a wake.
+        gate <- MVar.newEmptyMVar
         barrier <- newBarrier
         let verifyCommitted = do
               committed <- transaction observer $ P.getJust f.gameId
@@ -132,15 +135,19 @@ spec harness app settings unexpected source seed = describe "Actual Games.Shared
               liftIO $ pauseAt barrier
               pure result) writer
             -- Every sweep reports its outcome: the executor thread itself
-            -- does not propagate a sweep's synchronous exception.
-            sweep = (Exception.try (push foundation settings client f False 0) :: IO (Either SomeException ()))
-              >>= MVar.putMVar swept . first (show @Text)
+            -- does not propagate a sweep's synchronous exception. A sweep
+            -- returns to the executor loop only once the gate is open.
+            sweep = do
+              (Exception.try (push foundation settings client f False 0) :: IO (Either SomeException ()))
+                >>= MVar.putMVar swept . first (show @Text)
+              MVar.readMVar gate
             swept' label = within label (MVar.takeMVar swept) >>= either (expectationFailure . toString) pure
         -- The production executor thread, as the server starts it.
         startArkhamDBExecutor executor $ runArkhamDBExecutor executor sweep
         flip Exception.finally (void $ timeout 2000000 $ stopArkhamDBExecutor executor) do
           -- Startup fills the wake slot, so a first sweep runs at once with
-          -- nothing queued; drain it before the answer.
+          -- nothing queued; drain it before the answer. The executor thread
+          -- now waits on the gate, so it takes no wake until it opens.
           swept' "startup sweep"
           MVar.tryReadMVar seen `shouldReturn` Nothing
           withAsync (unsafeHandler foundation $
@@ -151,11 +158,15 @@ spec harness app settings unexpected source seed = describe "Actual Games.Shared
               arkhamGameStep committed `shouldBe` 2
               xp (arkhamGameCurrentData committed) `shouldBe` 5
               transaction observer (P.count [ArkhamDBPushDeckId P.==. f.deckId]) `shouldReturn` 0
-              -- The running executor would take a wake at once, so also
-              -- require that no sweep and no remote call has happened.
+              -- The gated executor cannot have consumed a wake, so an empty
+              -- wake slot proves nothing woke it before commit; no further
+              -- sweep and no remote call has happened either.
               MVar.tryReadMVar swept `shouldReturn` Nothing
               MVar.tryReadMVar seen `shouldReturn` Nothing
               MVar.tryReadMVar executor.executorWake `shouldReturn` Nothing
+              -- Reopen the executor loop while the answer is still held
+              -- before commit; only the postcommit wake can start a sweep.
+              MVar.putMVar gate ()
               releaseBarrier barrier
               -- Completion is independently signalled only after real
               -- dispatch, transport and persistence.

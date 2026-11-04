@@ -1169,9 +1169,12 @@ overlayRoute app uid deckId body = do
 -- arrive. Returns the fetch url and the committed row.
 publicSyncRoute :: App -> SqlBackend -> UserId -> ArkhamDeckId -> ArkhamDBDecklist -> IO (Text, ArkhamDeck)
 publicSyncRoute app connection uid deckId served = do
-  -- http-client would send a plain-http fetch through an ambient proxy.
-  proxies <- traverse (\name -> (name,) <$> Environment.lookupEnv name) ["http_proxy", "HTTP_PROXY"]
-  filter (isJust . snd) proxies `shouldBe` []
+  -- http-client would send the fetch through an ambient proxy. Only the
+  -- names of populated variables are compared and reported: a proxy url can
+  -- carry credentials, so its value must never reach a failure message.
+  populated <- flip filterM proxyVariables \name ->
+    maybe False (not . null) <$> Environment.lookupEnv (toString name)
+  populated `shouldBe` []
   fetches <- newIORef []
   let fixture request respond = do
         atomicModifyIORef' fetches \seen -> (seen <> [(requestMethod request, rawPathInfo request)], ())
@@ -1184,6 +1187,10 @@ publicSyncRoute app connection uid deckId served = do
     readIORef fetches `shouldReturn` [("GET", "/decklist.json")]
     arkhamDeckUrl saved `shouldBe` Just deckUrl
     pure (deckUrl, saved)
+
+-- Proxy variables http-client or its environment may honour, in both cases.
+proxyVariables :: [Text]
+proxyVariables = [c | base <- ["http_proxy", "https_proxy", "all_proxy"], c <- [base, T.toUpper base]]
 
 -- A 200 response whose JSON is exactly the committed row (ToJSON omits the
 -- private attachment id, so callers read that from the returned row).

@@ -38,7 +38,8 @@ PostgreSQL server binaries must be on PATH or in ARKHAM_TEST_PG_BIN/--pg-bin.
 Use one server installation, not the client-only Homebrew libpq bin/.
 No Docker daemon, pre-existing database, PostgreSQL TCP listener, or live URL
 is used. The public deck sync test binds its own loopback (127.0.0.1) HTTP
-fixture on a random port; an ambient http_proxy/HTTP_PROXY fails that test.
+fixture on a random port; a populated http(s)_proxy/all_proxy variable (either
+case) fails that test, which reports only the variable names.
 
 Manifest edits require regeneration with native Hpack 0.39.6:
   cd backend
