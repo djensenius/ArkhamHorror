@@ -451,13 +451,22 @@ skipArkhamDBLogging logWare app req sendResponse
   --   segment, never above the root), so neither form bypasses the exclusion.
   -- A path that climbs out of a credential prefix, such as
   -- "arkhamdb/../games", is still skipped: privacy wins over logging it.
-  credentialViews = concatMap withResolved [splitThenCut, cutThenSplit]
+  -- Two more views resolve dot segments per RFC 3986 section 5.2.4 while empty
+  -- segments are still present, so ".." pops an empty segment as a resolving
+  -- proxy would ("arkham//../arkhamdb" is "arkham/arkhamdb"), and only then
+  -- drop the empty segments.
+  credentialViews =
+    concatMap (withResolved . dropEmptyAndDot) segmentViews
+      <> map (filter (not . T.null) . resolveDots) segmentViews
+  segmentViews = [splitThenCut, cutThenSplit]
   decodedSegments = map T.toCaseFold (pathInfo req)
-  splitThenCut = dropEmptyAndDot $ map cutParams $ concatMap (T.splitOn "/") decodedSegments
-  cutThenSplit = dropEmptyAndDot $ concatMap (T.splitOn "/" . cutParams) decodedSegments
+  splitThenCut = map cutParams $ concatMap (T.splitOn "/") decodedSegments
+  cutThenSplit = concatMap (T.splitOn "/" . cutParams) decodedSegments
   cutParams = T.takeWhile (/= ';')
   dropEmptyAndDot = filter (`notElem` ["", "."])
-  withResolved path = [path, reverse $ foldl' resolveSegment [] path]
+  withResolved path = [path, resolveDots path]
+  resolveDots = reverse . foldl' resolveSegment []
+  resolveSegment segments "." = segments
   resolveSegment segments ".." = drop 1 segments
   resolveSegment segments segment = segment : segments
 

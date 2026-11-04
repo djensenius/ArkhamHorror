@@ -92,6 +92,16 @@ dotSegmentPaths =
   , "/api/v1/arkham/x/%2e%2e/arkhamdb/link/complete"
   , "/api/v1/arkham/%2e/arkhamdb/callback"
   , "/api/v1/arkham;%2F..%2F/arkhamdb/callback"
+  -- ".." pops an empty segment before empty segments are dropped (RFC 3986).
+  , "/api/v1/arkham//../arkhamdb/callback"
+  , "/api//../v1/arkham/arkhamdb/callback"
+  , "/api/v1/arkham///../../arkhamdb/link/complete"
+  , "/api/v1/arkham/x//../../arkhamdb/callback"
+  , "/api/v1/arkham//../arkhamdb/callback/."
+  , "/api/v1/arkham//%2e%2e/arkhamdb/callback"
+  , "/api/v1/arkham%2F%2F..%2Farkhamdb/callback"
+  , "/api/v1/arkham/;x/../arkhamdb/callback"
+  , "/api/v1/arkham//;x/../../arkhamdb/link/complete"
   , -- arkham.build login callback
     "/api/auth/./arkham-build/callback"
   , "/./api/auth/arkham-build/callback"
@@ -103,6 +113,11 @@ dotSegmentPaths =
   , "/api/auth/x/%2E%2E/arkham-build/callback"
   , "/api/auth/%2e/arkham-build/callback"
   , "/api/auth;%2F..%2F/arkham-build/callback"
+  , "/api/auth//../arkham-build/callback"
+  , "/api//../auth/arkham-build/callback"
+  , "/api/auth///../../arkham-build/callback/."
+  , "/api/auth//%2E%2E/arkham-build/callback"
+  , "/api/auth/;x/../arkham-build/callback"
   , -- arkham.build authorize and verify
     "/api/v1/./arkham-build/authorize"
   , "/api/v1/arkham-build/./verify"
@@ -114,6 +129,12 @@ dotSegmentPaths =
   , "/api/v1/x/%2e%2e/arkham-build/verify"
   , "/api/v1/%2E/arkham-build/authorize"
   , "/api/v1;%2F..%2F/arkham-build/authorize"
+  , "/api/v1//../arkham-build/authorize"
+  , "/api//../v1/arkham-build/verify"
+  , "/api/v1//../../v1/arkham-build/verify"
+  , "/api/v1///../../arkham-build/verify/."
+  , "/api/v1//%2e%2e/arkham-build/authorize"
+  , "/api/v1/;x/../arkham-build/authorize"
   ]
 
 -- Empty segments must not suppress logging of ordinary routes.
@@ -140,6 +161,13 @@ ordinaryPaths =
   , "/api/auth/./arkham-build-other/callback"
   , "/api/v1/arkham-builder;x/../verify"
   , "/api/v1/arkham;%2F../decks"
+  -- Resolving ".." against an empty segment leaves no credential prefix.
+  , "/api/v1/arkham//../decks"
+  , "/api/v1//../arkhamdb/callback"
+  , "/api/v1/arkham/x//../../games"
+  , "/api/v1/arkham/;x/../decks"
+  , "/api/auth//../arkham-build-other/callback"
+  , "/api/v1//../arkham-builder/verify"
   ]
 
 -- WaiTest.setPath re-encodes the decoded segments into rawPathInfo, which the
