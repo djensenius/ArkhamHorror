@@ -866,8 +866,8 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
       transaction cleaner (P.get key) >>= (`shouldSatisfy` isNothing)
 
 -- Fixture SQL only; all lifecycle mutations above invoke persistentStoreWith.
--- User's production entity currently includes an admin field not in Sqitch;
--- do not hide that unrelated schema drift by inventing a test-only column.
+-- Columns omitted here, including admin (from Sqitch's add_admin_to_users),
+-- take their schema defaults; do not invent test-only columns.
 seedUser :: SqlBackend -> Text -> IO UserId
 seedUser connection label = transaction connection do
   rows <- rawSql
