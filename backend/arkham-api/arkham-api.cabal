@@ -9846,6 +9846,7 @@ test-suite arkhamdb-postgres
       Postgres.DeleteSpec
       Postgres.DispatchSpec
       Postgres.EndToEndSpec
+      Postgres.EventDeleteSpec
       Postgres.Harness
       Postgres.HarnessSpec
       Postgres.PayloadSpec
@@ -9948,6 +9949,7 @@ test-suite spec
       Arkham.Api.ArkhamDBWriteBackSpec
       Arkham.Api.CampaignCatalogSpec
       Arkham.Api.Events.EventCreationSpec
+      Arkham.Api.Events.EventDeletionSpec
       Arkham.Api.Events.EventListSpec
       Arkham.Api.Events.EventStreamAuthSpec
       Arkham.Api.GameBugUploadSpec
