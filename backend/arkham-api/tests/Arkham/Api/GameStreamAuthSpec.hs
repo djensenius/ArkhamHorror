@@ -255,7 +255,34 @@ spec = do
       T.count "getRequestUserId" spectateBody `shouldBe` 0
       T.count "requireAuth" spectateBody `shouldBe` 0
 
+    it "wires the existence lookup, then the spectator upgrade, then notFound into the gate" do
+      src <- readGamesHsSource
+      let ls = T.lines src
+          -- The top-level block of withSpectatableGame, sliced as above. A
+          -- single servePongAware, after withSpectatableGameIn, means nothing
+          -- upgrades before the gate runs its lookup.
+          start = case List.findIndex ("withSpectatableGame ::" `T.isPrefixOf`) ls of
+            Just i -> i
+            Nothing -> error "no withSpectatableGame signature in Games.hs"
+          isOwnLine l =
+            T.null l
+              || " " `T.isPrefixOf` l
+              || "withSpectatableGame " `T.isPrefixOf` l
+          wiringBody = T.unwords $ T.words $ T.unlines $ takeWhile isOwnLine $ drop start ls
+          positionOf needle
+            | needle `T.isInfixOf` wiringBody = T.length $ fst $ T.breakOn needle wiringBody
+            | otherwise = error $ "withSpectatableGame does not mention: " <> T.unpack needle
+          order =
+            map
+              positionOf
+              ["withSpectatableGameIn", "spectatableGameExists", "servePongAware", "notFound"]
 
+      order `shouldBe` List.sort order
+      T.count "servePongAware" wiringBody `shouldBe` 1
+      T.count "spectatorStream" wiringBody `shouldBe` 1
+      T.isInfixOf "servePongAware $ spectatorStream gameId" wiringBody `shouldBe` True
+
+  describe "static structure of Api.Handler.Arkham.Games" do
     it "authenticates, delegates participant authorization, and preserves the authorized multiplayer identity" do
       src <- readGamesHsSource
       let ls = T.lines src
