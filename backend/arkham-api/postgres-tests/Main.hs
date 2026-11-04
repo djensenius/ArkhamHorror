@@ -265,15 +265,15 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
     refreshFailureCase harness app "refresh-missing-token" Nothing Nothing status409 "tokenExpired"
       "ArkhamDB token expired; relink required"
 
-  it "keeps the mapping and skips public fallback for a linked sync after a failed token refresh" $
+  it "keeps the mapping and skips public fallback when a linked sync's token refresh fails remotely" $
     syncRefreshFailureCase harness app "sync-refresh-remote-error" (Just "fixture-refresh")
       (Just $ ArkhamDBRemoteError $ leakMarker <> " ArkhamDB is down") status502 "remoteUnavailable" "ArkhamDB request failed"
 
-  it "keeps the mapping and skips public fallback for a linked sync after a failed token refresh rejection" $
+  it "keeps the mapping and skips public fallback when a linked sync's token refresh is rejected" $
     syncRefreshFailureCase harness app "sync-refresh-rejected" (Just "fixture-refresh")
       (Just ArkhamDBUnauthorized) status409 "tokenExpired" "ArkhamDB rejected the token; relink required"
 
-  it "keeps the mapping and skips public fallback for a linked sync after a failed token refresh with no refresh token" $
+  it "keeps the mapping and skips public fallback when a linked sync has no refresh token" $
     syncRefreshFailureCase harness app "sync-refresh-missing-token" Nothing Nothing status409 "tokenExpired"
       "ArkhamDB token expired; relink required"
 
@@ -1026,6 +1026,7 @@ syncRefreshFailureCase harness app label credential outcome status code message 
     expectSanitizedError status code message $
       either (\(actual, body) -> Left (actual, decode body, decodeUtf8 body)) (Right . show . entityKey) result
     -- The refresh lock's transaction ended: another session takes it at once.
+    -- runSqlConn normally ends it; this guards against a leaked open transaction or held user-row lock from the sync path.
     locked <- transaction observer
       (rawSql "SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE NOWAIT" [toPersistValue uid] :: ReaderT SqlBackend IO [Single Int64])
     length locked `shouldBe` 1
