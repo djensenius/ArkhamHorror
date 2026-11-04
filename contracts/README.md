@@ -1682,6 +1682,16 @@ else changes for it, and the catalog stays within the Apple client's limits
 compatible and need not repin. Apple TASK-1.2.23, which consumes the pack,
 repins to `0.1.60`.
 
+#### Serving CI runner disk (revision 0.1.61)
+
+Revision `0.1.61` changes no public JSON shape, route or capability. It records
+a governed CI input change: the "Serving and rollout behavior" job in
+`.github/workflows/locale-catalog.yml`, a governed locale-catalog generator
+input, now frees runner disk before building the production image, which
+changes the synthetic catalog fixture digests. `nativeClientMinimumRevision`
+stays `0.1.57`; clients pinned to `0.1.57` through `0.1.60` are unaffected and
+need not repin.
+
 ### Locale catalog discovery
 
 `GET /capabilities` advertises a catalog with the `i18n.locale-catalog.v1`
