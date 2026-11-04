@@ -103,12 +103,15 @@ applyOverlay overlay decklist =
  where
   investigator' = fromMaybe (investigator_code decklist) (overlayInvestigator overlay)
 
-  {- An alternate front outranks the deck's own investigator ('decklistInvestigatorId'),
-  so leaving one in place would hand the engine the investigator this just swapped away.
-  Only touched when the swap happens, and only to drop that one key. -}
+  {- The parallel faces belong to the deck's investigator, and an alternate front
+  outranks the deck's own code ('decklistInvestigatorId'), so leaving them over a
+  swap would seat the investigator this just swapped away. An overlay naming that
+  same investigator (by code or by its seated face) keeps both; any other drops both. -}
   meta' = case overlayInvestigator overlay of
-    Nothing -> meta decklist
-    Just _ -> withoutAlternateFront <$> meta decklist
+    Just iid
+      | iid `notElem` [investigator_code decklist, decklistInvestigatorId decklist] ->
+          withoutParallelFaces <$> meta decklist
+    _ -> meta decklist
 
   withoutOldSignatures = case overlayInvestigator overlay of
     Nothing -> slots decklist
@@ -136,11 +139,14 @@ applyOverlay overlay decklist =
     Map.filter (> 0)
       $ Map.foldrWithKey (\cardCode n m -> Map.adjust (subtract n) cardCode m) added (overlayRemove overlay)
 
-withoutAlternateFront :: Text -> Text
-withoutAlternateFront raw = fromMaybe raw do
+-- | Meta that will not parse as an object is left exactly as it came.
+withoutParallelFaces :: Text -> Text
+withoutParallelFaces raw = fromMaybe raw do
   m <- decodeMeta raw
-  guard $ Map.member "alternate_front" m
-  pure $ encodeMeta (Map.delete "alternate_front" m)
+  guard $ any (`Map.member` m) faces
+  pure $ encodeMeta (foldr Map.delete m faces)
+ where
+  faces = ["alternate_front", "alternate_back"]
 
 decodeMeta :: Text -> Maybe (Map Text Value)
 decodeMeta raw = decode (encodeUtf8 $ fromStrict raw)

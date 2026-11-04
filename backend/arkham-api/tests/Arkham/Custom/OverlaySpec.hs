@@ -11,9 +11,13 @@ import Arkham.Decklist.Type (ArkhamDBDecklist (..))
 import Arkham.Id (InvestigatorId (..))
 import Arkham.Investigator (decklistInvestigatorError, isKnownInvestigator)
 import Arkham.Name (Name)
-import Data.Aeson (toJSON)
+import Data.Aeson (Value, decode, toJSON)
+import Data.ByteString.Lazy qualified as BL
+import Data.Foldable (for_)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust)
+import Data.Text (Text)
+import Data.Text.Encoding (encodeUtf8)
 import GHC.Records (getField)
 import Test.Hspec
 import Prelude
@@ -49,6 +53,42 @@ spec = describe "a deck built on an arkham.build placeholder" do
   it "does not keep the alternate front it was swapped away from" do
     let played = applyOverlay (investigatorOverlay (InvestigatorId ownCode)) alternateFrontDeck
     getField @"investigator" played `shouldBe` InvestigatorId ownCode
+
+  -- The parallel faces belong to the deck's investigator: a real swap drops both,
+  -- an overlay naming that same investigator keeps both (#219 review).
+  describe "an overlay over a deck with parallel faces" do
+    it "seats a different investigator over a parallel front, dropping both faces" do
+      let played = applyOverlay (investigatorOverlay (InvestigatorId ownCode)) parallelDeck
+      getField @"investigator" parallelDeck `shouldBe` "90024"
+      getField @"investigator" played `shouldBe` InvestigatorId ownCode
+      metaKeys played `shouldBe` Just ["taboo"]
+
+    it "drops an alternate back when a different investigator is laid over it" do
+      let played = applyOverlay (investigatorOverlay (InvestigatorId ownCode)) alternateBackDeck
+      getField @"investigator" played `shouldBe` InvestigatorId ownCode
+      metaKeys played `shouldBe` Just ["taboo"]
+
+    it "keeps both faces when the overlay names the deck's own investigator" do
+      let played = applyOverlay (investigatorOverlay "01001") parallelDeck
+      meta played `shouldBe` meta parallelDeck
+      getField @"investigator" played `shouldBe` "90024"
+
+    it "keeps both faces when the overlay names no investigator" do
+      let played = applyOverlay (DeckOverlay Nothing mempty mempty mempty) parallelDeck
+      meta played `shouldBe` meta parallelDeck
+      getField @"investigator" played `shouldBe` "90024"
+
+    it "keeps both faces when the overlay names the seated parallel front" do
+      let played = applyOverlay (investigatorOverlay "90024") parallelDeck
+      meta played `shouldBe` meta parallelDeck
+      getField @"investigator" played `shouldBe` "90024"
+
+    it "leaves meta that is not a JSON object as it came" do
+      let overlay = investigatorOverlay (InvestigatorId ownCode)
+      for_ ["not json", "[\"alternate_front\"]"] \raw -> do
+        let played = applyOverlay overlay printedDeck {meta = Just raw}
+        meta played `shouldBe` Just raw
+        getField @"investigator" played `shouldBe` InvestigatorId ownCode
 
   describe "isKnownInvestigator" do
     it "knows a printed investigator" do
@@ -118,6 +158,20 @@ unlistedPlaceholderDeck =
 
 printedDeck :: ArkhamDBDecklist
 printedDeck = decklist {slots = Map.fromList [("01020", 1)]}
+
+-- | Roland Banks played with the parallel front and back, plus an unrelated key.
+parallelDeck :: ArkhamDBDecklist
+parallelDeck =
+  decklist
+    { meta =
+        Just "{\"alternate_front\":\"90024\",\"alternate_back\":\"90024\",\"taboo\":1}"
+    }
+
+alternateBackDeck :: ArkhamDBDecklist
+alternateBackDeck = decklist {meta = Just "{\"alternate_back\":\"90024\",\"taboo\":1}"}
+
+metaKeys :: ArkhamDBDecklist -> Maybe [Text]
+metaKeys d = Map.keys <$> (decode @(Map.Map Text Value) . BL.fromStrict . encodeUtf8 =<< meta d)
 
 alternateFrontDeck :: ArkhamDBDecklist
 alternateFrontDeck =
