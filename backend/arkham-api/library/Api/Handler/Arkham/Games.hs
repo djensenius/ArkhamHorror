@@ -55,6 +55,7 @@ import Arkham.Source
 import Arkham.Window (mkWhen)
 import Arkham.Window qualified as Window
 import Conduit
+import Control.Monad.Logger (logWarnN)
 import Control.Monad.Random (mkStdGen)
 import Control.Monad.Random.Class (getRandom)
 import Data.Coerce
@@ -66,6 +67,7 @@ import Entity.Answer
 import Entity.Arkham.GameRaw
 import Entity.Arkham.Step
 import Import hiding (Value, delete, exists, on, (==.))
+import UnliftIO.Exception (catchAny)
 
 {- | Step counter only: one indexed Int column, no game JSON touched, no lock.
 
@@ -458,7 +460,10 @@ with the game, so the event is looked up in the same transaction before the
 delete, and once a delete has removed the row the event's watchers and the
 remaining group rooms get 'EventChanged' to refetch the roster. That goes out
 before the room is closed, because closing it can throw on a Redis
-unsubscribe.
+unsubscribe. The broadcast reads the remaining groups in its own query after
+the delete has committed, so a synchronous failure there is logged and
+swallowed: the room is still closed and the caller still gets the 200 for the
+delete that happened. Asynchronous exceptions still propagate.
 -}
 deleteApiV1ArkhamGameR :: ArkhamGameId -> Handler ()
 deleteApiV1ArkhamGameR gameId = do
@@ -474,7 +479,9 @@ deleteApiV1ArkhamGameR gameId = do
         where_ $ players.userId ==. val userId
     pure (mEvt, deleted)
   when (deleted > 0) do
-    for_ mEvt \(Entity eventId _, _) -> broadcastEventChanged eventId
+    for_ mEvt \(Entity eventId _, _) ->
+      broadcastEventChanged eventId `catchAny` \e ->
+        logWarnN $ "EventChanged after deleting game " <> tshow gameId <> " failed: " <> tshow e
     deleteRoom gameId
 
 data PlayabilityRequest = PlayabilityRequest
