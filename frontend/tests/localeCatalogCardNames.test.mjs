@@ -145,7 +145,7 @@ function nightOfTheZealotNameCodes() {
 
 // If an upstream sync renames a pinned card, this fails: update CARD_NAMES in
 // scripts/build-locale-catalog-fixture.py, rewrite the fixtures and bump
-// schemaRevision (see contracts/README.md, revision 0.1.58).
+// schemaRevision (see contracts/README.md, revision 0.1.60).
 test('the contract fixture card names are what the real generator resolves', () => {
   const fixtures = resolve('..', 'contracts', 'fixtures')
   const expectedKeys = nightOfTheZealotNameCodes()

@@ -267,6 +267,18 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
     refreshFailureCase harness app "refresh-missing-token" Nothing Nothing status409 "tokenExpired"
       "ArkhamDB token expired; relink required"
 
+  it "keeps the mapping and skips public fallback when a linked sync's token refresh fails remotely" $
+    syncRefreshFailureCase harness app "sync-refresh-remote-error" (Just "fixture-refresh")
+      (Just $ ArkhamDBRemoteError $ leakMarker <> " ArkhamDB is down") status502 "remoteUnavailable" "ArkhamDB request failed"
+
+  it "keeps the mapping and skips public fallback when a linked sync's token refresh is rejected" $
+    syncRefreshFailureCase harness app "sync-refresh-rejected" (Just "fixture-refresh")
+      (Just ArkhamDBUnauthorized) status409 "tokenExpired" "ArkhamDB rejected the token; relink required"
+
+  it "keeps the mapping and skips public fallback when a linked sync has no refresh token" $
+    syncRefreshFailureCase harness app "sync-refresh-missing-token" Nothing Nothing status409 "tokenExpired"
+      "ArkhamDB token expired; relink required"
+
   it "does not stage callback credentials when unlink commits during OAuth exchange" $
     withConnection harness \callback -> withConnection harness \unlinking -> do
       now <- currentTimeMicros
@@ -854,8 +866,8 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
       transaction cleaner (P.get key) >>= (`shouldSatisfy` isNothing)
 
 -- Fixture SQL only; all lifecycle mutations above invoke persistentStoreWith.
--- User's production entity currently includes an admin field not in Sqitch;
--- do not hide that unrelated schema drift by inventing a test-only column.
+-- Columns omitted here, including admin (from Sqitch's add_admin_to_users),
+-- take their schema defaults; do not invent test-only columns.
 seedUser :: SqlBackend -> Text -> IO UserId
 seedUser connection label = transaction connection do
   rows <- rawSql
@@ -951,6 +963,75 @@ refreshFailureCase harness app label credential outcome status code message =
     readIORef calls `shouldReturn` (if isJust outcome then 1 else 0)
     linkedRows connection uid `shouldReturn` persisted
     runStore app connection (\store -> store.findAccountGeneration uid) `shouldReturn` Just generation
+
+-- A linked sync whose expired token cannot be refreshed must surface the
+-- sanitized refresh error through runArkhamDB: never the notFound path, so the
+-- mapping is kept and the public fallback is not used. Store actions commit
+-- one at a time (as runDB does), so nothing is hidden by an outer rollback.
+syncRefreshFailureCase :: Harness -> App -> Text -> Maybe Text -> Maybe ArkhamDBClientError -> Status -> Text -> Text -> IO ()
+syncRefreshFailureCase harness app label credential outcome status code message =
+  withConnection harness \connection -> withConnection harness \observer -> do
+    now <- currentTimeMicros
+    uid <- seedUser connection label
+    previous <- encryptedAccount settings now uid (tokens now) {refreshToken = credential}
+    generation <- seedAccount app connection now uid label previous
+    let importer = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right remote}
+    imported@(Entity deckId _) <- either (fail . show) pure =<< runStoreActions app connection
+      (\store -> runExceptT $ importRemoteDeck store importer settings now uid "123" forbiddenPublic)
+    valid <- runStore app observer (\store -> store.findAccount uid) >>= maybe (fail "Expected linked account") pure
+    runStore app connection (\store -> store.updateAccount valid valid {arkhamDBAccountExpiresAt = Just $ addUTCTime (-60) now})
+      `shouldReturn` True
+    stored <- runStore app observer (\store -> store.findAccount uid) >>= maybe (fail "Expected linked account") pure
+    arkhamDBAccountExpiresAt stored `shouldBe` Just (addUTCTime (-60) now)
+    isJust (arkhamDBAccountEncryptedRefreshToken stored) `shouldBe` isJust credential
+    let deckRow = transaction observer
+          (rawSql "SELECT row_to_json(d)::text FROM arkham_decks AS d WHERE d.user_id = ? ORDER BY d.id" [toPersistValue uid])
+            <&> map unSingle :: IO [Text]
+        linkStates = transaction observer
+          (rawSql "SELECT count(*) FROM arkhamdb_link_states WHERE user_id = ?" [toPersistValue uid])
+            <&> map unSingle :: IO [Int64]
+    persisted <- linkedRows observer uid
+    bimap length length persisted `shouldBe` (1, 1)
+    decks <- deckRow
+    length decks `shouldBe` 1
+    linkStates `shouldReturn` [0]
+    counts <- deckCounts observer uid
+    counts `shouldBe` (1, 1)
+    refreshes <- newIORef (0 :: Int)
+    loads <- newIORef (0 :: Int)
+    fallbacks <- MVar.newMVar (0 :: Int)
+    let client = hoistArkhamDBClient liftIO $ transport
+          { refreshTokens = \sent -> do
+              sent `shouldBe` "fixture-refresh"
+              modifyIORef' refreshes (+ 1)
+              -- Never ArkhamDBNotFound: that is the legitimate drop-and-fallback path.
+              maybe (fail "A missing refresh token reached ArkhamDB") (pure . Left) outcome
+          , loadDeck = \_ _ -> do
+              modifyIORef' loads (+ 1)
+              pure $ Left $ ArkhamDBRemoteError "Unexpected remote load after a failed refresh"
+          }
+        -- Counts and returns the deck so a fallback regression reaches the
+        -- row and count assertions below instead of failing inside the handler.
+        public _ = do
+          liftIO $ MVar.modifyMVar_ fallbacks $ pure . (+ 1)
+          pure imported
+    result <- within "linked sync after a failed refresh" $ runHandlerResponseBody app $ runArkhamDB $
+      syncRemoteDeck (persistentStoreWith (const $ pure ()) (`runSqlConn` connection)) client settings now uid deckId public
+    readIORef refreshes `shouldReturn` (if isJust outcome then 1 else 0)
+    readIORef loads `shouldReturn` 0
+    linkedRows observer uid `shouldReturn` persisted
+    deckRow `shouldReturn` decks
+    runStore app observer (\store -> store.findAccountGeneration uid) `shouldReturn` Just generation
+    linkStates `shouldReturn` [0]
+    deckCounts observer uid `shouldReturn` counts
+    MVar.readMVar fallbacks `shouldReturn` 0
+    expectSanitizedError status code message $
+      either (\(actual, body) -> Left (actual, decode body, decodeUtf8 body)) (Right . show . entityKey) result
+    -- The refresh lock's transaction ended: another session takes it at once.
+    -- runSqlConn normally ends it; this guards against a leaked open transaction or held user-row lock from the sync path.
+    locked <- transaction observer
+      (rawSql "SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE NOWAIT" [toPersistValue uid] :: ReaderT SqlBackend IO [Single Int64])
+    length locked `shouldBe` 1
 
 deckCounts :: SqlBackend -> UserId -> IO (Int64, Int64)
 deckCounts connection uid = transaction connection do

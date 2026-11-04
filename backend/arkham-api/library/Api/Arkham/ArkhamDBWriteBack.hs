@@ -108,6 +108,7 @@ writeBackStoreWith database = ArkhamDBWriteBackStore
                 [ArkhamDBPushDeckId P.=. copyId]
               pure copyId
             else do
+              lockArkhamDBDeckLink (arkhamDBPushUserId job) deckId
               replace linkId link
                 { arkhamDBDeckLinkRemoteDeckId = remote.remoteDeckId
                 , arkhamDBDeckLinkLastSyncedDateUpdate = remote.dateUpdate
@@ -134,6 +135,7 @@ writeBackStoreWith database = ArkhamDBWriteBackStore
         let job = entityVal previous
             deckId = arkhamDBPushDeckId job
         P.update deckId $ keepRemoteDeckUpdates remote
+        lockArkhamDBDeckLink (arkhamDBPushUserId job) deckId
         updateWhere [ArkhamDBDeckLinkDeckId P.==. deckId]
           [ ArkhamDBDeckLinkRemoteDeckId P.=. remote.remoteDeckId
           , ArkhamDBDeckLinkLastSyncedDateUpdate P.=. remote.dateUpdate
@@ -175,6 +177,7 @@ writeBackStoreWith database = ArkhamDBWriteBackStore
         _ -> pure False
   , toggleWriteBack = \now uid deckId enabled -> database do
       lockArkhamDBUser uid
+      lockArkhamDBDeckLink uid deckId
       affected <- updateWhereCount [ArkhamDBDeckLinkDeckId P.==. deckId, ArkhamDBDeckLinkUserId P.==. uid]
         [ArkhamDBDeckLinkWriteBack P.=. enabled, ArkhamDBDeckLinkUpdatedAt P.=. now]
       unless enabled do
@@ -182,7 +185,8 @@ writeBackStoreWith database = ArkhamDBWriteBackStore
           [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushUserId P.==. uid, ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]] []
         games <- loadCampaignIdentities mempty $ map (arkhamDBPushCampaignKey . entityVal) outstanding
         for_ outstanding \(Entity key job) -> replace key $ disabledCampaignPush games job
-      pruneCompletedPushes deckId
+      -- The deck id comes from the URL: only the owner's own toggle may prune its history.
+      when (affected == 1) $ pruneCompletedPushes deckId
       pure $ affected == 1
   , deckWriteBackStatus = \uid -> database do
       links <- selectList [ArkhamDBDeckLinkUserId P.==. uid] [Asc ArkhamDBDeckLinkDeckId]
@@ -351,9 +355,10 @@ queueCampaignWriteBackWith afterLookup gameId step now boundary game = for_ (mod
           -- under the key lock: the earlier URL/association lookup is only a hint.
           decks <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? FOR KEY SHARE SKIP LOCKED" [toPersistValue deckId]
           for_ (decks :: [Entity ArkhamDeck]) \(Entity _ deck) -> do
-            -- FOR SHARE (not KEY SHARE) conflicts with opt-out's flag UPDATE.
-            -- Skip a busy link rather than delaying the game transaction.
-            mappings <- rawSql "SELECT ?? FROM arkhamdb_deck_links WHERE deck_id = ? FOR SHARE SKIP LOCKED" [toPersistValue deckId]
+            -- KEY SHARE conflicts with the FOR UPDATE link lock that opt-out,
+            -- keep-remote and adoption take, but not with linked sync's
+            -- non-key UPDATE. Skip a busy link rather than delaying the game.
+            mappings <- rawSql "SELECT ?? FROM arkhamdb_deck_links WHERE deck_id = ? FOR KEY SHARE SKIP LOCKED" [toPersistValue deckId]
             let mapping = viaNonEmpty head (mappings :: [Entity ArkhamDBDeckLink])
             -- Lock only the generation's key, not the user/refresh lock. An unlink
             -- either wins first (skip obsolete work) or waits until this INSERT's

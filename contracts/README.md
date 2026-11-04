@@ -941,6 +941,15 @@ generation metadata rather than server-authenticated claims.
 - Deletion is available to any participant, not a distinct owner. Missing and
   non-participant game IDs both return empty success, making deletion
   repeatable without disclosing existence.
+- Game deletion: deleting a game does not cancel its pending ArkhamDB
+  write-back pushes (they have no game foreign key). At dispatch, a push keyed
+  by an ordinary campaign key (`<game>/<investigator>`) can no longer prove it
+  belongs to an ordinary campaign, so it is fenced as `failed`/`validationFailed`
+  without a remote request, and later rounds skip it. An explicit retry or
+  resolve re-runs admission and is fenced again. A part-keyed Dream-Eaters push
+  (`…/dreamQuest`, `…/webOfDreams`) proves its deck from the key, so it still
+  pushes the already-adopted deck list to its own associated deck. Leftover
+  campaign associations are inert.
 - Authenticated accounts may preview a pending game without joining; its log is
   omitted. Joining twice is idempotent, and joining a game that already left
   the pending state returns its unchanged snapshot. An Epic participant cannot
@@ -1158,9 +1167,10 @@ serializes public and linked sync before and after an overlay add, replace,
 removal or invalid change on the deck row they lock FOR NO KEY UPDATE (the
 delete check alone locks FOR UPDATE). Tests show an overlay save and an
 in-flight campaign write-back enqueue holding FOR KEY SHARE on that deck
-neither wait on nor hide each other, in both orders. Linked sync's link-row
-UPDATE can still hide a push from an enqueue that reaches the link after that
-UPDATE and before that sync commits. Every actual overlay PUT, even
+neither wait on nor hide each other, in both orders. A real game answer's
+enqueue that reaches the link while linked sync holds its uncommitted non-key
+link-row UPDATE does not wait and still records its push against the pre-sync
+markers. Every actual overlay PUT, even
 a byte-identical one, gets a fresh private attachment identity that DELETE
 clears and a later provenance-free sync keeps; incorporated overlay provenance
 is consumed through actual public and linked sync; and overlay removal that
@@ -1449,7 +1459,8 @@ as proof of production SQL correctness. The PostgreSQL/WAI follow-up must name:
   fixture now correctly shows `cancelled`, not `pending`).
 - `queueCampaignWriteBack`: owner + URL matching and stale-seat ownership
   rejection, association creation, generation key-share through insertion,
-  nonblocking link SHARE through insertion versus opt-out in both orders,
+  nonblocking link KEY SHARE through insertion versus opt-out's link FOR UPDATE
+  in both orders,
   payload/story/player-card/sideboard/taboo projection and captured cumulative
   XP; ChooseDecksStep exclusion and both real end/upgrade boundary hooks.
 - Association-first saved-deck upgrade persistence after a campaign copy,
@@ -1592,9 +1603,29 @@ Clients must update Apple `ContractPin.swift`, and Linux `src/ContractPin.cpp`,
 `contracts/contract-pin.json` and vendored fixtures, to the merged backend
 commit and schemaRevision `0.1.57`.
 
-#### Localized card names (revision 0.1.58)
+#### Haskell CI runner disk (revision 0.1.58)
 
-Revision `0.1.58` adds a `cardNames` pack to the locale catalog. It changes no
+Revision `0.1.58` changes no public JSON shape, route or capability. It records
+a governed CI input change: the required Haskell job in
+`.github/workflows/haskell.yml`, a governed locale-catalog generator input, now
+frees runner disk before building, which changes the synthetic catalog fixture
+digests. `nativeClientMinimumRevision` stays `0.1.57`; clients pinned to
+`0.1.57` are unaffected and need not repin.
+
+#### Locale-catalog intlify toolchain pin (revision 0.1.59)
+
+Revision `0.1.59` changes no public JSON shape, route or capability. It only
+re-derives the locale-catalog tooling provenance: `frontend/package.json`, a
+governed locale-catalog generator input, now pins `@intlify/message-compiler`
+to `11.4.18` and raises the vue-i18n floor to `^11.4.18` (resolved at
+`11.4.18`; security advisory GHSA-83rm-6c8r-g728), which changes the synthetic
+catalog fixture digests.
+`nativeClientMinimumRevision` stays `0.1.57`; clients pinned to `0.1.57` or
+`0.1.58` are unaffected and need not repin.
+
+#### Localized card names (revision 0.1.60)
+
+Revision `0.1.60` adds a `cardNames` pack to the locale catalog. It changes no
 route, capability or JSON schema: it is required because the synthetic catalog
 fixtures now carry card-name chunks. The native minimum stays `0.1.57`.
 
@@ -1641,14 +1672,15 @@ fixture labels use. If an upstream sync renames a pinned card in
 to update the pinned table, rewrite the fixtures
 (`mise run contracts:catalog-fixture-write`) and bump `schemaRevision`.
 
-From `0.1.58` every catalog client downloads, digest-checks and caches the
+From `0.1.60` every catalog client downloads, digest-checks and caches the
 `cardNames` pack for each locale in its fallback chain. That is about 1.1 to
 1.3 MB per locale. The `en` total grows from about 7.5 MB to 8.8 MB. A `de`
 client's own locale grows from about 19 KB to 1.27 MB, plus `en`. A client that
 never looks up a `cardNames.*` key still pays that download cost, but nothing
 else changes for it, and the catalog stays within the Apple client's limits
-(256 chunks per locale, 192 MiB). Client pins at `0.1.57` remain compatible and
-need not repin. Apple TASK-1.2.23, which consumes the pack, repins to `0.1.58`.
+(256 chunks per locale, 192 MiB). Client pins at `0.1.57` to `0.1.59` remain
+compatible and need not repin. Apple TASK-1.2.23, which consumes the pack,
+repins to `0.1.60`.
 
 ### Locale catalog discovery
 
