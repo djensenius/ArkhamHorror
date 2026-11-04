@@ -74,7 +74,8 @@ CLEAN_CLONE_PREFIXES = (
 )
 CLEAN_CLONE_PATTERNS = (re.compile(r"frontend/public/cards_[a-z]{2}(?:-[a-z]{2})?\.json"),)
 # Catalog locales whose card file has another name: the web's Portuguese card
-# data is cards_po.json, published as the card-only locale pt.
+# data is cards_po.json, published as the card-only locale pt. Keep in step
+# with CARD_ONLY_LOCALES in frontend/scripts/locale-catalog/card-names.mjs.
 CARD_SOURCE_ALIASES = {"pt": "po"}
 CLEAN_CLONE_FILES = (
     "frontend/package.json",

@@ -38,6 +38,9 @@ function fail(message) {
  * the default locale for everything else. The value is the suffix of the
  * committed card file: Portuguese card data lives in `cards_po.json`.
  * Japanese is left out because `cards_ja.json` is empty.
+ *
+ * Keep in step with CARD_SOURCE_ALIASES in scripts/validate-locale-catalog.py,
+ * which repeats the pt -> po mapping for its card-file coverage check.
  */
 export const CARD_ONLY_LOCALES = Object.freeze({ pl: 'pl', pt: 'po', ru: 'ru', uk: 'uk' })
 

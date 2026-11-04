@@ -106,9 +106,10 @@ const CANONICAL_LOCALE_PATTERN = /^[a-z]{2,3}(?:-(?:[A-Z]{2}|[A-Z][a-z]{3}|(?![a
 
 // Language tags probed through the production resolver so native clients get
 // the web client's exact locale/fallback behavior instead of guessing at it.
-// pl, pt, ru and uk resolve to their card-only locales (see card-names.mjs).
+// pl, pt, ru and uk resolve to their card-only locales (see card-names.mjs);
+// ja (whose card file is empty) and nl show an unsupported language -> en.
 const PROBE_LANGUAGE_TAGS = [
-  'de', 'de-AT', 'en', 'en-GB', 'es', 'es-MX', 'fr', 'fr-CA', 'it', 'ko',
+  'de', 'de-AT', 'en', 'en-GB', 'es', 'es-MX', 'fr', 'fr-CA', 'it', 'ja', 'ko', 'nl',
   'pl', 'pl-PL', 'pt', 'pt-BR', 'pt-PT', 'ru', 'ru-RU', 'uk', 'uk-UA',
   'zh', 'zh-CN', 'zh-Hans', 'zh-Hant', 'zh-TW',
 ]

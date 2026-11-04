@@ -1714,12 +1714,16 @@ other key. They are the languages the web shows card names in but has no UI
 translation for. `pt` is built from the web's `frontend/public/cards_po.json`;
 there is no `cards_pt.json`. The keys follow the same lookup rules as revision
 `0.1.60`. A card-only locale whose tag a UI locale already publishes fails the
-build.
+build. So if an upstream sync adds `ru`, `pl`, `uk` or `pt` as a UI locale, the
+generator's clash refusal fails the build, and the fix is to drop that entry
+from `CARD_ONLY_LOCALES` in `frontend/scripts/locale-catalog/card-names.mjs`
+(and `CARD_SOURCE_ALIASES` in `scripts/validate-locale-catalog.py` for `pt`).
 
 `languageResolution` now sends `pl`, `pt`, `ru` and `uk` device languages, bare
 or regional (`pl-PL`, `pt-BR`, `pt-PT`, `ru-RU`, `uk-UA`), to their card-only
 locale, so a client shows those card names and the `en` UI text. Before this
-revision `pt-BR` and `ru` resolved to `en`. This follows the web's automatic
+revision `pt-BR` and `ru` resolved to `en`. Unsupported languages still resolve to `en`; the
+probe list now includes `ja` and `nl` to show it. This follows the web's automatic
 card-language choice (`preferredLanguage`), except that `pt-BR` uses the
 Portuguese card data rather than the web's missing `cards_pt.json`.
 

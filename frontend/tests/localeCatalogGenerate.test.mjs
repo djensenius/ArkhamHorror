@@ -132,6 +132,12 @@ test('every supported UI locale is published with an explicit fallback', () => {
   }
   assert.equal(resolution.get('fr-CA'), 'fr')
   assert.equal(resolution.get('en-GB'), 'en')
+  // Unsupported languages fall back to the default locale; ja also proves the
+  // empty cards_ja.json never becomes a card-only locale.
+  for (const tag of ['ja', 'nl']) {
+    assert.equal(resolution.get(tag), 'en', `${tag} is unsupported and resolves to en`)
+  }
+  assert.ok(!built.manifest.locales.some((entry) => entry.locale === 'ja'))
 })
 
 test('card-only languages resolve to their card-only locales, bare and regional', () => {
