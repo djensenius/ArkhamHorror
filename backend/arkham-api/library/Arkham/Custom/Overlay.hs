@@ -13,6 +13,7 @@ module Arkham.Custom.Overlay (
   applySeatOverlay,
   investigatorOverlay,
   needsOverlayInvestigator,
+  samePrintedInvestigator,
   overlaySignatures,
   overlaySetAside,
   setAsideMetaKey,
@@ -22,6 +23,7 @@ module Arkham.Custom.Overlay (
 import Arkham.Card
 import Arkham.Decklist.Type
 import Arkham.Id
+import Arkham.Investigator.Cards (allInvestigatorCards)
 import Arkham.Prelude
 import Data.Aeson.Types (parseMaybe)
 import Data.Map.Strict qualified as Map
@@ -98,6 +100,15 @@ signaturesOf iid = filter restrictedToThem . Map.keys
     Nothing -> False
     Just def -> Signature iid `elem` cdDeckRestrictions def
 
+{- | The same investigator, either code being a printing of the other (an
+alternate such as Revised Core Roland, @01501@, of @01001@). The card map is keyed
+by every printing, so the lookup is symmetric.
+-}
+samePrintedInvestigator :: InvestigatorId -> InvestigatorId -> Bool
+samePrintedInvestigator iid other =
+  iid == other
+    || maybe False ((toCardCode iid `elem`) . (.cardCodes)) (lookup (toCardCode other) allInvestigatorCards)
+
 applyOverlay :: DeckOverlay -> ArkhamDBDecklist -> ArkhamDBDecklist
 applyOverlay overlay decklist =
   decklist {slots = slots', investigator_code = investigator', meta = meta'}
@@ -107,10 +118,11 @@ applyOverlay overlay decklist =
   {- The parallel faces belong to the deck's investigator, and an alternate front
   outranks the deck's own code ('decklistInvestigatorId'), so leaving them over a
   swap would seat the investigator this just swapped away. An overlay naming that
-  same investigator (by code or by its seated face) keeps both; any other drops both. -}
+  same investigator (any printing of its code, or its seated face) keeps both; any
+  other drops both. -}
   meta' = case overlayInvestigator overlay of
     Just iid
-      | iid `notElem` [investigator_code decklist, decklistInvestigatorId decklist] ->
+      | not (any (samePrintedInvestigator iid) [investigator_code decklist, decklistInvestigatorId decklist]) ->
           withoutParallelFaces <$> meta decklist
     _ -> meta decklist
 

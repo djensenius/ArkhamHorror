@@ -85,6 +85,19 @@ spec = describe "a deck built on an arkham.build placeholder" do
       meta played `shouldBe` meta parallelDeck
       getField @"investigator" played `shouldBe` "90024"
 
+    it "keeps both faces when the overlay names another printing of the deck's investigator" do
+      let played = applyOverlay (investigatorOverlay "01501") parallelDeck
+      meta played `shouldBe` meta parallelDeck
+      investigator_code played `shouldBe` "01501"
+      getField @"investigator" played `shouldBe` "90024"
+
+    it "keeps both faces when the deck is on another printing of the overlay's investigator" do
+      let reprinted = parallelDeck {investigator_code = "01501"}
+          played = applyOverlay (investigatorOverlay "01001") reprinted
+      meta played `shouldBe` meta reprinted
+      investigator_code played `shouldBe` "01001"
+      getField @"investigator" played `shouldBe` "90024"
+
     it "leaves meta that is not a JSON object as it came" do
       let overlay = investigatorOverlay (InvestigatorId ownCode)
       for_ ["not json", "[\"alternate_front\"]"] \raw -> do

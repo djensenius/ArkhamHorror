@@ -48,6 +48,7 @@ import Arkham.Custom.Overlay (
   decklistCustomCards,
   investigatorOverlay,
   needsOverlayInvestigator,
+  samePrintedInvestigator,
  )
 import Arkham.Decklist
 import Arkham.Game
@@ -56,7 +57,6 @@ import Arkham.Game.State (isChooseDecks)
 import Arkham.Game.Utils (gameInvestigators, modeCampaign)
 import Arkham.Id
 import Arkham.Investigator (decklistInvestigatorError, isKnownInvestigator)
-import Arkham.Investigator.Cards (allInvestigatorCards)
 import Arkham.Investigator.Types (investigatorDeckUrl, investigatorDrivenInsane, investigatorKilled, investigatorPlayerId)
 import Arkham.Message
 import Arkham.Queue
@@ -109,13 +109,7 @@ requireGameDecksAccess = requireGameAccess
 -- | True when the decklist upgrades the SAME investigator (an alternate art of them counts)
 -- rather than replacing them with a different one.
 sameInvestigator :: InvestigatorId -> ArkhamDBDecklist -> Bool
-sameInvestigator iid decklist =
-  iid
-    == decklist.investigator
-    || maybe
-      False
-      ((toCardCode iid `elem`) . (.cardCodes))
-      (Map.lookup (toCardCode decklist.investigator) allInvestigatorCards)
+sameInvestigator iid decklist = samePrintedInvestigator iid decklist.investigator
 
 killedOrInsaneInvestigatorIdsFromCampaignLog :: CampaignLog -> Set InvestigatorId
 killedOrInsaneInvestigatorIdsFromCampaignLog campaignLog' =
