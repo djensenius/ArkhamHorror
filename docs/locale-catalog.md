@@ -209,8 +209,20 @@ Three fail-closed rules keep the registry honest:
 
 The result is committed as `backend/arkham-api/i18n-emitted-keys.json` and is
 re-derived in CI (`mise run locale-catalog:backend-keys-check`), so adding a new
-`ikey` to the backend fails until the registry is regenerated. The catalog
-build consumes it and **fails** if any emitted key that the default locale
+`ikey` to the backend fails until the registry is regenerated. The registry
+does not hash the backend files it was read from. Its identity is the
+top-level `payloadSha256`: the sha256 of the registry's own canonical bytes
+(sorted keys, compact separators, UTF-8, trailing newline) with the
+`payloadSha256` field left out. That way, a backend edit that leaves the
+extracted keys, variable types and dynamic-site inventory alone also leaves the
+file byte-identical, and unrelated backend PRs do not all conflict on one
+digest line. Nothing is lost: `--check` re-derives every byte of the registry
+anyway. (A dynamic site is recorded as `file:line`, so moving such a site to
+another line still changes the inventory.) The catalog generator records
+`payloadSha256` as `backend.sourceSha256` in both the manifest and the
+provenance, next to `backend.artifactSha256` (the digest of the committed
+file), and `validate-locale-catalog` requires both to match the committed
+registry. The catalog build consumes it and **fails** if any emitted key that the default locale
 translates is unsupported — those keys are gameplay content, not decoration.
 Keys the backend emits that no locale translates at all are a content gap in
 the locale sources, not a rendering failure: writing the missing prose is not

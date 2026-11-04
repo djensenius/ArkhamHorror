@@ -747,7 +747,7 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
       path: BACKEND_KEYS,
       sha256: backend.sha256,
       artifactVersion: backend.artifact.artifactVersion,
-      sourceSha256: backend.artifact.source.sha256,
+      sourceSha256: backend.artifact.payloadSha256,
       emittedKeys: backend.keys.size,
     },
     localeSources: collectSourceFiles(frontendDir, sources.locales),
@@ -986,7 +986,7 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
     backend: {
       artifactPath: BACKEND_KEYS,
       artifactSha256: backend.sha256,
-      sourceSha256: backend.artifact.source.sha256,
+      sourceSha256: backend.artifact.payloadSha256,
       emittedKeys: backend.keys.size,
       requiredKeys: requiredKeys.size,
       untranslatedKeys: untranslated,
