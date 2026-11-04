@@ -208,6 +208,12 @@ replacementCharPaths =
   , "/api/auth%E0%80%AFarkham-build/callback"
   , "/api/v1%C0%AFarkham-build/verify"
   , "/api/v1%E0%80%AFarkham-build/authorize"
+  -- A literal U+FFFD between credential names.
+  , "/api/v1/arkham%EF%BF%BDarkhamdb/callback"
+  , "/api/v1/arkham%EF%BF%BDarkhamdb/link/complete"
+  , "/api/auth%EF%BF%BDarkham-build/callback"
+  , "/api/v1%EF%BF%BDarkham-build/verify"
+  , "/api/v1%EF%BF%BDarkham-build/authorize"
   -- Only the irregular half matters: "arkhamdb" is already an exact piece.
   , "/api/v1/arkham/x/%C0%AE%C0%AE/arkhamdb/callback"
   , "/api/auth/x/%C0%AE%C0%AE/arkham-build/callback"
@@ -268,6 +274,16 @@ rawProtectedPaths =
   , "/api/auth%C0%AFarkham-build/callback"
   , "/api/v1%C0%AFarkham-build/verify"
   , "/api/v1/arkham/x/%C0%AE%C0%AE/arkhamdb/callback"
+  -- 3- and 4-byte overlong '/' and a double-encoded overlong '/'.
+  , "/api/v1/arkham%E0%80%AFarkhamdb/callback"
+  , "/api/v1/arkham%F0%80%80%AFarkhamdb/link/complete"
+  , "/api/v1/arkham%25C0%25AFarkhamdb/callback"
+  , "/api/auth%E0%80%AFarkham-build/callback"
+  , "/api/auth%F0%80%80%AFarkham-build/callback"
+  , "/api/auth%25C0%25AFarkham-build/callback"
+  , "/api/v1%E0%80%AFarkham-build/verify"
+  , "/api/v1%F0%80%80%AFarkham-build/verify"
+  , "/api/v1%25C0%25AFarkham-build/verify"
   ]
 
 rawOrdinaryPaths :: [ByteString]

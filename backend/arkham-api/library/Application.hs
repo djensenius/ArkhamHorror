@@ -503,11 +503,13 @@ isIrregularCredentialPath decodedSegments rawPath = irregular && mentionsCredent
     _ -> decodedSegments
   irregular = any irregularSegment segments
   irregularSegment segment =
-    segment `elem` ["", ".", ".."] || T.any (`elem` [';', '/', '\\', '%', '\xFFFD']) segment
+    segment `elem` ["", ".", ".."] || T.any (`elem` ([';', '%'] <> separators)) segment
+  -- Shared by both checks so an irregular separator is always a split point.
+  separators = ['/', '\\', '\xFFFD']
   mentionsCredentialName =
     any (`elem` ["arkhamdb", "arkham-build"])
       $ map (T.takeWhile (/= ';'))
-      $ T.split (`elem` ['/', '\\', '\xFFFD'])
+      $ T.split (`elem` separators)
       $ T.toCaseFold (decodeUtf8 (fullyDecoded (8 :: Int) rawPath))
   fullyDecoded rounds path
     | rounds <= 0 || decoded == path = path
