@@ -941,6 +941,14 @@ generation metadata rather than server-authenticated claims.
 - Deletion is available to any participant, not a distinct owner. Missing and
   non-participant game IDs both return empty success, making deletion
   repeatable without disclosing existence.
+- Game deletion: deleting a game does not cancel its pending ArkhamDB
+  write-back pushes (they have no game foreign key). At dispatch, a push keyed
+  by an ordinary campaign key (`<game>/<investigator>`) can no longer prove its
+  campaign part, so it is fenced as `failed`/`validationFailed` without a remote
+  request, and later rounds skip it. A part-keyed Dream-Eaters push
+  (`…/dreamQuest`, `…/webOfDreams`) proves its deck from the key, so it still
+  pushes the already-adopted deck list to its own associated deck. Leftover
+  campaign associations are inert.
 - Authenticated accounts may preview a pending game without joining; its log is
   omitted. Joining twice is idempotent, and joining a game that already left
   the pending state returns its unchanged snapshot. An Epic participant cannot
