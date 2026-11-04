@@ -139,6 +139,7 @@ ordinaryPaths =
   , "/api/v1/arkham/../arkhamdb/callback"
   , "/api/auth/./arkham-build-other/callback"
   , "/api/v1/arkham-builder;x/../verify"
+  , "/api/v1/arkham;%2F../decks"
   ]
 
 -- WaiTest.setPath re-encodes the decoded segments into rawPathInfo, which the
