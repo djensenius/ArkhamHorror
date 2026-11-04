@@ -5,10 +5,12 @@
 -- The actual JWT-authenticated claim-seat handler against the disposable
 -- database: the game lock that serializes competing claims, the seat check
 -- for both stored seat formats, and the one-group-per-event Epic membership.
+-- Open seats is checked here too, since it must agree with claim seat on
+-- which seats are taken.
 module Postgres.ClaimSeatSpec (spec) where
 
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (WithFriends))
-import Api.Handler.Arkham.Game.Debug (postApiV1ArkhamGameClaimSeatR)
+import Api.Handler.Arkham.Game.Debug (getApiV1ArkhamGameOpenSeatsR, postApiV1ArkhamGameClaimSeatR)
 import Api.Handler.Arkham.PendingGames (putApiV1ArkhamPendingGameR)
 import Arkham.Difficulty (Difficulty (Easy))
 import Arkham.Entities (entitiesInvestigators)
@@ -57,7 +59,12 @@ seatTaken = "This seat is already taken"
 anotherGroup = "You already occupy a seat in another group in this event"
 
 spec :: Harness -> App -> SeedUser -> Spec
-spec harness app seedUser = describe "Claim seat" do
+spec harness app seedUser = do
+  claimSeatSpec harness app seedUser
+  openSeatsSpec harness app seedUser
+
+claimSeatSpec :: Harness -> App -> SeedUser -> Spec
+claimSeatSpec harness app seedUser = describe "Claim seat" do
   it "serializes two claims for one seat behind the game lock" $
     withConnection harness \holding -> withConnection harness \observer -> do
       gameId <- seedGame observer "claim-race"
@@ -154,6 +161,37 @@ spec harness app seedUser = describe "Claim seat" do
       seatRows connection f.group0 `shouldReturn` []
       membership connection f player `shouldReturn` [(GroupPlayer, Nothing)]
 
+openSeatsSpec :: Harness -> App -> SeedUser -> Spec
+openSeatsSpec harness app seedUser = describe "Open seats" do
+  it "omits a deck-selected bare-coded seat" $
+    withConnection harness \connection -> do
+      gameId <- seedGame connection "open-bare-seat"
+      chooser <- seedUser connection "open-bare-chooser"
+      claimer <- seedUser connection "open-bare-claimer"
+      openSeats app claimer gameId `shouldReturn` ["c01001", "c01002"]
+      -- Deck selection stores the bare ArkhamDB code.
+      transaction connection $ P.insert_ $ ArkhamPlayer chooser gameId "01001"
+      openSeats app claimer gameId `shouldReturn` ["c01002"]
+      claim app claimer gameId "01002" `shouldReturn` Succeeded
+      openSeats app claimer gameId `shouldReturn` []
+
+  it "omits a c-prefixed claimed seat" $
+    withConnection harness \connection -> do
+      gameId <- seedGame connection "open-prefixed-seat"
+      claimer <- seedUser connection "open-prefixed-claimer"
+      viewer <- seedUser connection "open-prefixed-viewer"
+      claim app claimer gameId "c01002" `shouldReturn` Succeeded
+      seatRows connection gameId `shouldReturn` [(claimer, "c01002")]
+      openSeats app viewer gameId `shouldReturn` ["c01001"]
+
+  it "does not let a pending-join placeholder hide a seat" $
+    withConnection harness \connection -> do
+      gameId <- seedGame connection "open-placeholder"
+      joiner <- seedUser connection "open-placeholder-joiner"
+      -- Pending join stores this placeholder until the player picks a deck.
+      transaction connection $ P.insert_ $ ArkhamPlayer joiner gameId "00000"
+      openSeats app joiner gameId `shouldReturn` ["c01001", "c01002"]
+
 -- A WithFriends game with two seats, each investigator carrying a placeholder
 -- player id that claim seat swaps for the new player's.
 seedGame :: SqlBackend -> Text -> IO ArkhamGameId
@@ -205,14 +243,26 @@ claim app uid gameId seat =
   route app uid "POST" (Just $ toStrict $ encode $ object ["investigatorId" .= seat])
     $ void (postApiV1ArkhamGameClaimSeatR gameId)
 
+openSeats :: App -> UserId -> ArkhamGameId -> IO [Text]
+openSeats app uid gameId = unsafeHandler app $ asUser uid "GET" Nothing (getApiV1ArkhamGameOpenSeatsR gameId)
+
 pendingJoin :: App -> UserId -> ArkhamGameId -> IO Outcome
 pendingJoin app uid gameId = route app uid "PUT" Nothing $ void (putApiV1ArkhamPendingGameR gameId)
 
--- Each call builds a fresh request whose body yields the bytes once, as WAI
--- does. The HCError is caught only after runDB has rolled back.
+-- The HCError is caught only after runDB has rolled back.
 route :: App -> UserId -> Method -> Maybe ByteString -> Handler () -> IO Outcome
-route app uid method body action = do
-  token <- unsafeHandler app $ userIdToToken uid
+route app uid method body action =
+  unsafeHandler app $
+    (Succeeded <$ asUser uid method body action) `Exception.catch` \case
+      HCError (PermissionDenied message) -> pure $ Forbidden message
+      HCError (InvalidArgs messages) -> pure $ BadRequest messages
+      other -> Exception.throwIO other
+
+-- Run the handler as the user's JWT-authenticated request. Each call builds a
+-- fresh request whose body yields the bytes once, as WAI does.
+asUser :: UserId -> Method -> Maybe ByteString -> Handler a -> Handler a
+asUser uid method body action = do
+  token <- userIdToToken uid
   chunks <- newIORef $ maybeToList body
   let nextChunk = atomicModifyIORef' chunks \case
         chunk : rest -> (rest, chunk)
@@ -222,11 +272,7 @@ route app uid method body action = do
         , requestHeaders = ("Authorization", "Token " <> encodeUtf8 token)
             : [("Content-Type", "application/json") | isJust body]
         }
-  unsafeHandler app $
-    (Succeeded <$ withRequest request action) `Exception.catch` \case
-      HCError (PermissionDenied message) -> pure $ Forbidden message
-      HCError (InvalidArgs messages) -> pure $ BadRequest messages
-      other -> Exception.throwIO other
+  withRequest request action
 
 -- Pool sessions have no PID the test can name up front, so wait until the
 -- expected number of sessions are blocked, directly or behind each other, on
