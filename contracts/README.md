@@ -943,9 +943,10 @@ generation metadata rather than server-authenticated claims.
   repeatable without disclosing existence.
 - Game deletion: deleting a game does not cancel its pending ArkhamDB
   write-back pushes (they have no game foreign key). At dispatch, a push keyed
-  by an ordinary campaign key (`<game>/<investigator>`) can no longer prove its
-  campaign part, so it is fenced as `failed`/`validationFailed` without a remote
-  request, and later rounds skip it. A part-keyed Dream-Eaters push
+  by an ordinary campaign key (`<game>/<investigator>`) can no longer prove it
+  belongs to an ordinary campaign, so it is fenced as `failed`/`validationFailed`
+  without a remote request, and later rounds skip it. An explicit retry or
+  resolve re-runs admission and is fenced again. A part-keyed Dream-Eaters push
   (`…/dreamQuest`, `…/webOfDreams`) proves its deck from the key, so it still
   pushes the already-adopted deck list to its own associated deck. Leftover
   campaign associations are inert.
