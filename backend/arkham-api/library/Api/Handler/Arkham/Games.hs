@@ -445,17 +445,25 @@ putApiV1ArkhamGameRawR gameId = do
       other -> other
   updateGame customCards (Raw attributed) gameId mRoom
 
+{- | Delete a game the caller is seated in, and close its room.
+
+The delete is guarded by the caller's seat, and the room is closed only when
+that delete actually removed the row, after the transaction has committed.
+Closing it unconditionally let any signed-in account that knew a game id
+evict everyone playing it. A caller with no seat and a missing game both get
+the same 200 no-op, so the response does not reveal whether the game exists.
+-}
 deleteApiV1ArkhamGameR :: ArkhamGameId -> Handler ()
 deleteApiV1ArkhamGameR gameId = do
   userId <- getRequestUserId
-  runDB $ delete do
+  deleted <- runDB $ deleteCount do
     games <- from $ table @ArkhamGame
     where_ $ games.id ==. val gameId
     where_ $ exists do
       players <- from $ table @ArkhamPlayer
       where_ $ players.arkhamGameId ==. games.id
       where_ $ players.userId ==. val userId
-  deleteRoom gameId
+  when (deleted > 0) $ deleteRoom gameId
 
 data PlayabilityRequest = PlayabilityRequest
   { investigatorId :: InvestigatorId
