@@ -282,6 +282,14 @@ SOURCE_MESSAGES: dict[str, dict[str, dict[str, str]]] = {
 # by its `a` record, 01121b a real `b` record, and 01001b the lent `b` alias.
 # pt-BR has no card pack, so it falls back to en. These are card data, never
 # backend-emitted keys, so the backend registry leaves them out.
+#
+# The table is pinned by hand so card-data refreshes do not move the fixture.
+# frontend/tests/localeCatalogCardNames.test.mjs requires it to be exactly this
+# code set, with the names the real generator resolves from
+# frontend/public/cards_en.json and cards_de.json. If an upstream sync renames
+# a pinned card there, that test fails: update the names here, rewrite the
+# fixtures (`mise run contracts:catalog-fixture-write`, then
+# `mise run contracts:manifest-hashes`) and bump `schemaRevision`.
 CARD_NAMES_PACK = "cardNames"
 CARD_NAMES: dict[str, tuple[str, str]] = {
     "01001": ("Roland Banks", "Roland Banks"),

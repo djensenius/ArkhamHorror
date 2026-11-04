@@ -310,12 +310,24 @@ function packOf(key) {
 }
 
 /**
+ * The card-name pack is card data, not backend-emitted text, so it takes no
+ * part in the required/untranslated accounting. A backend or fixture key
+ * inside it would be answered by a card name instead of its own text.
+ */
+export function assertNoCardNameClaims(keys) {
+  const claimed = [...keys].filter((key) => packOf(key) === CARD_NAMES_PACK)
+  if (claimed.length > 0) {
+    fail(`backend or fixture key(s) fall in the ${CARD_NAMES_PACK} pack: ${claimed.slice(0, 5).join(', ')}`)
+  }
+}
+
+/**
  * Adds each locale's `cardNames` pack, resolved from its `cards_<locale>.json`
  * by the web's own lookup rules (see card-names.mjs). The pack belongs to the
  * card data alone: a locale message filed under it is refused rather than
  * silently shadowed.
  */
-function addCardNames(normalized, frontendDir) {
+export function addCardNames(normalized, frontendDir) {
   for (const [locale, entries] of normalized) {
     for (const key of entries.keys()) {
       if (packOf(key) === CARD_NAMES_PACK) fail(`${locale} locale sources define ${key}, inside the card-name pack`)
@@ -783,15 +795,7 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
   for (const key of fixtureKeys) {
     if (!defaultEntries.has(key)) fail(`contract fixture key ${key} is missing from ${defaultLocale}`)
   }
-  // The card-name pack is card data, not backend-emitted text, so it takes no
-  // part in the required/untranslated accounting above. A backend or fixture
-  // key inside it would be answered by a card name instead of its own text.
-  const claimed = [...fixtureKeys, ...backend.keys.keys()].filter(
-    (key) => packOf(key) === CARD_NAMES_PACK,
-  )
-  if (claimed.length > 0) {
-    fail(`backend or fixture key(s) fall in the ${CARD_NAMES_PACK} pack: ${claimed.slice(0, 5).join(', ')}`)
-  }
+  assertNoCardNameClaims([...fixtureKeys, ...backend.keys.keys()])
 
   // Every offending key is collected before failing: fixing these one build at
   // a time, with 6,000 required keys, is not a workflow anyone should have.

@@ -1635,12 +1635,20 @@ Slice 1 covers the eight UI catalog locales (`de`, `en`, `es`, `fr`, `it`,
 because its card file is empty. The synthetic fixtures pin the Night of the
 Zealot names in `en` and `de` (`pt-BR` has no card pack and falls back to `en`).
 `frontend/tests/localeCatalogCardNames.test.mjs` proves those pinned names
-equal the real generator output.
+equal the real generator output and cover every Night of the Zealot name the
+fixture labels use. If an upstream sync renames a pinned card in
+`frontend/public/cards_en.json` or `cards_de.json`, that test fails. The fix is
+to update the pinned table, rewrite the fixtures
+(`mise run contracts:catalog-fixture-write`) and bump `schemaRevision`.
 
-Client pins at `0.1.57` remain compatible and need not repin, because a
-client that never looks up a `cardNames.*` key is unaffected by the extra
-pack. Apple TASK-1.2.23, which consumes the pack, repins to
-`0.1.58`.
+From `0.1.58` every catalog client downloads, digest-checks and caches the
+`cardNames` pack for each locale in its fallback chain. That is about 1.1 to
+1.3 MB per locale. The `en` total grows from about 7.5 MB to 8.8 MB. A `de`
+client's own locale grows from about 19 KB to 1.27 MB, plus `en`. A client that
+never looks up a `cardNames.*` key still pays that download cost, but nothing
+else changes for it, and the catalog stays within the Apple client's limits
+(256 chunks per locale, 192 MiB). Client pins at `0.1.57` remain compatible and
+need not repin. Apple TASK-1.2.23, which consumes the pack, repins to `0.1.58`.
 
 ### Locale catalog discovery
 

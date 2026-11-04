@@ -3,8 +3,9 @@
 // time per locale so native clients do one exact-key lookup per code.
 
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import test from 'node:test'
 
 import {
@@ -13,7 +14,7 @@ import {
   cardNameKey,
   resolveCardNames,
 } from '../scripts/locale-catalog/card-names.mjs'
-import { buildCatalog } from '../scripts/locale-catalog/generate.mjs'
+import { addCardNames, assertNoCardNameClaims, buildCatalog } from '../scripts/locale-catalog/generate.mjs'
 
 const card = (code, name) => ({ code, name })
 const names = (cards) => Object.fromEntries(resolveCardNames(cards))
@@ -127,15 +128,58 @@ test('card names take no part in the backend untranslated or variable-gap accoun
   }
 })
 
+// The Night of the Zealot names the fixture must cover (AC3): the five
+// investigators, the basic-weakness enemies a DrewPlayerEnemy label names, every
+// location, enemy, story asset and treachery in the core-box encounter sets,
+// and one example of each lookup rule (bare code from `a`, real `b`, lent `b`).
+function nightOfTheZealotNameCodes() {
+  const cards = JSON.parse(readFileSync(resolve('public', 'cards_en.json'), 'utf8'))
+  const codes = new Set(['01001', '01002', '01003', '01004', '01005', '01101', '01102', '01103'])
+  for (const code of ['01121', '01121b', '01001b']) codes.add(code)
+  for (const card of cards) {
+    if (card.pack_code !== 'core' || !card.encounter_code) continue
+    if (['location', 'enemy', 'asset', 'treachery'].includes(card.type_code)) codes.add(card.code)
+  }
+  return [...codes].map(cardNameKey).sort()
+}
+
+// If an upstream sync renames a pinned card, this fails: update CARD_NAMES in
+// scripts/build-locale-catalog-fixture.py, rewrite the fixtures and bump
+// schemaRevision (see contracts/README.md, revision 0.1.58).
 test('the contract fixture card names are what the real generator resolves', () => {
   const fixtures = resolve('..', 'contracts', 'fixtures')
+  const expectedKeys = nightOfTheZealotNameCodes()
   for (const locale of ['en', 'de']) {
     const source = JSON.parse(readFileSync(resolve(fixtures, `locale-catalog-source-${locale}.json`), 'utf8'))
     const pinned = Object.entries(source).filter(([key]) => key.startsWith(`${CARD_NAMES_PACK}.`))
-    assert.ok(pinned.length >= 72, `${locale} fixture pins ${pinned.length} card names`)
+    assert.deepEqual(pinned.map(([key]) => key).sort(), expectedKeys, `${locale} fixture card-name coverage`)
     const real = cardNamesChunk(locale).entries
     for (const [key, name] of pinned) {
       assert.equal(real[key]?.nodes[0].value, name, `${locale} ${key}`)
     }
   }
+})
+
+test('a locale message inside the card-name pack is refused, not shadowed', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'locale-catalog-card-names-'))
+  try {
+    mkdirSync(join(scratch, 'public'))
+    writeFileSync(join(scratch, 'public', 'cards_en.json'), JSON.stringify([card('01001', 'Roland Banks')]))
+    const text = (value) => ({ form: 'message', nodes: [{ type: 'text', value }], variables: [] })
+    const clean = new Map([['en', new Map([['core.continue', text('Continue')]])]])
+    addCardNames(clean, scratch)
+    assert.equal(clean.get('en').get('cardNames.01001').nodes[0].value, 'Roland Banks')
+    const shadowing = new Map([['en', new Map([['cardNames.01001', text('Not a card')]])]])
+    assert.throws(() => addCardNames(shadowing, scratch), /en locale sources define cardNames\.01001, inside the card-name pack/)
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
+test('a backend or fixture key inside the card-name pack is refused', () => {
+  assert.doesNotThrow(() => assertNoCardNameClaims(['core.continue', 'cardNamesExtra.x', 'label.cardNames']))
+  assert.throws(
+    () => assertNoCardNameClaims(['core.continue', 'cardNames.01001']),
+    /backend or fixture key\(s\) fall in the cardNames pack: cardNames\.01001/,
+  )
 })
