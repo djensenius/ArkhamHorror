@@ -15,6 +15,7 @@ module Api.Handler.Arkham.Archive (
 ) where
 
 import Api.Arkham.Archive
+import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Data.Aeson.KeyMap qualified as KM
 import Data.Time.Clock
 import Database.Persist qualified as P
@@ -26,6 +27,10 @@ import Json
 
 @state@ is the lifecycle value, so the client can tell "offer to restore this"
 from "a restore is already running" without a second round trip.
+
+@error@ is a fixed sentence for a failed restore and @null@ otherwise. What
+actually went wrong is in the server log, not here: this reaches every player
+at the table and is part of the undo refusal.
 -}
 archiveJson :: ArkhamGameArchive -> Json.Value
 archiveJson archive =
@@ -36,7 +41,7 @@ archiveJson archive =
     , "archivedAt" .= archive.archivedAt
     , "requestedAt" .= archive.requestedAt
     , "restoredAt" .= archive.restoredAt
-    , "error" .= archive.errorMessage
+    , "error" .= (if archive.state == Failed then Just archiveRestoreFailedMessage else Nothing)
     ]
 
 {- | Whether an undo can go as far back as it wants to, given the archive.
@@ -97,12 +102,24 @@ isArchiveRefusal = \case
 
 {- | Where this game's undo history is. @null@ for a game that has never been
 archived, which is almost all of them.
+
+Only for an admin or someone seated at the game; anyone else gets the same 404
+as a game that does not exist.
 -}
 getApiV1ArkhamGameArchiveR :: ArkhamGameId -> Handler Json.Value
 getApiV1ArkhamGameArchiveR gameId = do
-  _ <- getRequestUserId
-  mArchive <- runDB $ lookupArchive gameId
-  pure $ maybe Json.Null archiveJson mArchive
+  Entity userId user <- getRequestUser
+  requireArchiveAccess userId user gameId do
+    mArchive <- runDB $ lookupArchive gameId
+    pure $ maybe Json.Null archiveJson mArchive
+
+-- | The fork's game-access rule: admins, then seated players, else 'notFound'.
+requireArchiveAccess :: UserId -> User -> ArkhamGameId -> Handler a -> Handler a
+requireArchiveAccess userId user gameId =
+  withGameAccess
+    user.admin
+    (isJust <$> runDB (P.getBy (UniquePlayer userId gameId)))
+    notFound
 
 {- | Ask for a game's undo history back.
 
@@ -111,35 +128,35 @@ is a gzipped export of every step the game ever took, and the player is holding
 a button. 'startRestore' publishes the outcome to the game's room, which is where
 the client is already listening.
 
-Anyone at the table may ask. It is their history, it restores to the state the
-game is already in, and the only cost of being wrong is some bandwidth.
+Anyone at the table may ask, and so may an admin (the archives panel uses this
+endpoint). It is their history, it restores to the state the game is already
+in, and the only cost of being wrong is some bandwidth. Anyone else gets the
+404 a missing game gets, checked before anything about the deployment is
+revealed.
 -}
 putApiV1ArkhamGameUnarchiveR :: ArkhamGameId -> Handler Json.Value
 putApiV1ArkhamGameUnarchiveR gameId = do
-  -- Unset bucket means the mechanism does not exist on this deployment; nothing
-  -- can have been archived, so there is nothing here to ask for.
-  settings <- getsApp appSettings
-  _ <- maybe notFound pure (archiveConfig settings)
-
   Entity userId user <- getRequestUser
-  unless user.admin do
-    mSeat <- runDB $ P.getBy (UniquePlayer userId gameId)
-    when (isNothing mSeat) $ permissionDenied "You are not in this game"
+  requireArchiveAccess userId user gameId do
+    -- Unset bucket means the mechanism does not exist on this deployment; nothing
+    -- can have been archived, so there is nothing here to ask for.
+    settings <- getsApp appSettings
+    _ <- maybe notFound pure (archiveConfig settings)
 
-  now <- liftIO getCurrentTime
-  mArchive <- runDB $ lookupArchive gameId
-  case mArchive of
-    Nothing -> notFound
-    Just archive -> case archive.state of
-      Restored -> pure $ object ["state" .= Restored, "alreadyRestored" .= True]
-      Restoring -> pure $ object ["state" .= Restoring, "alreadyRunning" .= True]
-      _ -> do
-        mClaimed <- runDB $ claimForRestore now (Just userId) gameId
-        case mClaimed of
-          -- Someone else claimed it between the read and the write, which is
-          -- the same answer from the player's point of view: it is coming.
-          Nothing -> pure $ object ["state" .= Restoring, "alreadyRunning" .= True]
-          Just claimed -> do
-            app <- getApp
-            liftIO $ startRestore app claimed
-            pure $ object ["state" .= Restoring, "steps" .= claimed.steps]
+    now <- liftIO getCurrentTime
+    mArchive <- runDB $ lookupArchive gameId
+    case mArchive of
+      Nothing -> notFound
+      Just archive -> case archive.state of
+        Restored -> pure $ object ["state" .= Restored, "alreadyRestored" .= True]
+        Restoring -> pure $ object ["state" .= Restoring, "alreadyRunning" .= True]
+        _ -> do
+          mClaimed <- runDB $ claimForRestore now (Just userId) gameId
+          case mClaimed of
+            -- Someone else claimed it between the read and the write, which is
+            -- the same answer from the player's point of view: it is coming.
+            Nothing -> pure $ object ["state" .= Restoring, "alreadyRunning" .= True]
+            Just claimed -> do
+              app <- getApp
+              liftIO $ startRestore app claimed
+              pure $ object ["state" .= Restoring, "steps" .= claimed.steps]
