@@ -425,7 +425,7 @@ makeLogWare settings requestLogger =
 -- bodies are logged in Detailed mode.
 skipArkhamDBLogging :: Middleware -> Middleware
 skipArkhamDBLogging logWare app req sendResponse
-  | any isCredentialPath [credentialPath, resolvedCredentialPath] = app req sendResponse
+  | any isCredentialPath credentialViews = app req sendResponse
   | otherwise = logWare app req sendResponse
  where
   credentialRoutes =
@@ -437,18 +437,27 @@ skipArkhamDBLogging logWare app req sendResponse
   -- variants conservatively for privacy, without changing route dispatch or
   -- suppressing similarly named ordinary routes such as "arkhamdb-other".
   -- Drop empty segments so doubled or leading slashes, which are logged before
-  -- Yesod's clean-path redirect, still match. Cut each segment at its first
-  -- ';' so path parameters ("arkhamdb;x=1") are ignored, and drop "." segments.
+  -- Yesod's clean-path redirect, still match, and drop "." segments. Cutting a
+  -- segment at its first ';' ignores path parameters ("arkhamdb;x=1").
+  -- A backslash ("\" or "%5C") is deliberately not normalised: browsers
+  -- convert it before sending, and Yesod routes it to a 404.
   isCredentialPath path = any (`isPrefixOf` path) credentialRoutes
-  credentialPath =
-    filter (`notElem` ["", "."])
-      $ map (T.takeWhile (/= ';'))
-      $ concatMap (T.splitOn "/" . T.toCaseFold) (pathInfo req)
-  -- Match both the literal view (".." kept) and the RFC 3986 dot-resolved view
-  -- (".." pops a segment, never above the root), so neither form bypasses the
-  -- exclusion. A path that climbs out of a credential prefix, such as
+  -- Build four views and skip logging if any of them matches:
+  -- * split-then-cut: split each decoded segment on '/' (an encoded "%2F"),
+  --   then cut every piece at ';'.
+  -- * cut-then-split: cut each decoded segment at ';' first, as a proxy that
+  --   strips parameters per raw segment would, so "arkham;%2F..%2F" is "arkham".
+  -- * Each of these literally (".." kept) and RFC 3986 dot-resolved (".." pops a
+  --   segment, never above the root), so neither form bypasses the exclusion.
+  -- A path that climbs out of a credential prefix, such as
   -- "arkhamdb/../games", is still skipped: privacy wins over logging it.
-  resolvedCredentialPath = reverse $ foldl' resolveSegment [] credentialPath
+  credentialViews = concatMap withResolved [splitThenCut, cutThenSplit]
+  decodedSegments = map T.toCaseFold (pathInfo req)
+  splitThenCut = dropEmptyAndDot $ map cutParams $ concatMap (T.splitOn "/") decodedSegments
+  cutThenSplit = dropEmptyAndDot $ concatMap (T.splitOn "/" . cutParams) decodedSegments
+  cutParams = T.takeWhile (/= ';')
+  dropEmptyAndDot = filter (`notElem` ["", "."])
+  withResolved path = [path, reverse $ foldl' resolveSegment [] path]
   resolveSegment segments ".." = drop 1 segments
   resolveSegment segments segment = segment : segments
 

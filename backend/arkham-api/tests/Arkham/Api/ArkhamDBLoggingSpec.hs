@@ -88,6 +88,10 @@ dotSegmentPaths =
   , "/api/v1/./arkham/x;y/../arkhamdb;z/./callback"
   , "/api/v1/arkham/.;x/arkhamdb/callback"
   , "/api/v1/arkham/x/..;y/arkhamdb/link/complete"
+  , "/api/v1/arkham/x/%2E%2E/arkhamdb/callback"
+  , "/api/v1/arkham/x/%2e%2e/arkhamdb/link/complete"
+  , "/api/v1/arkham/%2e/arkhamdb/callback"
+  , "/api/v1/arkham;%2F..%2F/arkhamdb/callback"
   , -- arkham.build login callback
     "/api/auth/./arkham-build/callback"
   , "/./api/auth/arkham-build/callback"
@@ -96,6 +100,9 @@ dotSegmentPaths =
   , "/api/auth/arkham-build;x=1/callback"
   , "/api;x/auth/arkham-build/callback"
   , "/api/./auth;x/y/../arkham-build/./callback"
+  , "/api/auth/x/%2E%2E/arkham-build/callback"
+  , "/api/auth/%2e/arkham-build/callback"
+  , "/api/auth;%2F..%2F/arkham-build/callback"
   , -- arkham.build authorize and verify
     "/api/v1/./arkham-build/authorize"
   , "/api/v1/arkham-build/./verify"
@@ -104,6 +111,9 @@ dotSegmentPaths =
   , "/api/v1/arkham-build;x=1/authorize"
   , "/api/v1;x/arkham-build/verify"
   , "/api/./v1;x/y/../arkham-build;z/./verify"
+  , "/api/v1/x/%2e%2e/arkham-build/verify"
+  , "/api/v1/%2E/arkham-build/authorize"
+  , "/api/v1;%2F..%2F/arkham-build/authorize"
   ]
 
 -- Empty segments must not suppress logging of ordinary routes.
@@ -132,7 +142,8 @@ ordinaryPaths =
   ]
 
 -- WaiTest.setPath re-encodes the decoded segments into rawPathInfo, which the
--- logger prints, so a literal ';' in a probe path is logged as "%3B".
+-- logger prints, so a literal ';' in a probe path is logged as "%3B". This
+-- relies on ordinary probe paths avoiding any other character setPath re-encodes.
 loggedPath :: ByteString -> ByteString
 loggedPath = BS.intercalate "%3B" . BS.split 59
 
