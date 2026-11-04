@@ -1608,8 +1608,9 @@ digests. `nativeClientMinimumRevision` stays `0.1.57`; clients pinned to
 Revision `0.1.59` changes no public JSON shape, route or capability. It only
 re-derives the locale-catalog tooling provenance: `frontend/package.json`, a
 governed locale-catalog generator input, now pins `@intlify/message-compiler`
-to `11.4.18` alongside vue-i18n `11.4.18` (security advisory
-GHSA-83rm-6c8r-g728), which changes the synthetic catalog fixture digests.
+to `11.4.18` and raises the vue-i18n floor to `^11.4.18` (resolved at
+`11.4.18`; security advisory GHSA-83rm-6c8r-g728), which changes the synthetic
+catalog fixture digests.
 `nativeClientMinimumRevision` stays `0.1.57`; clients pinned to `0.1.57` or
 `0.1.58` are unaffected and need not repin.
 
