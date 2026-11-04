@@ -310,8 +310,8 @@ decideEventDeletion
   -- ^ delete under the canonical lock order
   -> m (EventDeletionOutcome a)
 decideEventDeletion probe isOrganizer deleteLocked = do
-  exists <- probe
-  if not exists
+  present <- probe
+  if not present
     then pure Missing
     else do
       organizer <- isOrganizer

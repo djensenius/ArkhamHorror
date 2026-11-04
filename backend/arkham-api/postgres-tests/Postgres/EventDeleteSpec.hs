@@ -80,10 +80,10 @@ spec harness app seedUser = describe "Epic event delete" do
     withConnection harness \connection -> do
       f <- seedEvent connection seedUser "delete-forbidden"
       stranger <- seedUser connection "delete-forbidden-stranger"
-      before <- snapshot connection f
+      original <- snapshot connection f
       deleteEvent app f.player f.eventId `shouldReturn` Denied
       deleteEvent app stranger f.eventId `shouldReturn` Denied
-      snapshot connection f `shouldReturn` before
+      snapshot connection f `shouldReturn` original
       aggregate connection f `shouldReturn` Aggregate 1 2 2 2
 
   it "lets exactly one of two concurrent deletes win; the other is 404" $
