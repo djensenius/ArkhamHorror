@@ -126,3 +126,16 @@ test('card names take no part in the backend untranslated or variable-gap accoun
     assert.ok(!JSON.stringify(gap).includes(`"${CARD_NAMES_PACK}.`), JSON.stringify(gap))
   }
 })
+
+test('the contract fixture card names are what the real generator resolves', () => {
+  const fixtures = resolve('..', 'contracts', 'fixtures')
+  for (const locale of ['en', 'de']) {
+    const source = JSON.parse(readFileSync(resolve(fixtures, `locale-catalog-source-${locale}.json`), 'utf8'))
+    const pinned = Object.entries(source).filter(([key]) => key.startsWith(`${CARD_NAMES_PACK}.`))
+    assert.ok(pinned.length >= 72, `${locale} fixture pins ${pinned.length} card names`)
+    const real = cardNamesChunk(locale).entries
+    for (const [key, name] of pinned) {
+      assert.equal(real[key]?.nodes[0].value, name, `${locale} ${key}`)
+    }
+  }
+})
