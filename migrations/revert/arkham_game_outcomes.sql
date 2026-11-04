@@ -9,9 +9,9 @@ BEGIN;
 
 DROP INDEX IF EXISTS idx_arkham_game_stats_outcome;
 
-DROP TABLE IF EXISTS arkham_game_outcomes;
-
 DROP MATERIALIZED VIEW IF EXISTS arkham_game_stats;
+
+DROP TABLE IF EXISTS arkham_game_outcomes;
 
 CREATE MATERIALIZED VIEW arkham_game_stats AS
 SELECT
