@@ -4,7 +4,7 @@
 
 module Postgres.DeleteSpec (spec) where
 
-import Api.Arkham.Helpers (gameChannel)
+import Api.Arkham.Helpers (ApiResponse (RoomClosed), gameChannel)
 import Api.Handler.Arkham.Decks (deleteApiV1ArkhamDeckR)
 import Api.Handler.Arkham.Games (deleteApiV1ArkhamGameR)
 import Api.Arkham.ArkhamDBWriteBack (writeBackStore)
@@ -12,6 +12,7 @@ import Arkham.ArkhamDB (ArkhamDBClient, ArkhamDBRemoteDeck)
 import Arkham.ArkhamDB.Service
 import Arkham.ArkhamDB.WriteBack
 import Control.Concurrent.MVar qualified as MVar
+import Data.Aeson qualified as Aeson
 import Data.Map.Strict qualified as Map
 import Database.Persist ((==.))
 import Database.Persist qualified as P
@@ -27,7 +28,8 @@ import Postgres.WriteBackSpec (Fixture (..), Seed, fixture, queue, seedCampaignG
 import Relude
 import Settings (ArkhamDBSettings)
 import Test.Hspec
-import UnliftIO.STM (isEmptyTBQueue)
+import UnliftIO.Exception (finally)
+import UnliftIO.STM (flushTBQueue, isEmptyTBQueue)
 
 spec :: Harness -> App -> ArkhamDBSettings -> ArkhamDBClient IO -> ArkhamDBRemoteDeck -> Seed -> Spec
 spec harness app settings unexpected source seed = describe "Actual JWT-authenticated DELETE Handler with production SQL" do
@@ -74,12 +76,15 @@ spec harness app settings unexpected source seed = describe "Actual JWT-authenti
           void $ transaction connection $ P.insert $ ArkhamPlayer uid gameId "01001"
           token <- unsafeHandler app $ userIdToToken uid
           pure (gameId, token)
-        openRoom gameId = do
+        -- The rooms map is shared by every test on this app, so the room is
+        -- dropped again when the test ends, pass or fail.
+        withRoom gameId action = do
           room <- newRoom $ gameChannel gameId
           info <- anonymousSubscriber
           (_, sub) <- subscribeToRoom info room
-          MVar.modifyMVar_ (appGameRooms app) (pure . Map.insert gameId room)
-          pure sub
+          let rooms = appGameRooms app
+          (MVar.modifyMVar_ rooms (pure . Map.insert gameId room) >> action sub)
+            `finally` MVar.modifyMVar_ rooms (pure . Map.delete gameId)
         roomOpen gameId = Map.member gameId <$> MVar.readMVar (appGameRooms app)
         untouched gameId sub = do
           roomOpen gameId `shouldReturn` True
@@ -91,39 +96,41 @@ spec harness app settings unexpected source seed = describe "Actual JWT-authenti
     it "removes a player's game and closes its room, then repeats as a no-op" $
       withConnection harness \connection -> do
         (gameId, token) <- seatedGame connection "jwt-delete-game-player"
-        sub <- openRoom gameId
-        runHandlerResponse app (withRequest (request token) $ deleteApiV1ArkhamGameR gameId) `shouldReturn` Right ()
-        gameExists connection gameId `shouldReturn` False
-        players connection gameId `shouldReturn` 0
-        roomOpen gameId `shouldReturn` False
-        readTVarIO sub.subClosed `shouldReturn` True
-        atomically (isEmptyTBQueue sub.subQueue) `shouldReturn` False
-        runHandlerResponse app (withRequest (request token) $ deleteApiV1ArkhamGameR gameId) `shouldReturn` Right ()
-        gameExists connection gameId `shouldReturn` False
+        withRoom gameId \sub -> do
+          runHandlerResponse app (withRequest (request token) $ deleteApiV1ArkhamGameR gameId) `shouldReturn` Right ()
+          gameExists connection gameId `shouldReturn` False
+          players connection gameId `shouldReturn` 0
+          roomOpen gameId `shouldReturn` False
+          readTVarIO sub.subClosed `shouldReturn` True
+          -- Exactly one notice, the deletion close, and nothing after it.
+          atomically (flushTBQueue sub.subQueue) `shouldReturn` [Aeson.encode $ RoomClosed "deleted"]
+          runHandlerResponse app (withRequest (request token) $ deleteApiV1ArkhamGameR gameId) `shouldReturn` Right ()
+          gameExists connection gameId `shouldReturn` False
+          atomically (isEmptyTBQueue sub.subQueue) `shouldReturn` True
 
     it "keeps a game and its room when the caller has no seat" $
       withConnection harness \connection -> do
         (gameId, _) <- seatedGame connection "jwt-delete-game-owner"
         (outsider, _, _) <- seed connection "jwt-delete-game-outsider"
         outsiderToken <- unsafeHandler app $ userIdToToken outsider
-        sub <- openRoom gameId
-        runHandlerResponse app (withRequest (request outsiderToken) $ deleteApiV1ArkhamGameR gameId) `shouldReturn` Right ()
-        gameExists connection gameId `shouldReturn` True
-        players connection gameId `shouldReturn` 1
-        untouched gameId sub
+        withRoom gameId \sub -> do
+          runHandlerResponse app (withRequest (request outsiderToken) $ deleteApiV1ArkhamGameR gameId) `shouldReturn` Right ()
+          gameExists connection gameId `shouldReturn` True
+          players connection gameId `shouldReturn` 1
+          untouched gameId sub
 
     it "answers a missing game with the same no-op and leaves a room under its id alone" $
       withConnection harness \connection -> do
         (gameId, token) <- seatedGame connection "jwt-delete-game-missing"
         transaction connection $ P.delete gameId
-        sub <- openRoom gameId
-        runHandlerResponse app (withRequest (request token) $ deleteApiV1ArkhamGameR gameId) `shouldReturn` Right ()
-        untouched gameId sub
+        withRoom gameId \sub -> do
+          runHandlerResponse app (withRequest (request token) $ deleteApiV1ArkhamGameR gameId) `shouldReturn` Right ()
+          untouched gameId sub
 
     it "rejects a request lacking the app JWT before any deletion" $
       withConnection harness \connection -> do
         (gameId, _) <- seatedGame connection "jwt-delete-game-denied"
-        sub <- openRoom gameId
-        runHandlerResponse app (withRequest defaultRequest $ deleteApiV1ArkhamGameR gameId) `shouldReturn` Left status401
-        gameExists connection gameId `shouldReturn` True
-        untouched gameId sub
+        withRoom gameId \sub -> do
+          runHandlerResponse app (withRequest defaultRequest $ deleteApiV1ArkhamGameR gameId) `shouldReturn` Left status401
+          gameExists connection gameId `shouldReturn` True
+          untouched gameId sub
