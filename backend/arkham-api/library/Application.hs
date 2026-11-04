@@ -75,13 +75,14 @@ import Database.Redis (
 import Import hiding (newMVar, sendResponse)
 import Language.Haskell.TH.Syntax (qLocation)
 import Network.HTTP.Client.TLS (getGlobalManager)
-import Network.HTTP.Types (HeaderName, ResponseHeaders, status200, status304)
+import Network.HTTP.Types (HeaderName, ResponseHeaders, status200, status304, urlDecode)
 import Network.TLS (ClientParams (..), Shared (..), Supported (..), defaultParamsClient)
 import Network.TLS.Extra.Cipher (ciphersuite_strong)
 import Network.Wai (
   Middleware,
   mapResponseHeaders,
   pathInfo,
+  rawPathInfo,
   requestHeaders,
   requestMethod,
   responseHeaders,
@@ -426,6 +427,7 @@ makeLogWare settings requestLogger =
 skipArkhamDBLogging :: Middleware -> Middleware
 skipArkhamDBLogging logWare app req sendResponse
   | any isCredentialPath credentialViews = app req sendResponse
+  | isIrregularCredentialPath (pathInfo req) (rawPathInfo req) = app req sendResponse
   | otherwise = logWare app req sendResponse
  where
   credentialRoutes =
@@ -442,7 +444,9 @@ skipArkhamDBLogging logWare app req sendResponse
   -- A backslash ("\" or "%5C") is deliberately not normalised: browsers
   -- convert it before sending, and Yesod routes it to a 404.
   isCredentialPath path = any (`isPrefixOf` path) credentialRoutes
-  -- Build eight views and skip logging if any of them matches:
+  -- Precise matches: build eight views and skip logging if any of them
+  -- matches. Proxies normalise paths in more ways than these views model, so
+  -- isIrregularCredentialPath below is the fail-closed backstop.
   -- * split-then-cut: split each decoded segment on '/' (an encoded "%2F"),
   --   then cut every piece at ';'.
   -- * cut-then-split: cut each decoded segment at ';' first, as a proxy that
@@ -479,6 +483,35 @@ skipArkhamDBLogging logWare app req sendResponse
   resolveSegment segments "." = segments
   resolveSegment segments ".." = drop 1 segments
   resolveSegment segments segment = segment : segments
+
+-- Fail-closed backstop for skipArkhamDBLogging: skip logging an irregular path
+-- that mentions a credential route name anywhere, whatever a proxy would
+-- normalise it to. Irregular: a decoded segment other than a single trailing
+-- empty one is "", "." or "..", or contains ';', '/', '\\' or '%'. Mentions:
+-- after percent-decoding the raw path until it stops changing (at most 8
+-- rounds, to catch double encoding), casefolding, splitting on '/' and '\\'
+-- and cutting at ';', some piece is exactly a credential route name. Exact
+-- pieces keep "arkhamdb-other" or "arkham-builder" logged. Such requests are
+-- 404s or redirects, so over-excluding them never hides a handled request.
+isIrregularCredentialPath :: [Text] -> ByteString -> Bool
+isIrregularCredentialPath decodedSegments rawPath = irregular && mentionsCredentialName
+ where
+  segments = case reverse decodedSegments of
+    "" : rest -> reverse rest
+    _ -> decodedSegments
+  irregular = any irregularSegment segments
+  irregularSegment segment =
+    segment `elem` ["", ".", ".."] || T.any (`elem` [';', '/', '\\', '%']) segment
+  mentionsCredentialName =
+    any (`elem` ["arkhamdb", "arkham-build"])
+      $ map (T.takeWhile (/= ';'))
+      $ T.split (`elem` ['/', '\\'])
+      $ T.toCaseFold (decodeUtf8 (fullyDecoded (8 :: Int) rawPath))
+  fullyDecoded rounds path
+    | rounds <= 0 || decoded == path = path
+    | otherwise = fullyDecoded (rounds - 1) decoded
+   where
+    decoded = urlDecode False path
 
 -- | Warp settings for the given foundation value.
 warpSettings :: App -> Settings
