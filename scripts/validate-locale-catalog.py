@@ -62,8 +62,9 @@ REQUIRED_KEY_FIXTURES = (
 )
 
 # Files a clean-clone build needs. Everything else in the worktree (installed
-# packages, generated output, card exports) is deliberately excluded, so the
-# copy proves the generator depends only on committed sources.
+# packages, generated output, slimmed card exports) is deliberately excluded, so
+# the copy proves the generator depends only on committed sources. The
+# committed per-locale card files are the source of the cardNames pack.
 CLEAN_CLONE_PREFIXES = (
     "frontend/src/",
     "frontend/homebrew/",
@@ -71,6 +72,7 @@ CLEAN_CLONE_PREFIXES = (
     "frontend/schemas/",
     "contracts/",
 )
+CLEAN_CLONE_PATTERNS = (re.compile(r"frontend/public/cards_[a-z]{2}(?:-[a-z]{2})?\.json"),)
 CLEAN_CLONE_FILES = (
     "frontend/package.json",
     "frontend/package-lock.json",
@@ -874,6 +876,9 @@ def validate_provenance(provenance_path: Path, manifest: dict, tracked: set[str]
         covered.add(schema.relative_to(ROOT).as_posix())
     for generator in (FRONTEND / "scripts" / "locale-catalog").glob("*.mjs"):
         covered.add(generator.relative_to(ROOT).as_posix())
+    # Each catalog locale's card data feeds its cardNames pack.
+    for locale in manifest["locales"]:
+        covered.add(f"frontend/public/cards_{locale['locale'].lower()}.json")
 
     for relative in sorted(covered):
         require(relative in tracked, f"{relative} is not tracked by git")
@@ -889,7 +894,11 @@ def validate_clean_clone(
     reproduce the worktree build byte for byte."""
     clone = workspace / "clean-clone"
     for relative in sorted(tracked):
-        if not (relative.startswith(CLEAN_CLONE_PREFIXES) or relative in CLEAN_CLONE_FILES):
+        if not (
+            relative.startswith(CLEAN_CLONE_PREFIXES)
+            or relative in CLEAN_CLONE_FILES
+            or any(pattern.fullmatch(relative) for pattern in CLEAN_CLONE_PATTERNS)
+        ):
             continue
         target = clone / relative
         target.parent.mkdir(parents=True, exist_ok=True)

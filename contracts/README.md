@@ -1623,6 +1623,65 @@ catalog fixture digests.
 `nativeClientMinimumRevision` stays `0.1.57`; clients pinned to `0.1.57` or
 `0.1.58` are unaffected and need not repin.
 
+#### Localized card names (revision 0.1.60)
+
+Revision `0.1.60` adds a `cardNames` pack to the locale catalog. It changes no
+route, capability or JSON schema: it is required because the synthetic catalog
+fixtures now carry card-name chunks. The native minimum stays `0.1.57`.
+
+Server labels name cards and investigators through the `name`/`__name` and
+`iname`/`__iname` variables (`cardNameVar`/`investigatorNameVar` in
+`Arkham/I18n.hs`): the English title plus the card code. The web replaces the
+English title with the localized name from `frontend/public/cards_<locale>.json`
+(`handleI18n` in `frontend/src/arkham/i18n.ts`). The catalog now publishes the
+same answer, so a native client looks up `cardNames.<code>` with the `__name`
+or `__iname` code, as one exact key with no suffix logic of its own.
+
+The generator (`frontend/scripts/locale-catalog/card-names.mjs`) resolves each
+key the way `buildCardIndex` and `getDbCard` in
+`frontend/src/stores/dbCards.ts` do:
+
+1. Every record answers for its own code.
+2. Every record also answers for `<code>b` when no record has that code, so a
+   real `b` record always wins over this alias, whatever the file order.
+3. A bare code with no record of its own answers with its `<code>a` record
+   (for example `01121` gives the agenda front `01121a`).
+
+A code is published only when the record it resolves to has a non-empty string
+name. Names are literal text nodes and are never parsed as messages. The card
+files are part of the catalog provenance, so a card-data change moves the
+catalog revision like any locale-source change. Card names are not
+backend-emitted keys, so they never count as backend-required or untranslated.
+
+Fallback is different from the web. A code missing from a locale's pack falls
+back through the catalog chain to the `en` pack. Only if `en` also lacks it
+does the client keep the server's English title. The web instead falls back per
+code straight to the server's English title. Today every UI locale publishes
+the same code set (11,794 keys, about 1.2 MB per locale chunk), so this only
+matters for future data gaps.
+
+Slice 1 covers the eight UI catalog locales (`de`, `en`, `es`, `fr`, `it`,
+`ko`, `zh`, `zh-CN`). The card-only web languages (`pl`, `po` for Portuguese,
+`ru` and `uk`) are pending a later revision. `ja` is excluded
+because its card file is empty. The synthetic fixtures pin the Night of the
+Zealot names in `en` and `de` (`pt-BR` has no card pack and falls back to `en`).
+`frontend/tests/localeCatalogCardNames.test.mjs` proves those pinned names
+equal the real generator output and cover every Night of the Zealot name the
+fixture labels use. If an upstream sync renames a pinned card in
+`frontend/public/cards_en.json` or `cards_de.json`, that test fails. The fix is
+to update the pinned table, rewrite the fixtures
+(`mise run contracts:catalog-fixture-write`) and bump `schemaRevision`.
+
+From `0.1.60` every catalog client downloads, digest-checks and caches the
+`cardNames` pack for each locale in its fallback chain. That is about 1.1 to
+1.3 MB per locale. The `en` total grows from about 7.5 MB to 8.8 MB. A `de`
+client's own locale grows from about 19 KB to 1.27 MB, plus `en`. A client that
+never looks up a `cardNames.*` key still pays that download cost, but nothing
+else changes for it, and the catalog stays within the Apple client's limits
+(256 chunks per locale, 192 MiB). Client pins at `0.1.57` to `0.1.59` remain
+compatible and need not repin. Apple TASK-1.2.23, which consumes the pack,
+repins to `0.1.60`.
+
 ### Locale catalog discovery
 
 `GET /capabilities` advertises a catalog with the `i18n.locale-catalog.v1`
