@@ -140,16 +140,18 @@ applyOverlay overlay decklist =
     Map.filter (> 0)
       $ Map.foldrWithKey (\cardCode n m -> Map.adjust (subtract n) cardCode m) added (overlayRemove overlay)
 
-{- | What a seat's upgrade loads: the overlay over the list, after dropping parallel
-faces whose front this app cannot build (the predicate, e.g. 'isKnownInvestigator',
-which this module cannot import). The seat's own investigator is then seated
-instead of the upgrade being rejected; a known parallel front is kept.
+{- | 'applyOverlay' for every path that seats a deck. An overlay that names an
+investigator over a front this app cannot build (the predicate, e.g.
+'isKnownInvestigator', which this module cannot import) drops the parallel faces
+first, so that investigator is seated rather than the deck rejected. A known
+parallel front is kept, and a list with no investigator overlay is untouched.
 -}
 applySeatOverlay
   :: (InvestigatorId -> Bool) -> Maybe DeckOverlay -> ArkhamDBDecklist -> ArkhamDBDecklist
 applySeatOverlay isKnown overlay decklist = maybe id applyOverlay overlay decklist'
  where
   decklist'
+    | isNothing (overlayInvestigator =<< overlay) = decklist
     | isKnown (decklistInvestigatorId decklist) = decklist
     | otherwise = decklist {meta = withoutParallelFaces <$> meta decklist}
 

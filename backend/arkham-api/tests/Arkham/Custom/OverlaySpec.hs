@@ -18,6 +18,8 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
+import Entity.Arkham.Deck (ArkhamDeck (..), arkhamDeckPlayList, arkhamDeckPlayListFor)
+import Entity.User (Key (UserKey))
 import GHC.Records (getField)
 import Test.Hspec
 import Prelude
@@ -108,6 +110,30 @@ spec = describe "a deck built on an arkham.build placeholder" do
       getField @"investigator" played `shouldBe` "90024"
       decklistInvestigatorError played `shouldBe` Nothing
 
+    it "leaves an unknown front alone when no overlay names an investigator" do
+      for_ [Nothing, Just (DeckOverlay Nothing mempty mempty mempty)] \overlay ->
+        meta (applySeatOverlay isKnownInvestigator overlay unknownFrontDeck)
+          `shouldBe` meta unknownFrontDeck
+
+  -- The saved deck's play list and a per-game overlay over it (DeckAnswer) seat
+  -- through the same helper, so neither keeps a front this app cannot build.
+  describe "a saved deck's play list" do
+    it "seats its overlay's base code over an unknown front" do
+      let played = arkhamDeckPlayList (savedDeck unknownFrontDeck (Just (investigatorOverlay "01001")))
+      getField @"investigator" played `shouldBe` "01001"
+      decklistInvestigatorError played `shouldBe` Nothing
+
+    it "seats a per-game overlay's base code over an unknown front" do
+      let played = arkhamDeckPlayListFor (Just (investigatorOverlay "01001")) (savedDeck unknownFrontDeck Nothing)
+      getField @"investigator" played `shouldBe` "01001"
+      decklistInvestigatorError played `shouldBe` Nothing
+
+    it "keeps a parallel front this app knows" do
+      let deck = savedDeck parallelDeck (Just (investigatorOverlay "01001"))
+      getField @"investigator" (arkhamDeckPlayList deck) `shouldBe` "90024"
+      getField @"investigator" (arkhamDeckPlayListFor (Just (investigatorOverlay "01001")) deck)
+        `shouldBe` "90024"
+
   describe "isKnownInvestigator" do
     it "knows a printed investigator" do
       isKnownInvestigator "01001" `shouldBe` True
@@ -195,6 +221,10 @@ unknownFrontDeck =
     { meta =
         Just "{\"alternate_front\":\"*00000000000000000000000000000f00\",\"alternate_back\":\"01001\",\"taboo\":1}"
     }
+
+-- | A deck row as saved, with an overlay laid over it or not.
+savedDeck :: ArkhamDBDecklist -> Maybe DeckOverlay -> ArkhamDeck
+savedDeck list overlay = ArkhamDeck (UserKey 1) Nothing "Deck" "Roland Banks" list overlay Nothing Nothing
 
 metaKeys :: ArkhamDBDecklist -> Maybe [Text]
 metaKeys d = Map.keys <$> (decode @(Map.Map Text Value) . BL.fromStrict . encodeUtf8 =<< meta d)
