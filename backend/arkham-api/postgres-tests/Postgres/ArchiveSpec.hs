@@ -167,6 +167,11 @@ spec harness app = describe "Game archive access and restore failures with produ
         lines' <- readIORef logged
         length lines' `shouldBe` 2
         for_ lines' (`shouldNotSatisfy` T.isInfixOf sentinel)
+        -- The ignored failure is still visible to an operator, with only the safe summary.
+        lines'
+          `shouldSatisfy` any \line ->
+            "archive: late restore failure ignored for game " `T.isInfixOf` line
+              && "(restore failed: storage): the archive is no longer restoring" `T.isInfixOf` line
 
   {- The hand-archive fails before any S3 call: credentials come from fake
   environment keys (the first link of Amazonka's discovery chain, with the
