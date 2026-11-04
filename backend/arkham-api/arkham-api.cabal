@@ -9840,6 +9840,7 @@ test-suite arkhamdb-postgres
   type: exitcode-stdio-1.0
   main-is: Main.hs
   other-modules:
+      Postgres.ArchiveSpec
       Postgres.ClaimSeatSpec
       Postgres.ConcurrencySpec
       Postgres.DeleteSpec
@@ -9910,6 +9911,8 @@ test-suite arkhamdb-postgres
     , unliftio
     , uuid
     , wai
+    , wai-extra
+    , warp
     , yesod-core
   default-language: GHC2021
 

@@ -941,6 +941,15 @@ generation metadata rather than server-authenticated claims.
 - Deletion is available to any participant, not a distinct owner. Missing and
   non-participant game IDs both return empty success, making deletion
   repeatable without disclosing existence.
+- Game deletion: deleting a game does not cancel its pending ArkhamDB
+  write-back pushes (they have no game foreign key). At dispatch, a push keyed
+  by an ordinary campaign key (`<game>/<investigator>`) can no longer prove it
+  belongs to an ordinary campaign, so it is fenced as `failed`/`validationFailed`
+  without a remote request, and later rounds skip it. An explicit retry or
+  resolve re-runs admission and is fenced again. A part-keyed Dream-Eaters push
+  (`…/dreamQuest`, `…/webOfDreams`) proves its deck from the key, so it still
+  pushes the already-adopted deck list to its own associated deck. Leftover
+  campaign associations are inert.
 - Authenticated accounts may preview a pending game without joining; its log is
   omitted. Joining twice is idempotent, and joining a game that already left
   the pending state returns its unchanged snapshot. An Epic participant cannot
@@ -1602,6 +1611,17 @@ a governed CI input change: the required Haskell job in
 frees runner disk before building, which changes the synthetic catalog fixture
 digests. `nativeClientMinimumRevision` stays `0.1.57`; clients pinned to
 `0.1.57` are unaffected and need not repin.
+
+#### Locale-catalog intlify toolchain pin (revision 0.1.59)
+
+Revision `0.1.59` changes no public JSON shape, route or capability. It only
+re-derives the locale-catalog tooling provenance: `frontend/package.json`, a
+governed locale-catalog generator input, now pins `@intlify/message-compiler`
+to `11.4.18` and raises the vue-i18n floor to `^11.4.18` (resolved at
+`11.4.18`; security advisory GHSA-83rm-6c8r-g728), which changes the synthetic
+catalog fixture digests.
+`nativeClientMinimumRevision` stays `0.1.57`; clients pinned to `0.1.57` or
+`0.1.58` are unaffected and need not repin.
 
 ### Locale catalog discovery
 

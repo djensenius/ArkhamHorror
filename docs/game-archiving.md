@@ -16,11 +16,11 @@ is offered the history back.
 | Where | What |
 |---|---|
 | `backend/arkham-api/library/Api/Arkham/Archive.hs` | All of the machinery: the sweep, one game's archive and restore, and the workers. |
-| `backend/arkham-api/library/Api/Handler/Arkham/Archive.hs` | `GET /games/#/archive`, `PUT /games/#/unarchive`, and `requireUnarchived`, which every undo endpoint calls. |
-| `backend/arkham-api/library/Api/Handler/Arkham/Admin/Archives.hs` | `GET /admin/archives`, `POST /admin/archives/run`. |
+| `backend/arkham-api/library/Api/Handler/Arkham/Archive.hs` | `GET /games/#/archive`, `PUT /games/#/unarchive`, and `checkArchiveSeam`, which the undo endpoints call. |
+| `backend/arkham-api/library/Api/Handler/Arkham/Admin/Archives.hs` | `GET /admin/archives`, `POST /admin/archives/run`, `POST /admin/archives/#gameId`. |
 | `backend/arkham-api/library/Entity/Arkham/GameArchive.hs` | One row per game: where its history is and what state it is in. |
 | `migrations/deploy/arkham_game_archives.sql` | The table, and the trigger exemption that lets the archiver delete steps. |
-| `frontend/src/components/admin/Archives.vue` | The panel on `/admin`. |
+| `frontend/src/views/AdminArchives.vue` | The panel on `/admin`. |
 
 ## Configuration
 
@@ -47,7 +47,7 @@ age.
 
 ### Setting it up in production
 
-**The migration goes first, before the image.** `requireUnarchived` runs on every
+**The migration goes first, before the image.** `checkArchiveSeam` runs on every
 undo and queries `arkham_game_archives` whether or not a bucket is configured, so
 new code against an old schema is a failed undo for everyone. The migration
 itself is additive and the old code ignores it, so there is no window where the
@@ -170,6 +170,18 @@ keeps the steps above the archive, and a retry is harmless. The outcome reaches
 the table as `GameUnarchived` or `GameUnarchiveFailed` over the game's websocket
 — which is also how it reaches a player whose socket is on a different replica
 than the request was.
+
+Both endpoints answer only an admin or a player seated at the game (the archives
+panel uses the unarchive endpoint too); anyone else gets the same 404 as a game
+that does not exist. A failed restore tells clients one fixed sentence, "The
+archived steps could not be restored.", in the status `error`, the undo refusal
+and `GameUnarchiveFailed`. The row's `error_message`, which the admin panel shows,
+holds only a category (`restore failed: storage`, `database`, `integrity` or
+`unknown`); the underlying exception is in the server log.
+A failed admin hand-archive (`POST /admin/archives/#gameId`) likewise answers
+a 500 whose `error` is a fixed sentence ("The game could not be archived. The
+server log has the details."); the underlying failure goes only to the server
+log.
 
 A game is only a candidate again once it is fully `restored`. Not merely "not
 archived": a game whose restore *failed* has its old steps only in the object
