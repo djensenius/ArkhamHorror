@@ -53,12 +53,14 @@ lockEpicEventRow eid = do
     pure e
   pure $ listToMaybe locked
 
-{- | The canonical Epic lock order, for any transaction that locks more than
-one of an event's rows: its group games one at a time in ascending id order,
-then the event row ('lockEpicEventRow'), and only then player/member rows.
-Gameplay already locks its game before the event, so this cannot deadlock
-against it. Returns the locked game ids and event, or 'Nothing' when the event
-no longer exists (a concurrent delete won).
+{- | The canonical Epic lock order: games (ascending id, one at a time), then
+the event row ('lockEpicEventRow'; the KEY SHARE that a member or step insert
+takes on it counts as an event lock), then member rows. Single-game gameplay
+paths lock game then event, so delete cannot deadlock with them. Paths that
+lock several games must take them in ascending id order; the Main Street swap
+still locks by group ordinal and moves onto this helper in TASK-2.7. Returns
+the locked game ids and event, or 'Nothing' when the event is gone (a
+concurrent delete won).
 -}
 canonicalEpicGameLockOrder
   :: MonadIO m

@@ -289,13 +289,13 @@ isEventOrganizer userId eid =
 organizerOnly :: Handler a
 organizerOnly = permissionDenied "Only the event organizer may perform this action"
 
--- | How an event deletion request resolved; 'Deleted' carries the deletion's result.
-data EventDeletionOutcome a = Missing | Forbidden | Deleted a
+-- | How an event deletion request resolved; 'EventDeleted' carries the deletion's result.
+data EventDeletionOutcome a = EventMissing | EventForbidden | EventDeleted a
   deriving stock (Eq, Show)
 
-{- | Decide an event deletion. A missing event is 'Missing' (404) before any
+{- | Decide an event deletion. A missing event is 'EventMissing' (404) before any
 organizer check, so the status discloses nothing about who organizes it. A
-non-organizer re-probes and prefers 'Missing' when a concurrent delete won;
+non-organizer re-probes and prefers 'EventMissing' when a concurrent delete won;
 that path never locks the event. The locked delete returns 'Nothing' when the
 event vanished before its lock was taken. Polymorphic so tests can run it in
 plain 'IO'.
@@ -312,12 +312,12 @@ decideEventDeletion
 decideEventDeletion probe isOrganizer deleteLocked = do
   present <- probe
   if not present
-    then pure Missing
+    then pure EventMissing
     else do
       organizer <- isOrganizer
       if organizer
-        then maybe Missing Deleted <$> deleteLocked
-        else bool Missing Forbidden <$> probe
+        then maybe EventMissing EventDeleted <$> deleteLocked
+        else bool EventMissing EventForbidden <$> probe
 
 -- Handlers --------------------------------------------------------------------
 
@@ -424,9 +424,9 @@ deleteApiV1ArkhamEventR eid = do
       (isEventOrganizer userId eid)
       (runDB deleteLocked)
   case outcome of
-    Missing -> notFound
-    Forbidden -> organizerOnly
-    Deleted gameIds -> do
+    EventMissing -> notFound
+    EventForbidden -> organizerOnly
+    EventDeleted gameIds -> do
       for_ gameIds deleteRoom
       deleteEventRoom eid
  where
