@@ -23,7 +23,7 @@ spec = for_ [True, False] \detailed ->
     for_ ordinaryPaths \path ->
       it ("continues logging ordinary route " <> toString (decodeUtf8 path :: Text)) do
         output <- captureLog detailed path
-        output `shouldSatisfy` BS.isInfixOf path
+        output `shouldSatisfy` BS.isInfixOf (loggedPath path)
         when detailed $ output `shouldSatisfy` BS.isInfixOf "probe-completion-secret"
 
 protectedPaths :: [ByteString]
@@ -64,6 +64,127 @@ protectedPaths =
   , "/api/auth/%61rkham-build/callback"
   , "/api/auth%2Farkham-build/callback"
   ]
+    <> dotSegmentPaths
+
+-- Dot segments and ';' path parameters must not bypass the exclusion for any
+-- credential route, whether matched literally or after dot resolution.
+dotSegmentPaths :: [ByteString]
+dotSegmentPaths =
+  [ -- ArkhamDB
+    "/api/v1/arkham/arkhamdb/./callback"
+  , "/api/v1/arkham/./arkhamdb/callback"
+  , "/./api/v1/arkham/arkhamdb/link/complete"
+  , "/api/v1/arkham/arkhamdb/link/./complete/."
+  , "/api/v1/arkham/%2E/arkhamdb/callback"
+  , "/api/v1/arkham/x/../arkhamdb/callback"
+  , "/../api/v1/arkham/arkhamdb/callback"
+  , "/api/v1/arkham/arkhamdb/../arkhamdb/link/complete"
+  , "/api/v1/arkham/arkhamdb/../decks"
+  , "/api/v1/arkham/arkhamdb;x=1/callback"
+  , "/api;x/v1/arkham/arkhamdb/callback"
+  , "/api/v1/arkham/arkhamdb/callback;x=1"
+  , "/api/v1/;x/arkham/arkhamdb/link/complete"
+  , "/api/v1/arkham/arkhamdb%3Bx/callback"
+  , "/api/v1/./arkham/x;y/../arkhamdb;z/./callback"
+  , "/api/v1/arkham/.;x/arkhamdb/callback"
+  , "/api/v1/arkham/x/..;y/arkhamdb/link/complete"
+  , "/api/v1/arkham/x/%2E%2E/arkhamdb/callback"
+  , "/api/v1/arkham/x/%2e%2e/arkhamdb/link/complete"
+  , "/api/v1/arkham/%2e/arkhamdb/callback"
+  , "/api/v1/arkham;%2F..%2F/arkhamdb/callback"
+  -- ".." pops an empty segment before empty segments are dropped (RFC 3986).
+  , "/api/v1/arkham//../arkhamdb/callback"
+  , "/api//../v1/arkham/arkhamdb/callback"
+  , "/api/v1/arkham///../../arkhamdb/link/complete"
+  , "/api/v1/arkham/x//../../arkhamdb/callback"
+  , "/api/v1/arkham//../arkhamdb/callback/."
+  , "/api/v1/arkham//%2e%2e/arkhamdb/callback"
+  , "/api/v1/arkham%2F%2F..%2Farkhamdb/callback"
+  , "/api/v1/arkham/;x/../arkhamdb/callback"
+  , "/api/v1/arkham//;x/../../arkhamdb/link/complete"
+  -- ".." pops a whole decoded segment, "%2F" included, as on the raw path.
+  , "/api/v1/arkham/q%2Fr/../arkhamdb/callback"
+  , "/api/v1/arkham/q%2Fr/%2e%2e/arkhamdb/callback"
+  , "/api/v1/arkham/q%2Fr;x/../arkhamdb/callback"
+  , "/api/v1/arkham/q%2Fr/x/../../arkhamdb/link/complete"
+  , "/api/v1/arkham/q%2Fr//../../arkhamdb/callback"
+  , -- arkham.build login callback
+    "/api/auth/./arkham-build/callback"
+  , "/./api/auth/arkham-build/callback"
+  , "/api/auth/x/../arkham-build/callback"
+  , "/../api/auth/arkham-build/callback"
+  , "/api/auth/arkham-build;x=1/callback"
+  , "/api;x/auth/arkham-build/callback"
+  , "/api/./auth;x/y/../arkham-build/./callback"
+  , "/api/auth/x/%2E%2E/arkham-build/callback"
+  , "/api/auth/%2e/arkham-build/callback"
+  , "/api/auth;%2F..%2F/arkham-build/callback"
+  , "/api/auth//../arkham-build/callback"
+  , "/api//../auth/arkham-build/callback"
+  , "/api/auth///../../arkham-build/callback/."
+  , "/api/auth//%2E%2E/arkham-build/callback"
+  , "/api/auth/;x/../arkham-build/callback"
+  , "/api/auth/q%2Fr/../arkham-build/callback"
+  , "/api/auth/q%2Fr;x/%2E%2E/arkham-build/callback"
+  , -- arkham.build authorize and verify
+    "/api/v1/./arkham-build/authorize"
+  , "/api/v1/arkham-build/./verify"
+  , "/api/v1/x/../arkham-build/verify"
+  , "/../api/v1/arkham-build/authorize"
+  , "/api/v1/arkham-build;x=1/authorize"
+  , "/api/v1;x/arkham-build/verify"
+  , "/api/./v1;x/y/../arkham-build;z/./verify"
+  , "/api/v1/x/%2e%2e/arkham-build/verify"
+  , "/api/v1/%2E/arkham-build/authorize"
+  , "/api/v1;%2F..%2F/arkham-build/authorize"
+  , "/api/v1//../arkham-build/authorize"
+  , "/api//../v1/arkham-build/verify"
+  , "/api/v1//../../v1/arkham-build/verify"
+  , "/api/v1///../../arkham-build/verify/."
+  , "/api/v1//%2e%2e/arkham-build/authorize"
+  , "/api/v1/;x/../arkham-build/authorize"
+  , "/api/v1/q%2Fr/../arkham-build/verify"
+  , "/api/v1/q%2F%2Fr/../arkham-build/authorize"
+  ]
+    <> irregularCredentialPaths
+
+-- The fail-closed backstop: an irregular path that mentions a credential route
+-- name is never logged, whatever a proxy would normalise it to. These cover
+-- proxies that keep "%2e" encoded, treat ';' as data, mix those, or decode
+-- twice ("%252F", "%2561").
+irregularCredentialPaths :: [ByteString]
+irregularCredentialPaths =
+  [ "/api/v1/arkham/%2e%2e/../arkhamdb/callback"
+  , "/api/v1/arkham/%2e/../arkhamdb/callback"
+  , "/api/auth/%2e/../arkham-build/callback"
+  , "/api/auth/%2e%2e/../arkham-build/callback"
+  , "/api/v1/%2e%2e/../arkham-build/verify"
+  , "/api/v1/%2e/../arkham-build/authorize"
+  , "/api/v1/arkham/..;x/%2F../arkhamdb/callback"
+  , "/api/v1/arkham/..;x/..%2F/arkhamdb/callback"
+  , "/api/auth/..;x/%2F../arkham-build/callback"
+  , "/api/auth/..;x/..%2F/arkham-build/callback"
+  , "/api/v1/..;x/%2F../arkham-build/callback"
+  , "/api/v1/..;x/..%2F/arkham-build/verify"
+  , "/api/v1/arkham/q%2F../arkhamdb/..;x/callback"
+  , "/api/auth/q%2F../arkham-build/..;x/callback"
+  , "/api/v1/q%2F../arkham-build/..;x/callback"
+  , "/api/v1/arkham/x%252F..%252F/arkhamdb/callback"
+  , "/api/auth/x%252F..%252F/arkham-build/callback"
+  , "/api/v1/x%252F..%252F/arkham-build/verify"
+  , "/api/v1/arkham%252Farkhamdb/callback"
+  , "/api/v1/arkham/%2561rkhamdb/callback"
+  , "/api/auth/%2561rkham-build/callback"
+  , "/api/v1/%2561rkham-build/authorize"
+  -- Over-exclusion is deliberate: these resolve to no credential route, but
+  -- they are irregular and name one, and they 404 or redirect without reaching
+  -- a handler.
+  , "/api/v1/arkham/../arkhamdb/callback"
+  , "/api/v1//../arkhamdb/callback"
+  , "/api/v1/q%2Fr/../arkhamdb/callback"
+  -- A regular non-credential ArkhamDB route stays excluded by its prefix.
+  , "/api/v1/arkham/arkhamdb/status"
+  ]
 
 -- Empty segments must not suppress logging of ordinary routes.
 ordinaryPaths :: [ByteString]
@@ -77,7 +198,35 @@ ordinaryPaths =
   , "/api/auth/arkham-build-other/callback"
   , "/api/v1/arkham-builder/verify"
   , "/api/v1/site-settings"
+  -- Dot segments and path parameters must not suppress ordinary routes, nor
+  -- may resolution that leaves no credential prefix.
+  , "/api/v1/./arkham/decks"
+  , "/api/v1/arkham/decks;x=1"
+  , "/api/v1/arkham/arkhamdb-other;x=1"
+  , "/api/v1/arkham/./arkhamdb2"
+  , "/api/v1/arkham/x/../games"
+  , "/api/v1/arkham/arkhamdb-other/../decks"
+  , "/api/auth/./arkham-build-other/callback"
+  , "/api/v1/arkham-builder;x/../verify"
+  , "/api/v1/arkham;%2F../decks"
+  -- Resolving ".." against an empty segment leaves no credential prefix.
+  , "/api/v1/arkham//../decks"
+  , "/api/v1/arkham/x//../../games"
+  , "/api/v1/arkham/;x/../decks"
+  , "/api/auth//../arkham-build-other/callback"
+  , "/api/v1//../arkham-builder/verify"
+  -- Popping a whole decoded segment leaves no credential prefix.
+  , "/api/v1/arkham/q%2Fr/../decks"
+  , "/api/auth/q%2Fr/../arkham-build-other/callback"
+  -- An irregular path that names no credential route is still logged.
+  , "/api/v1/arkham/x/../decks;y"
   ]
+
+-- WaiTest.setPath re-encodes the decoded segments into rawPathInfo, which the
+-- logger prints, so a literal ';' in a probe path is logged as "%3B". This
+-- relies on ordinary probe paths avoiding any other character setPath re-encodes.
+loggedPath :: ByteString -> ByteString
+loggedPath = BS.intercalate "%3B" . BS.split 59
 
 -- Use the production middleware, including its body-capture path, for both
 -- formats. No separately implemented exclusion predicate participates here.

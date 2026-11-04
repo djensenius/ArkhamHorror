@@ -9841,6 +9841,7 @@ test-suite arkhamdb-postgres
   main-is: Main.hs
   other-modules:
       Postgres.ArchiveSpec
+      Postgres.ClaimSeatSpec
       Postgres.ConcurrencySpec
       Postgres.DeleteSpec
       Postgres.DispatchSpec

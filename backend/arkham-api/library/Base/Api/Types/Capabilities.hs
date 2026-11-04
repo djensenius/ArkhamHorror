@@ -75,7 +75,7 @@ update-required even for deployments that omit the catalog fields.
 serverCapabilities :: Maybe LocaleCatalog -> Bool -> ServerCapabilities
 serverCapabilities localeCatalog arkhamDBEnabled =
   ServerCapabilities
-    { schemaRevision = "0.1.59"
+    { schemaRevision = "0.1.62"
     , status = "baseline-incomplete"
     , apiBasePath = "/api/v1"
     , nativeClientMinimumRevision = "0.1.57"

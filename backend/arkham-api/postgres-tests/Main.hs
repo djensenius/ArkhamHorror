@@ -43,6 +43,7 @@ import Network.Wai.Handler.Warp qualified as Warp
 import Postgres.ArchiveSpec qualified as ArchiveSQL
 import Postgres.Harness
 import Postgres.HarnessSpec qualified as Harness
+import Postgres.ClaimSeatSpec qualified as ClaimSeatSQL
 import Postgres.DispatchSpec qualified as DispatchSQL
 import Postgres.PayloadSpec qualified as PayloadSQL
 import Postgres.ConcurrencySpec qualified as ConcurrencySQL
@@ -81,6 +82,7 @@ main = withHarness \harness -> withProductionApp harness \app ->
     EndToEndSQL.spec harness app settings transport remote (writeBackSeed app)
     ThirdEditionSQL.spec harness app
     ArchiveSQL.spec harness app
+    ClaimSeatSQL.spec harness app seedUser
 
 writeBackSeed :: App -> WriteBackSQL.Seed
 writeBackSeed app connection label = do
