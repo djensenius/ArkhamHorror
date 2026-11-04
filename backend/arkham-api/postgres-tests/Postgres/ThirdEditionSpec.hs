@@ -23,6 +23,7 @@ import AH3e.Types.Card (Expansion (CoreSet))
 import AH3e.Types.State (GameMode (StandardMode))
 import Amazonka (Error (..))
 import Amazonka.Error (serviceError)
+import Api.Arkham.Helpers (joinRoomIn, releaseRoomIfEmpty)
 import Api.Handler.Arkham.Game.Bug (
   BugUploadOutcome (..),
   BugUploadTransport,
@@ -31,7 +32,7 @@ import Api.Handler.Arkham.Game.Bug (
   runHeadObjectAction,
   uploadBugExportUsing,
  )
-import Api.Handler.ThirdEdition (getApiV1ThirdEditionExportWith, postApiV1ThirdEditionBugWith)
+import Api.Handler.ThirdEdition (getApiV1ThirdEditionExportWith, postApiV1ThirdEditionBugWith, tableFeedGate)
 import Data.Aeson (Value, decode, object, withObject, (.:), (.=))
 import Data.Aeson.Types (parseMaybe)
 import Data.ByteString.Builder (toLazyByteString)
@@ -45,7 +46,7 @@ import Data.UUID.V4 (nextRandom)
 import Database.Persist.Sql (Single (..), SqlBackend, rawExecute, rawSql, toPersistValue, toSqlKey)
 import Database.Persist.Types (PersistValue (..))
 import Entity.User (UserId)
-import Foundation (App (..), Handler, unsafeHandler, userIdToToken)
+import Foundation (App (..), Handler, Subscriber (..), anonymousSubscriber, unsafeHandler, unsubscribeFromRoom, userIdToToken)
 import Network.HTTP.Types (Header, Method, Status, status200, status400, status403, status404, status500, status502)
 import Network.Wai (defaultRequest, requestHeaders)
 import Postgres.Harness
@@ -55,6 +56,7 @@ import Test.Hspec
 import ThirdEdition.Store (Store (..))
 import ThirdEdition.Table (Seat (..), Table (..), TableOptions (..))
 import UnliftIO.Exception qualified as Exception
+import UnliftIO.STM (tryReadTBQueue)
 import Yesod.Core.Types (Content (..), HandlerContents (..), TypedContent (..))
 
 data Fixture = Fixture
@@ -186,13 +188,46 @@ tableRouteSpec harness app = describe "Third-edition table routes through WAI di
 
   it "refuses an outsider's socket on a started table before the upgrade, so no room is joined" $
     withMembers "3e-route-socket" \m -> do
+      -- The 404 is the guard itself, answered before any upgrade.
       route m.outsider "GET" m.game "" upgrade "" `shouldReturn` (status404, Just noSuchTable)
       Map.member m.game <$> readMVar app.appThirdEditionRooms `shouldReturn` False
-      -- A member gets past the check to the upgrade itself. A WAI test session
-      -- cannot carry out a raw (websocket) response and answers with Yesod's
-      -- 500 fallback instead, so this shows only that the upgrade was reached.
-      (accepted, _) <- route m.seated "GET" m.game "" upgrade ""
-      accepted `shouldBe` status500
+      -- A socket the check lets through reaches the upgrade. A WAI test session
+      -- cannot carry out a raw (websocket) response and answers with Yesod's 500
+      -- fallback instead: the 500 shows the gate passed, nothing more. That
+      -- holds for a member, and for an outsider while the table is unstarted.
+      for_ [(m.seated, m.game), (m.outsider, m.lobby)] \(uid, tid) -> do
+        (accepted, _) <- route uid "GET" tid "" upgrade ""
+        accepted `shouldBe` status500
+
+  it "stops a lobby socket once the game starts unless its user turns out to be a member" $
+    withMembers "3e-route-feed" \m -> do
+      stranger <- withConnection harness (`seedUser` "3e-route-feed-stranger")
+      ready <- insertTable app m.host [(1, m.host, "host"), (2, m.seated, "seated")] 2
+      -- one socket's gate per user, made while the table is a lobby
+      gates <- forM [stranger, m.outsider, m.seated, m.host, m.admin] \uid -> handlerAs uid (tableFeedGate ready)
+      -- the room's queue, holding exactly what publishTable put on the feed
+      (room, subId, sub) <- unsafeHandler app do
+        info <- anonymousSubscriber
+        joinRoomIn info appThirdEditionRooms (const "ah3e-feed-test") ready
+      let published uid method suffix body = do
+            (status, _) <- route uid method ready suffix [] body
+            (method, suffix, status) `shouldBe` (method, suffix, status200)
+            atomically (tryReadTBQueue sub.subQueue) >>= maybe (fail "Expected a published message") pure
+          verdicts msg = forM gates \gate -> unsafeHandler app (gate msg)
+      -- the lobby is anyone's to watch
+      left <- published m.seated "POST" "/leave" "{}"
+      verdicts left `shouldReturn` [True, True, True, True, True]
+      joined <- published m.outsider "POST" "/join" "{}"
+      verdicts joined `shouldReturn` [True, True, True, True, True]
+      -- the game is not: the outsider took a seat and stays, the seated player
+      -- gave theirs up and is cut off with the stranger
+      begun <- published m.host "POST" "/start" "{}"
+      verdicts begun `shouldReturn` [False, True, False, True, True]
+      closed <- published m.host "DELETE" "" ""
+      verdicts closed `shouldReturn` [True, True, True, True, True]
+      unsafeHandler app do
+        unsubscribeFromRoom room subId
+        void $ releaseRoomIfEmpty appThirdEditionRooms ready
 
   it "lets the seated players, the host and an admin through, under each route's own rules" $
     withMembers "3e-route-members" \m -> do
@@ -245,6 +280,10 @@ tableRouteSpec harness app = describe "Third-edition table routes through WAI di
     started `shouldBe` status200
     action Members {..}
   snapshot tid = app.appThirdEditionStore.getTable tid
+  handlerAs :: UserId -> Handler a -> IO a
+  handlerAs uid action = do
+    authorization <- authorizationFor app uid
+    unsafeHandler app $ withRequest defaultRequest {requestHeaders = [authorization]} action
   route :: UserId -> Method -> UUID -> ByteString -> [Header] -> LByteString -> IO (Status, Maybe Value)
   route uid method tid suffix headers body = do
     authorization <- authorizationFor app uid

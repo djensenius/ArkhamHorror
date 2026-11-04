@@ -27,6 +27,7 @@ module Api.Handler.ThirdEdition (
   postApiV1ThirdEditionImportR,
 
   -- * Exposed for tests
+  tableFeedGate,
   withTableAccess,
   getApiV1ThirdEditionExportWith,
   postApiV1ThirdEditionBugWith,
@@ -40,9 +41,10 @@ import AH3e.Types.State (DebugAction, GameMode)
 import AH3e.View (catalogView, gameView)
 import Api.Arkham.Helpers (joinRoomIn, releaseRoomIfEmpty)
 import Api.Handler.Arkham.Game.Bug (BugUploadTransport, awsBugUpload, uploadBugExportUsing)
-import Api.Handler.Arkham.Games.Shared (publishOrWarn, streamRoom, websocketConnectionOptions)
+import Api.Handler.Arkham.Games.Shared (publishOrWarn, streamRoomWhile, websocketConnectionOptions)
 import Control.Monad.Random (getRandomR)
 import Data.Aeson qualified as Aeson
+import Data.Aeson.Types (parseMaybe)
 import Data.Map.Strict qualified as Map
 import Data.Time (getCurrentTime)
 import Data.UUID (UUID)
@@ -121,7 +123,8 @@ copy has the higher @version@.
 
 Open to anyone until the game starts, and then to its members only
 ('openOrMemberOf'). The check comes before the upgrade, so a refused socket
-never joins the room.
+never joins the room. A socket opened before the start is checked again when
+the game reaches it ('tableFeedGate').
 -}
 getApiV1ThirdEditionTableR :: UUID -> Handler Value
 getApiV1ThirdEditionTableR tid = do
@@ -132,8 +135,10 @@ getApiV1ThirdEditionTableR tid = do
     Just (t, depth) | mayWatch t -> do
       wsOptions <- websocketConnectionOptions
       joining <- anonymousSubscriber
+      admit <- tableFeedGate tid
       webSocketsOptions wsOptions
-        $ streamRoom
+        $ streamRoomWhile
+          admit
           (joinRoomIn joining appThirdEditionRooms tableChannel tid)
           (void $ releaseRoomIfEmpty appThirdEditionRooms tid)
       pure (tableView Nothing t depth)
@@ -316,6 +321,44 @@ openOrMemberOf userId = memberOf userId <&> \member t -> not (started t) || memb
 
 noSuchTable :: Handler a
 noSuchTable = failWith status404 "No such table"
+
+{- | What one socket on a table's feed may be sent, for the user who opened it.
+
+A socket can be opened on a lobby by anyone, and the room does not know who
+is on it, so starting the game must not stream it to everyone who looked in.
+A message any visitor may see -- an update to a table that hasn't started, or
+its closing -- passes. Anything else (a started table, or a message this
+cannot read) passes only once the user has been found to be a member of the
+table as the store has it, and the first refusal ends the socket.
+
+That check runs at most once per socket that is let through: after the start
+nobody can take or leave a seat, and the host does not change, so a member
+stays one. It also catches a player who left their seat before the start, and
+lets an outsider who took one keep watching.
+-}
+tableFeedGate :: UUID -> Handler (LByteString -> Handler Bool)
+tableFeedGate tid = do
+  userId <- getRequestUserId
+  confirmed <- newIORef False
+  pure \msg ->
+    readIORef confirmed >>= \case
+      True -> pure True
+      False
+        | openToAnyone msg -> pure True
+        | otherwise -> do
+            member <- memberOf userId
+            store <- getStore
+            ok <- maybe False (member . fst) <$> liftIO (store.getTable tid)
+            when ok $ writeIORef confirmed True
+            pure ok
+ where
+  openToAnyone msg = fromMaybe False do
+    v <- Aeson.decode msg
+    flip parseMaybe v $ Aeson.withObject "TableMessage" \o ->
+      o Aeson..: "tag" >>= \case
+        "TableClosed" -> pure True
+        "TableUpdate" -> (== Just False) <$> (o Aeson..: "contents" >>= Aeson.withObject "Table" (Aeson..:? "started"))
+        (_ :: Text) -> pure False
 
 isAdminUser :: UserId -> Handler Bool
 isAdminUser userId = maybe False (\(Entity _ user) -> user.admin) <$> runDB (getEntity userId)
