@@ -1592,6 +1592,15 @@ Clients must update Apple `ContractPin.swift`, and Linux `src/ContractPin.cpp`,
 `contracts/contract-pin.json` and vendored fixtures, to the merged backend
 commit and schemaRevision `0.1.57`.
 
+#### Haskell CI runner disk (revision 0.1.58)
+
+Revision `0.1.58` changes no public JSON shape, route or capability. It records
+a governed CI input change: the required Haskell job in
+`.github/workflows/haskell.yml`, a governed locale-catalog generator input, now
+frees runner disk before building, which changes the synthetic catalog fixture
+digests. `nativeClientMinimumRevision` stays `0.1.57`; clients pinned to
+`0.1.57` are unaffected and need not repin.
+
 ### Locale catalog discovery
 
 `GET /capabilities` advertises a catalog with the `i18n.locale-catalog.v1`
