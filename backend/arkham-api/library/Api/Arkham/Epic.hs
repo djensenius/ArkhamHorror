@@ -40,6 +40,43 @@ lookupGameEvent gameId = do
     (evt, Value ordinal) : _ -> Just (evt, GroupOrdinal ordinal)
     [] -> Nothing
 
+-- | Lock the event row @FOR UPDATE@; 'Nothing' when it no longer exists.
+lockEpicEventRow
+  :: MonadIO m
+  => ArkhamEpicEventId
+  -> ReaderT SqlBackend m (Maybe (Entity ArkhamEpicEvent))
+lockEpicEventRow eid = do
+  locked <- select do
+    e <- from $ table @ArkhamEpicEvent
+    where_ $ e.id ==. val eid
+    locking forUpdate
+    pure e
+  pure $ listToMaybe locked
+
+{- | The canonical Epic lock order, for any transaction that locks more than
+one of an event's rows: its group games one at a time in ascending id order,
+then the event row ('lockEpicEventRow'), and only then player/member rows.
+Gameplay already locks its game before the event, so this cannot deadlock
+against it. Returns the locked game ids and event, or 'Nothing' when the event
+no longer exists (a concurrent delete won).
+-}
+canonicalEpicGameLockOrder
+  :: MonadIO m
+  => ArkhamEpicEventId
+  -> ReaderT SqlBackend m (Maybe ([ArkhamGameId], Entity ArkhamEpicEvent))
+canonicalEpicGameLockOrder eid = do
+  gameValues <- select do
+    grp <- from $ table @ArkhamEpicGroup
+    where_ $ grp.arkhamEpicEventId ==. val eid
+    pure grp.arkhamGameId
+  let gameIds = sortNub [gid | Value (Just gid) <- gameValues]
+  for_ gameIds \gameId -> select do
+    game <- from $ table @ArkhamGame
+    where_ $ game.id ==. val gameId
+    locking forUpdate
+    pure game.id
+  fmap (gameIds,) <$> lockEpicEventRow eid
+
 -- | The outcome of 'reserveGroupMembership'.
 data GroupMembershipReservation
   = -- | This call created the player's membership row for the group.
