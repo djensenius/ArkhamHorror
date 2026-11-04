@@ -26,12 +26,17 @@ module Api.Handler.Arkham.Game.Debug (
   checkpointInvestigatorForPlayerId,
 ) where
 
+import Api.Arkham.Epic (
+  GroupMembershipReservation (..),
+  lookupGameEvent,
+  reserveGroupMembership,
+ )
 import Api.Arkham.Export
 import Api.Arkham.Helpers
 import Api.Arkham.Types.Game (ClaimSeatPost (..))
 import Api.Arkham.Types.MultiplayerVariant
 import Api.Handler.Arkham.CustomCards (forRendering, setPayloadEtag, userCustomCards)
-import Api.Handler.Arkham.Games.Shared (withGameAccess)
+import Api.Handler.Arkham.Games.Shared (broadcastEventChanged, withGameAccess)
 import Arkham.Card.CardCode
 import Arkham.Card.CardDef (cdCardCode)
 import Arkham.Card.CustomCard
@@ -691,27 +696,47 @@ postApiV1ArkhamGameClaimSeatR gameId = do
   userId <- getRequestUserId
   ClaimSeatPost {investigatorId = rawId} <- requireCheckJsonBody
   let investigatorId = normalizeJsonInvestigatorId rawId
-  runDB do
+      -- Seat rows are written in two formats: deck selection stores the bare
+      -- code ("01001"), claim seat and import the 'c'-prefixed one ("c01001").
+      -- Compare both ends stripped, as 'Shared' does for achievements, so a
+      -- deck-selected seat still counts as taken.
+      seatCode = T.dropWhile (== 'c')
+  mReservedEvent <- runDB do
+    -- Lock the game first, so concurrent claims (and joins) for this game run
+    -- one at a time and every check below sees the committed seats.
+    lockGame gameId
     g <- get404 gameId
     when (g.multiplayerVariant /= WithFriends) do
       lift $ permissionDenied "This game is not a multiplayer game"
-    let allInvestigators =
-          map (normalizeJsonInvestigatorId . unCardCode . unInvestigatorId)
+    let allSeats =
+          map (seatCode . unCardCode . unInvestigatorId)
             $ gamePlayerOrder g.currentData
-    unless (investigatorId `elem` allInvestigators) do
+    unless (seatCode investigatorId `elem` allSeats) do
       lift $ invalidArgs ["Invalid investigator for this game"]
-    mTaken <- selectOne do
-      players <- from $ table @ArkhamPlayer
-      where_ $ players.arkhamGameId ==. val gameId
-      where_ $ players.investigatorId ==. val investigatorId
-      pure players
-    when (isJust mTaken) do
+    takenSeats <-
+      map unValue <$> select do
+        players <- from $ table @ArkhamPlayer
+        where_ $ players.arkhamGameId ==. val gameId
+        pure players.investigatorId
+    when (seatCode investigatorId `elem` map seatCode takenSeats) do
       lift $ permissionDenied "This seat is already taken"
     mAlreadyJoined <- getBy $ UniquePlayer userId gameId
     when (isJust mAlreadyJoined) do
       lift $ permissionDenied "You already have a seat in this game"
+    -- Epic Multiplayer: a player may occupy seats in only one group of an
+    -- event, so the seat reserves the same membership a pending join would.
+    mEvent <- lookupGameEvent gameId
+    mReserved <- forM mEvent \(eventEntity, ordinal) -> do
+      let eventId = entityKey eventEntity
+      reserveGroupMembership eventId userId ordinal >>= \case
+        GroupMembershipInserted -> pure (Just eventId)
+        GroupMembershipExisting -> pure Nothing
+        GroupMembershipInOtherGroup _ ->
+          lift $ permissionDenied "You already occupy a seat in another group in this event"
     newPlayerId <- insert $ ArkhamPlayer userId gameId investigatorId
     void $ remapInvestigatorUUID gameId investigatorId newPlayerId
+    pure $ join mReserved
+  for_ mReservedEvent broadcastEventChanged
 
 
 {- | The debug-authored cards defined in this game.

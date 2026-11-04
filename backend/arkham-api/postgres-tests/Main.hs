@@ -39,6 +39,7 @@ import Network.HTTP.Types (Status, status400, status409, status502)
 import Network.Wai (defaultRequest, requestHeaders, requestMethod, setRequestBodyChunks)
 import Postgres.Harness
 import Postgres.HarnessSpec qualified as Harness
+import Postgres.ClaimSeatSpec qualified as ClaimSeatSQL
 import Postgres.DispatchSpec qualified as DispatchSQL
 import Postgres.PayloadSpec qualified as PayloadSQL
 import Postgres.ConcurrencySpec qualified as ConcurrencySQL
@@ -75,6 +76,7 @@ main = withHarness \harness -> withProductionApp harness \app ->
     DeleteSQL.spec harness app settings transport remote (writeBackSeed app)
     EndToEndSQL.spec harness app settings transport remote (writeBackSeed app)
     ThirdEditionSQL.spec harness app
+    ClaimSeatSQL.spec harness app seedUser
 
 writeBackSeed :: App -> WriteBackSQL.Seed
 writeBackSeed app connection label = do
