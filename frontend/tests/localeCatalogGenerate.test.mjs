@@ -14,6 +14,7 @@ import {
   BASE_PATH,
   assertReplaceableOutputDir,
   buildCatalog,
+  catalogLocaleMap,
   diffCatalog,
   MAX_UNSUPPORTED_DETAIL,
   requiredKeysFromFixture,
@@ -22,6 +23,7 @@ import {
   writeCatalog,
 } from '../scripts/locale-catalog/generate.mjs'
 import { sha256Hex } from '../scripts/locale-catalog/canonical.mjs'
+import { CARD_ONLY_LOCALES } from '../scripts/locale-catalog/card-names.mjs'
 
 const REPO_ROOT = resolve('..')
 const SCRATCH = resolve('node_modules', '.locale-catalog-test')
@@ -108,9 +110,13 @@ test('every supported UI locale is published with an explicit fallback', () => {
   const declared = [...language.matchAll(/'([a-z-]+)'/g)]
     .map((match) => canonicalLocaleTag(match[1]))
     .filter((locale, index, all) => all.indexOf(locale) === index)
+  const cardOnly = Object.keys(CARD_ONLY_LOCALES)
 
   const published = built.manifest.locales.map((entry) => entry.locale)
-  for (const locale of published) assert.ok(declared.includes(locale), `${locale} is not a declared UI locale`)
+  for (const locale of published) {
+    assert.ok(declared.includes(locale) || cardOnly.includes(locale), `${locale} is neither a UI nor a card-only locale`)
+  }
+  for (const locale of cardOnly) assert.ok(published.includes(locale), `card-only ${locale} is published`)
   assert.ok(published.includes(built.manifest.defaultLocale))
 
   for (const entry of built.manifest.locales) {
@@ -125,7 +131,46 @@ test('every supported UI locale is published with an explicit fallback', () => {
     assert.equal(resolution.get(tag), 'zh-CN', `${tag} resolves to zh-CN`)
   }
   assert.equal(resolution.get('fr-CA'), 'fr')
-  assert.equal(resolution.get('ru'), 'en', 'an unsupported language falls back to the default locale')
+  assert.equal(resolution.get('en-GB'), 'en')
+})
+
+test('card-only languages resolve to their card-only locales, bare and regional', () => {
+  const resolution = new Map(built.manifest.languageResolution.map((row) => [row.tag, row.locale]))
+  const expected = {
+    pl: 'pl', 'pl-PL': 'pl',
+    pt: 'pt', 'pt-BR': 'pt', 'pt-PT': 'pt',
+    ru: 'ru', 'ru-RU': 'ru',
+    uk: 'uk', 'uk-UA': 'uk',
+  }
+  for (const [tag, locale] of Object.entries(expected)) {
+    assert.equal(resolution.get(tag), locale, `${tag} resolves to ${locale}`)
+  }
+})
+
+test('a card-only locale publishes only a cardNames chunk that falls back to en', () => {
+  for (const locale of Object.keys(CARD_ONLY_LOCALES)) {
+    const entry = built.manifest.locales.find((candidate) => candidate.locale === locale)
+    assert.ok(entry, `${locale} is published`)
+    assert.equal(entry.fallback, 'en')
+    assert.deepEqual(entry.chunks.map((chunk) => chunk.pack), ['cardNames'])
+    const chunk = JSON.parse(built.files.get(entry.chunks[0].path.slice(`${BASE_PATH}/`.length)).toString('utf8'))
+    assert.equal(chunk.locale, locale)
+    assert.equal(chunk.fallback, 'en')
+    const keys = Object.keys(chunk.entries)
+    assert.ok(keys.length > 1000, `${locale} publishes its card names`)
+    assert.equal(entry.keys, keys.length)
+    for (const key of keys) assert.ok(key.startsWith('cardNames.'), `${locale} publishes ${key}`)
+    assert.equal(entry.chunks[0].unsupportedKeys, 0)
+  }
+})
+
+test('a card-only locale whose tag a UI locale publishes is refused', () => {
+  assert.deepEqual(
+    [...catalogLocaleMap(['en', 'zh-cn'], ['pl', 'pt'])],
+    [['en', 'en'], ['zh-cn', 'zh-CN'], ['pl', 'pl'], ['pt', 'pt']],
+  )
+  assert.throws(() => catalogLocaleMap(['en', 'pt'], ['pt']), /card-only locale pt clashes with UI locale pt \(pt\)/)
+  assert.throws(() => catalogLocaleMap(['en', 'zh-CN'], ['zh-cn']), /card-only locale zh-cn clashes with UI locale zh-CN/)
 })
 
 test('the contract fixtures\u2019 required keys all resolve', () => {
