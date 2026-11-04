@@ -11,6 +11,7 @@ import Api.Arkham.ArkhamDBStore (persistentStore)
 import Api.Arkham.ArkhamDBWriteBack (validateWriteBackDeckFor, writeBackStore)
 import Api.Handler.Arkham.CustomCards (userCustomCards)
 import Api.Handler.Arkham.Decks (putApiV1ArkhamGameDecksR)
+import Api.Handler.Arkham.Games (deleteApiV1ArkhamGameR)
 import Api.Handler.Arkham.Games.Shared (updateGameWithAnswerRejectionWith)
 import Arkham.ArkhamDB
 import Arkham.ArkhamDB.Service (importRemoteDeck)
@@ -175,6 +176,43 @@ upgradeRoute app uid gameId decklist = do
         }
   runHandlerResponseBody app $ withRequest request $ putApiV1ArkhamGameDecksR gameId
 
+data DreamQuestUpgrade = DreamQuestUpgrade
+  { deckB :: ArkhamDeckId
+  , savedA :: ArkhamDeck
+  , upgraded :: Deck.ArkhamDBDecklist
+  , questKey :: Text
+  , foundation :: App
+  }
+
+-- A full Dream-Eaters dreamQuest seat whose investigator keeps deck A's stale
+-- URL, with only the current part-key association (as a campaign-copy push
+-- would leave it) naming deck B. The saved-upgrade PUT then queues one pending
+-- push for deck B on a fresh, never-started executor.
+queueDreamQuestUpgrade :: App -> SqlBackend -> ArkhamDBSettings -> ArkhamDBClient IO -> ArkhamDBRemoteDeck -> Fixture -> IO DreamQuestUpgrade
+queueDreamQuestUpgrade app connection settings unexpected source f = do
+  deckB <- importDeckB app connection settings unexpected source f
+  savedA <- transaction connection $ P.getJust f.deckId
+  savedB <- transaction connection $ P.getJust deckB
+  staleUrl <- maybe (fail "Deck A has no URL") pure $ arkhamDeckUrl savedA
+  let questKey = UUID.toText (coerce f.gameId) <> "/01001/dreamQuest"
+      upgraded = (arkhamDeckList savedB) {Deck.slots = Map.fromList [("01006", 2), ("01007", 1)]}
+  transaction connection $ P.insert_ $ ArkhamDBCampaignDeck questKey deckB f.uid 0
+  openUpgradeWindow connection f $ dreamGame f staleUrl Dream.TheDreamQuest 4
+  executor <- newArkhamDBExecutor
+  let foundation = app {appArkhamDBWriteBackExecutor = executor}
+  upgradeRoute foundation f.uid f.gameId upgraded `shouldReturn` Right ()
+  stopArkhamDBExecutor executor
+  pure DreamQuestUpgrade {deckB, savedA, upgraded, questKey, foundation}
+
+-- The JWT-authenticated game DELETE, called on the real handler like
+-- upgradeRoute.
+deleteGameRoute :: App -> UserId -> ArkhamGameId -> IO (Either (Status, LByteString) ())
+deleteGameRoute app uid gameId = do
+  token <- unsafeHandler app $ userIdToToken uid
+  let request = defaultRequest
+        {requestMethod = "DELETE", requestHeaders = [("Authorization", "Token " <> encodeUtf8 token)]}
+  runHandlerResponseBody app $ withRequest request $ deleteApiV1ArkhamGameR gameId
+
 -- The production sweep's dispatch for one deck: owner-library validation,
 -- not Remote.push's no-op validator.
 pushValidated :: App -> ArkhamDBSettings -> ArkhamDBClient IO -> Fixture -> Int -> IO ()
@@ -335,24 +373,13 @@ savedUpgradeSpec harness app settings unexpected source seed = describe "Saved-u
   it "pushes a saved upgrade to the currently associated deck when no older full-campaign association exists" $
     withConnection harness \connection -> do
       f <- fixture seed app connection "e2e-saved-upgrade-control"
-      deckB <- importDeckB app connection settings unexpected source f
+      DreamQuestUpgrade {deckB, savedA, upgraded, questKey, foundation} <-
+        queueDreamQuestUpgrade app connection settings unexpected source f
       let deckA = f.deckId
           fB = f {deckId = deckB}
-      savedA <- transaction connection $ P.getJust deckA
-      savedB <- transaction connection $ P.getJust deckB
-      staleUrl <- maybe (fail "Deck A has no URL") pure $ arkhamDeckUrl savedA
-      let questKey = UUID.toText (coerce f.gameId) <> "/01001/dreamQuest"
           userPushes = transaction connection $
             map ((\job -> (arkhamDBPushCampaignKey job, arkhamDBPushDeckId job, arkhamDBPushStatus job)) . entityVal)
               <$> P.selectList [ArkhamDBPushUserId P.==. f.uid] []
-      -- Only the current association, as a campaign-copy push would leave it.
-      transaction connection $ P.insert_ $ ArkhamDBCampaignDeck questKey deckB f.uid 0
-      let upgraded = (arkhamDeckList savedB) {Deck.slots = Map.fromList [("01006", 2), ("01007", 1)]}
-      openUpgradeWindow connection f $ dreamGame f staleUrl Dream.TheDreamQuest 4
-      executor <- newArkhamDBExecutor
-      let foundation = app {appArkhamDBWriteBackExecutor = executor}
-      upgradeRoute foundation f.uid f.gameId upgraded `shouldReturn` Right ()
-      stopArkhamDBExecutor executor
 
       afterA <- transaction connection $ P.getJust deckA
       afterB <- transaction connection $ P.getJust deckB
@@ -418,3 +445,82 @@ savedUpgradeSpec harness app settings unexpected source seed = describe "Saved-u
             Map.lookup code slots == Just 1 && Map.lookup "01006" slots == Just 2
         _ -> expectationFailure $ "Expected exactly one push, got " <> show (length jobs)
       (remoteSlots remotes "124" <&> (>>= Map.lookup code)) `shouldReturn` Just 1
+
+  -- Game deletion has no FK or hook on arkhamdb_pushes ("Game deletion leaves
+  -- pushes behind", Api/Arkham/ArkhamDBWriteBack.hs). Dispatch admission
+  -- fences the orphan instead: an unsuffixed key whose game no longer exists
+  -- cannot prove it is an ordinary campaign (campaignJobKeySafe), so claimPush
+  -- rewrites it to ambiguousCampaignPush's failed/validationFailed and never
+  -- sends a request. The row, the deck and its association are kept.
+  it "fences a pending saved-upgrade push without a remote call after its game is deleted" $
+    withConnection harness \connection -> do
+      f <- fixture seed app connection "e2e-deleted-game-pending"
+      let gameKey = UUID.toText (coerce f.gameId) <> "/01001"
+          associationRows = transaction connection $
+            map ((\a -> (arkhamDBCampaignDeckCampaignKey a, arkhamDBCampaignDeckDeckId a, arkhamDBCampaignDeckLastPushedXp a)) . entityVal)
+              <$> P.selectList [ArkhamDBCampaignDeckUserId P.==. f.uid] [P.Asc ArkhamDBCampaignDeckCampaignKey]
+      saved <- transaction connection $ P.getJust f.deckId
+      let upgraded = (arkhamDeckList saved) {Deck.slots = Map.singleton "01006" 2}
+      openUpgradeWindow connection f $ prepareAnswer f
+      executor <- newArkhamDBExecutor
+      let foundation = app {appArkhamDBWriteBackExecutor = executor}
+      upgradeRoute foundation f.uid f.gameId upgraded `shouldReturn` Right ()
+      stopArkhamDBExecutor executor
+      map (\job -> (arkhamDBPushCampaignKey job, arkhamDBPushStatus job)) <$> pushes connection f.deckId
+        `shouldReturn` [(gameKey, "pending")]
+      adopted <- transaction connection $ P.getJust f.deckId
+      -- The upgrade's enqueue already related the seat key to deck A with a
+      -- zero XP baseline; this is the user's only association.
+      associationRows `shouldReturn` [(gameKey, f.deckId, 0)]
+
+      deleteGameRoute foundation f.uid f.gameId `shouldReturn` Right ()
+      (transaction connection (P.get f.gameId) <&> isNothing) `shouldReturn` True
+      -- Deletion itself leaves the push pending; only dispatch fences it.
+      map arkhamDBPushStatus <$> pushes connection f.deckId `shouldReturn` ["pending"]
+
+      remotes <- newRemotes unexpected source
+      push foundation settings remotes.client f False 60
+      MVar.readMVar remotes.calls `shouldReturn` []
+      jobs <- pushes connection f.deckId
+      map (\job -> (arkhamDBPushCampaignKey job, arkhamDBPushStatus job, arkhamDBPushError job)) jobs
+        `shouldBe` [(gameKey, "failed", Just "validationFailed")]
+      -- A later round still neither calls out nor retries the fenced orphan.
+      push foundation settings remotes.client f False 120
+      MVar.readMVar remotes.calls `shouldReturn` []
+      map arkhamDBPushStatus <$> pushes connection f.deckId `shouldReturn` ["failed"]
+      dispatched <- transaction connection $ P.getJust f.deckId
+      toJSON dispatched `shouldBe` toJSON adopted
+      -- The deleted game's association is left behind, inert and unchanged.
+      associationRows `shouldReturn` [(gameKey, f.deckId, 0)]
+
+  -- A part key proves its Dream-Eaters part without the game
+  -- (Arkham/ArkhamDB/Campaign.hs classifyCampaignKey / campaignJobKeySafe), so
+  -- deletion does not fence it: the already adopted list still goes to the
+  -- key's own associated deck, never to the seat's stale-URL deck.
+  it "pushes a pending part-keyed saved upgrade only to its own associated deck after its game is deleted" $
+    withConnection harness \connection -> do
+      f <- fixture seed app connection "e2e-deleted-game-part-key"
+      DreamQuestUpgrade {deckB, savedA, upgraded, questKey, foundation} <-
+        queueDreamQuestUpgrade app connection settings unexpected source f
+      let deckA = f.deckId
+          fB = f {deckId = deckB}
+      map (\job -> (arkhamDBPushCampaignKey job, arkhamDBPushStatus job)) <$> pushes connection deckB
+        `shouldReturn` [(questKey, "pending")]
+
+      deleteGameRoute foundation f.uid f.gameId `shouldReturn` Right ()
+      (transaction connection (P.get f.gameId) <&> isNothing) `shouldReturn` True
+      remotes <- newRemotes unexpected source
+      for_ [f, fB] \target -> push foundation settings remotes.client target False 60
+      MVar.readMVar remotes.calls `shouldReturn` ["load/456", "upgrade/456/4", "load/457", "save/457", "load/457"]
+      jobs <- pushes connection deckB
+      case jobs of
+        [job] -> do
+          arkhamDBPushDeckId job `shouldBe` deckB
+          arkhamDBPushCampaignKey job `shouldBe` questKey
+          arkhamDBPushStatus job `shouldBe` "succeeded"
+          payloadUrl job `shouldSatisfy` maybe False ("/456" `T.isSuffixOf`)
+        _ -> expectationFailure $ "Expected exactly one push, got " <> show (length jobs)
+      (map arkhamDBPushCampaignKey <$> pushes connection deckA) `shouldReturn` []
+      afterA <- transaction connection $ P.getJust deckA
+      toJSON afterA `shouldBe` toJSON savedA
+      remoteSlots remotes "457" `shouldReturn` Just upgraded.slots
