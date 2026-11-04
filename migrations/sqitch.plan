@@ -51,3 +51,4 @@ arkham_third_edition_tables [users] 2026-10-14T00:00:00Z Claude <noreply@anthrop
 arkham_card_set_shares [arkham_custom_card_sets users] 2026-10-15T00:00:00Z Claude <noreply@anthropic.com> # A link that hands an unpublished set to a few people, and who has used it
 arkham_game_outcomes [arkham_game_stats] 2026-10-18T00:00:00Z Claude <noreply@anthropic.com> # How a finished game ended, for the admin stats panel
 allow_spectators [arkham_games users] 2026-10-18T01:00:00Z Claude <noreply@anthropic.com> # Games a host is happy to be watched, and the account default for new ones
+add_admin_to_users [users] 2026-11-04T03:00:00Z David Jensenius <david@jensenius.com> # Add the admin column that setup.sql and the User entity already have

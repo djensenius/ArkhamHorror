@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { CARD_NAMES_PACK, loadCardNameEntries } from './card-names.mjs'
 import { canonicalJson, sha256Hex } from './canonical.mjs'
 import { analyzeComposition, findDuplicateKeys } from './inventory.mjs'
 import {
@@ -306,6 +307,33 @@ function packOf(key) {
   const pack = key.includes('.') ? key.slice(0, key.indexOf('.')) : 'core'
   if (!PACK_PATTERN.test(pack)) fail(`unsafe pack id derived from ${key}`)
   return pack
+}
+
+/**
+ * The card-name pack is card data, not backend-emitted text, so it takes no
+ * part in the required/untranslated accounting. A backend or fixture key
+ * inside it would be answered by a card name instead of its own text.
+ */
+export function assertNoCardNameClaims(keys) {
+  const claimed = [...keys].filter((key) => packOf(key) === CARD_NAMES_PACK)
+  if (claimed.length > 0) {
+    fail(`backend or fixture key(s) fall in the ${CARD_NAMES_PACK} pack: ${claimed.slice(0, 5).join(', ')}`)
+  }
+}
+
+/**
+ * Adds each locale's `cardNames` pack, resolved from its `cards_<locale>.json`
+ * by the web's own lookup rules (see card-names.mjs). The pack belongs to the
+ * card data alone: a locale message filed under it is refused rather than
+ * silently shadowed.
+ */
+export function addCardNames(normalized, frontendDir) {
+  for (const [locale, entries] of normalized) {
+    for (const key of entries.keys()) {
+      if (packOf(key) === CARD_NAMES_PACK) fail(`${locale} locale sources define ${key}, inside the card-name pack`)
+    }
+    for (const [key, entry] of loadCardNameEntries(frontendDir, locale)) entries.set(key, entry)
+  }
 }
 
 function normalizeLocale(messages, classifyVariable) {
@@ -722,7 +750,7 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
       sourceSha256: backend.artifact.source.sha256,
       emittedKeys: backend.keys.size,
     },
-    localeSources: collectSourceFiles(frontendDir),
+    localeSources: collectSourceFiles(frontendDir, sources.locales),
     // The exact resolved dependency closure, integrity hashes included.
     lockfile: digestRepoFiles(['frontend/package-lock.json']),
   }
@@ -738,6 +766,7 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
   for (const locale of sources.locales) {
     normalized.set(locale, normalizeLocale(sources.messages[locale], classifyVariable))
   }
+  addCardNames(normalized, frontendDir)
   // A downgrade can invalidate an entry that linked to it, so the graph is
   // re-resolved until it stops changing.
   for (let pass = 0; pass < 8; pass += 1) {
@@ -766,6 +795,7 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
   for (const key of fixtureKeys) {
     if (!defaultEntries.has(key)) fail(`contract fixture key ${key} is missing from ${defaultLocale}`)
   }
+  assertNoCardNameClaims([...fixtureKeys, ...backend.keys.keys()])
 
   // Every offending key is collected before failing: fixing these one build at
   // a time, with 6,000 required keys, is not a workflow anyone should have.
