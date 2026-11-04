@@ -769,8 +769,11 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
           deck = ArkhamDeck uid Nothing "Roland Banks" "Hidden unsupported card"
             (remote.deck {slots = Map.singleton "unimplemented-card" 1}) (Just hidden) Nothing Nothing
       deckId <- transaction connection $ P.insert deck
-      result <- runHandlerResponse app $ runSqlConn (saveDeckOverlay uid deckId Nothing) connection
-      either Just (const Nothing) result `shouldBe` Just status400
+      -- The owner's DELETE through routing and JWT authentication; the
+      -- route answers with the deck validation errors, not a 500.
+      (status, body) <- overlayRoute app uid deckId Nothing
+      (status, decode @Value body) `shouldBe` (status400, Just $ toJSON
+        [object ["tag" .= ("UnimplementedCard" :: Text), "contents" .= ("cunimplemented-card" :: Text)]])
       persisted <- transaction connection (P.getJust deckId)
       toJSON persisted `shouldBe` toJSON deck
 
