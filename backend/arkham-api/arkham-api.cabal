@@ -9843,6 +9843,7 @@ test-suite arkhamdb-postgres
       Postgres.ConcurrencySpec
       Postgres.DeleteSpec
       Postgres.DispatchSpec
+      Postgres.EndToEndSpec
       Postgres.Harness
       Postgres.HarnessSpec
       Postgres.PayloadSpec
