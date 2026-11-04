@@ -9941,6 +9941,7 @@ test-suite spec
       Arkham.Agenda.Cards.TheDunwichLegacy.TheMiskatonicMuseum.ShadowsDeepenSpec
       Arkham.Agenda.Cards.TheScarletKeys.CongressOfTheKeys.TheWorldUnbiddenSpec
       Arkham.Agenda.Cards.TheScarletKeys.DeadHeat.EmptyStreetsSpec
+      Arkham.Api.ArchiveFailureLogSpec
       Arkham.Api.ArkhamDBCleanupSpec
       Arkham.Api.ArkhamDBLoggingSpec
       Arkham.Api.ArkhamDBSpec

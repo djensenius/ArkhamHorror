@@ -100,7 +100,8 @@ spec harness app = describe "Game archive access and restore failures with produ
           claimed <-
             maybe (fail "Expected to claim the restore") pure
               =<< db (claimForRestore now (Just f.seated) f.gameId)
-          runRestore app restore (publishFromApp app f.gameId) claimed
+          logged <- newIORef []
+          runRestore app (\line -> modifyIORef' logged (line :)) restore (publishFromApp app f.gameId) claimed
 
           stored <- maybe (fail "Expected the archive row") pure =<< db (lookupArchive f.gameId)
           stored.state `shouldBe` Failed
@@ -120,6 +121,15 @@ spec harness app = describe "Game archive access and restore failures with produ
           for_ (encode status : encode refusal : broadcast) \body ->
             (decodeUtf8 body :: Text) `shouldNotSatisfy` T.isInfixOf sentinel
           for_ stored.errorMessage (`shouldNotSatisfy` T.isInfixOf sentinel)
+
+          -- The server log has the failure, but not the exception's text. The
+          -- integrity case is exempt: its detail is the injected 'Left' itself,
+          -- not an exception the log describes.
+          lines' <- readIORef logged
+          length lines' `shouldBe` 1
+          when (label /= "integrity") $ for_ lines' (`shouldNotSatisfy` T.isInfixOf sentinel)
+          when (label == "storage")
+            $ lines' `shouldSatisfy` any (T.isInfixOf "(restore failed: storage): aws service error (status 404, code NoSuchKey, request id <filtered>)")
 
   {- A failure that arrives after the row is already 'Restored' -- a slow first
   attempt finishing while a restarted one fails, or an exception after the
@@ -146,13 +156,17 @@ spec harness app = describe "Game archive access and restore failures with produ
               , ArkhamGameArchiveErrorMessage P.=. Nothing
               ]
             throwIO rawAwsError
-        runRestore app restoreThenThrow (publishFromApp app f.gameId) claimed
+        logged <- newIORef []
+        runRestore app (\line -> modifyIORef' logged (line :)) restoreThenThrow (publishFromApp app f.gameId) claimed
 
         stored <- maybe (fail "Expected the archive row") pure =<< db (lookupArchive f.gameId)
         stored.state `shouldBe` Restored
         stored.errorMessage `shouldBe` Nothing
         stored.restoredAt `shouldBe` Just restoredAt
         drain listener `shouldReturn` []
+        lines' <- readIORef logged
+        length lines' `shouldBe` 2
+        for_ lines' (`shouldNotSatisfy` T.isInfixOf sentinel)
 
   {- The hand-archive fails before any S3 call: credentials come from fake
   environment keys (the first link of Amazonka's discovery chain, with the
