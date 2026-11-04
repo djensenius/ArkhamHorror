@@ -40,7 +40,15 @@ module Api.Arkham.Archive (
   claimForRestore,
   restoreGame,
   startRestore,
+  runRestore,
   restoreWorker,
+
+  -- * Failures
+  ArchiveFailure (..),
+  ArchiveFailureKind (..),
+  classifyArchiveException,
+  archiveFailureSummary,
+  archiveRestoreFailedMessage,
 
   -- * The daily sweep
   ArchiveSweep (..),
@@ -58,6 +66,8 @@ module Api.Arkham.Archive (
 -- Explicit lists: both modules export record field names (ChunkedBody's
 -- 'length', GetObjectResponse's 'body') that otherwise shadow the prelude.
 import Amazonka (Env, discover, hashedFile, newEnv, runResourceT, send, sinkBody, toBody)
+import Amazonka qualified
+import Amazonka.Auth (AuthError)
 import Amazonka.S3 (
   BucketName (..),
   ObjectKey (..),
@@ -70,6 +80,7 @@ import Amazonka.S3.GetObject (getObjectResponse_body)
 import Amazonka.S3.PutObject (putObject_contentType)
 import Api.Arkham.Helpers (ApiResponse (GameUnarchiveFailed, GameUnarchived), publishFromApp)
 import Codec.Compression.GZip qualified as GZip
+import Codec.Compression.Zlib.Internal (DecompressError)
 import Conduit (sinkFile)
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Lens (view, (?~))
@@ -88,6 +99,7 @@ import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.Traversable (for)
 import Database.Esqueleto.Experimental
 import Database.Persist qualified as P
+import Database.PostgreSQL.Simple qualified as PG
 import Entity.Arkham.GameRaw
 import Entity.Arkham.Player
 import Entity.Arkham.Step
@@ -215,6 +227,70 @@ gameParam = PersistText . toPathPiece
 
 reason :: SomeException -> Text
 reason = T.take 500 . T.pack . displayException
+
+-- ---------------------------------------------------------------- failures ---
+
+{- | The one thing a client is ever told about a restore that did not work.
+
+The underlying failure is an Amazonka request, a SQL statement, or a byte
+mismatch in someone's history, and none of that belongs on a socket that
+unauthenticated spectators can join, or in a response a player can read. The
+detail goes to the server log; this goes everywhere else. It is the text of
+@contracts/fixtures/game-unarchive-failed.json@.
+-}
+archiveRestoreFailedMessage :: Text
+archiveRestoreFailedMessage = "The archived steps could not be restored."
+
+-- | Which part of a restore broke, coarse enough to show an operator safely.
+data ArchiveFailureKind
+  = -- | The object store, or the credentials to reach it.
+    ArchiveStorageFailure
+  | -- | The database.
+    ArchiveDatabaseFailure
+  | -- | The object came back but is not a readable archive.
+    ArchiveIntegrityFailure
+  | ArchiveUnknownFailure
+  deriving stock (Show, Eq)
+
+{- | A classified failure and its detail.
+
+'archiveFailureDetail' is for the server log only. It is the raw exception
+text and can carry request ids, bucket keys or SQL.
+-}
+data ArchiveFailure = ArchiveFailure
+  { archiveFailureKind :: ArchiveFailureKind
+  , archiveFailureDetail :: Text
+  }
+  deriving stock Show
+
+{- | Sort an exception into a 'ArchiveFailureKind'. Never looks at the text, so
+nothing an exception says can choose what is stored.
+-}
+classifyArchiveException :: SomeException -> ArchiveFailure
+classifyArchiveException e = ArchiveFailure kind (reason e)
+ where
+  kind
+    | is @Amazonka.Error = ArchiveStorageFailure
+    | is @AuthError = ArchiveStorageFailure
+    | is @PG.SqlError = ArchiveDatabaseFailure
+    | is @PG.QueryError = ArchiveDatabaseFailure
+    | is @PG.ResultError = ArchiveDatabaseFailure
+    | is @PG.FormatError = ArchiveDatabaseFailure
+    | is @P.PersistException = ArchiveDatabaseFailure
+    | is @DecompressError = ArchiveIntegrityFailure
+    | otherwise = ArchiveUnknownFailure
+  is :: forall x. Exception x => Bool
+  is = isJust (fromException @x e)
+
+{- | What @error_message@ holds for a failed restore: the category, never the
+detail. The admin panel shows it as a tooltip.
+-}
+archiveFailureSummary :: ArchiveFailure -> Text
+archiveFailureSummary failure = "restore failed: " <> case archiveFailureKind failure of
+  ArchiveStorageFailure -> "storage"
+  ArchiveDatabaseFailure -> "database"
+  ArchiveIntegrityFailure -> "integrity"
+  ArchiveUnknownFailure -> "unknown"
 
 -- ----------------------------------------------------------------- reading ---
 
@@ -728,14 +804,14 @@ archived. Those steps are above the archive's top step and are the ones to keep;
 the clause makes the restore idempotent as well, so a retry after a half-finished
 attempt is harmless.
 -}
-restoreGame :: App -> ArkhamGameArchive -> IO (Either Text Int)
-restoreGame app archive = either (Left . reason) id <$> tryAny go
+restoreGame :: App -> ArkhamGameArchive -> IO (Either ArchiveFailure Int)
+restoreGame app archive = either (Left . classifyArchiveException) id <$> tryAny go
  where
   go = do
     env <- newEnv discover
     withArchiveFile env archive.bucket archive.objectKey \path -> do
       archiveBody path >>= \body -> case stepLines body of
-        Left err -> pure $ Left $ "could not read archive: " <> err
+        Left err -> pure $ Left $ ArchiveFailure ArchiveIntegrityFailure $ "could not read archive: " <> err
         Right steps -> do
           now <- getCurrentTime
           restored <- runDBIO app do
@@ -770,32 +846,57 @@ player over the game's websocket, which is also how it reaches them when the
 replica that served the request is not the one holding their socket.
 -}
 startRestore :: App -> ArkhamGameArchive -> IO ()
-startRestore app archive = void $ forkIO $ void $ tryAny do
-  result <- restoreGame app archive
+startRestore app archive =
+  void
+    $ forkIO
+    $ void
+    $ tryAny
+    $ runRestore app (restoreGame app) (publishFromApp app archive.arkhamGameId) archive
+
+{- | The body of 'startRestore', run in the calling thread.
+
+The restore and the publish are parameters so a test can drive the failure path
+without object storage. A restore that throws rather than returning 'Left' is
+classified the same way.
+
+Whatever went wrong, the row records only 'archiveFailureSummary' and the room
+is told only 'archiveRestoreFailedMessage'; the detail is logged.
+-}
+runRestore
+  :: App
+  -> (ArkhamGameArchive -> IO (Either ArchiveFailure Int))
+  -> (ApiResponse -> IO ())
+  -> ArkhamGameArchive
+  -> IO ()
+runRestore app restore publish archive = do
+  result <- either (Left . classifyArchiveException) id <$> tryAny (restore archive)
   case result of
     Right n -> do
-      publishFromApp app archive.arkhamGameId GameUnarchived
+      publish GameUnarchived
       logArchive
         $ "archive: restored "
         <> show n
         <> " steps for game "
         <> T.unpack (toPathPiece archive.arkhamGameId)
-    Left err -> do
+    Left failure -> do
+      -- Logged first: if recording the failure throws too, the cause is not lost.
+      logArchive
+        $ "archive: restore FAILED for game "
+        <> T.unpack (toPathPiece archive.arkhamGameId)
+        <> " ("
+        <> T.unpack (archiveFailureSummary failure)
+        <> "): "
+        <> T.unpack (archiveFailureDetail failure)
       now <- getCurrentTime
       runDBIO app $ void $ updateCount \a -> do
         set
           a
           [ ArkhamGameArchiveState =. val Failed
-          , ArkhamGameArchiveErrorMessage =. val (Just err)
+          , ArkhamGameArchiveErrorMessage =. val (Just $ archiveFailureSummary failure)
           , ArkhamGameArchiveRestoredAt =. val (Just now)
           ]
         where_ $ a.arkhamGameId ==. val archive.arkhamGameId
-      publishFromApp app archive.arkhamGameId $ GameUnarchiveFailed err
-      logArchive
-        $ "archive: restore FAILED for game "
-        <> T.unpack (toPathPiece archive.arkhamGameId)
-        <> ": "
-        <> T.unpack err
+      publish $ GameUnarchiveFailed archiveRestoreFailedMessage
 
 {- | Pick up restores a replica died in the middle of.
 

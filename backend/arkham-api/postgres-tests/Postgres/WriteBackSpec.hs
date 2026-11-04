@@ -4,7 +4,7 @@
 
 -- Real store/queue integration. This deliberately does not claim coverage of
 -- Games.Shared's answer transaction or the authenticated HTTP route.
-module Postgres.WriteBackSpec (spec, Seed, Fixture (..), fixture, queue, seedCampaignGame, undoCampaignWriteBack) where
+module Postgres.WriteBackSpec (spec, Seed, Fixture (..), fixture, queue, runWrites, seedCampaignGame, undoCampaignWriteBack) where
 
 import Api.Arkham.ArkhamDBStore (loadCampaignIdentities)
 import Api.Arkham.ArkhamDBWriteBack
@@ -363,6 +363,63 @@ spec harness app remote seed relinkImport = describe "Production write-back queu
           `shouldReturn` if optOutFirst then 0 else 1
         transaction observer (P.count [ArkhamDBPushDeckId P.==. f.deckId, ArkhamDBPushStatus P.==. "cancelled"])
           `shouldReturn` if optOutFirst then 0 else 1
+
+  it "keeps the owner's completed push history when another user's toggle names the deck" $
+    withConnection harness \connection -> do
+      f <- fixture seed app connection "foreign-toggle-prune"
+      (stranger, _, _) <- seed connection "foreign-toggle-prune-stranger"
+      let completedIds = fmap (map P.entityKey) $ transaction connection $ P.selectList
+            [ArkhamDBPushDeckId P.==. f.deckId, ArkhamDBPushUserId P.==. f.uid, ArkhamDBPushStatus P.<-. ["succeeded", "cancelled"]]
+            [P.Desc ArkhamDBPushCreatedAt, P.Desc ArkhamDBPushId]
+      -- Newest first: i = 1 is the most recent completed push.
+      seeded <- transaction connection $ forM [1 .. 25 :: Int] \i -> do
+        let at = addUTCTime (negate $ fromIntegral i) f.now
+        P.insert $ ArkhamDBPush f.deckId f.uid f.generation (f.campaign <> "/history/" <> show i) f.campaign
+          (encodePushDeck remote.deck) 5 (if even i then "cancelled" else "succeeded") "ready" Nothing Nothing
+          remote.dateUpdate remote.deckVersion Nothing Nothing Nothing "normal" at at "scenarioEnd"
+      completedIds `shouldReturn` seeded
+      for_ [False, True] \enabled ->
+        unsafeHandler app (writeBackStore.toggleWriteBack f.now stranger f.deckId enabled) `shouldReturn` False
+      completedIds `shouldReturn` seeded
+      transaction connection (fmap (arkhamDBDeckLinkWriteBack . P.entityVal) <$> P.getBy (UniqueArkhamDBDeckLinkDeck f.deckId))
+        `shouldReturn` Just True
+      -- The owner's own toggle still prunes to the newest 20.
+      unsafeHandler app (writeBackStore.toggleWriteBack f.now f.uid f.deckId True) `shouldReturn` True
+      completedIds `shouldReturn` take 20 seeded
+
+  for_ [False, True] \finishing ->
+    it ("skips an enqueue without waiting while " <> (if finishing then "same-deck adoption" else "keep-remote") <> " holds the link FOR UPDATE") $
+      withConnection harness \first -> withConnection harness \second -> withConnection harness \observer -> do
+        f <- fixture seed app first $ if finishing then "finish-link-lock" else "keep-link-lock"
+        -- Another campaign's claimed push on the same deck: its association
+        -- lock cannot fence this game's first enqueue (no association yet),
+        -- and the unchanged remote id makes the link write a non-key UPDATE.
+        -- Only the explicit link lock fences the enqueue.
+        otherGame <- seedCampaignGame first (if finishing then "finish-link-lock-game" else "keep-link-lock-game") f.now
+        let otherCampaign = UUID.toText (coerce otherGame) <> "/01001"
+        transaction first do
+          P.insert_ $ ArkhamDBCampaignDeck otherCampaign f.deckId f.uid 0
+          P.insert_ $ ArkhamDBPush f.deckId f.uid f.generation (UUID.toText (coerce otherGame) <> "/1/01001") otherCampaign
+            (encodePushDeck remote.deck) 5 "pending" "ready" Nothing Nothing
+            remote.dateUpdate remote.deckVersion Nothing Nothing Nothing "normal" f.now f.now "scenarioEnd"
+        claimed <- claim app f
+        arkhamDBPushCampaignKey (P.entityVal claimed) `shouldBe` otherCampaign
+        barrier <- newBarrier
+        withAsync (runWrites app first \store -> do
+          completed <- if finishing
+            then (== Just f.deckId) <$> store.finishPush claimed remote
+            else store.keepRemoteDeck claimed remote
+          liftIO $ completed `shouldBe` True
+          liftIO $ pauseAt barrier) \completing -> do
+            link completing
+            awaitBarrier barrier
+            within "nonblocking enqueue beside a held link" $ queue f second 1
+            releaseBarrier barrier
+            within "link writer commit" $ wait completing
+        transaction observer (P.count [ArkhamDBPushDeckId P.==. f.deckId]) `shouldReturn` 1
+        pendingAt observer f.deckId `shouldReturn` 0
+        pushState observer (P.entityKey claimed) `shouldReturn` (if finishing then "succeeded" else "cancelled", Nothing)
+        isNothing <$> transaction observer (P.getBy $ UniqueArkhamDBCampaignDeck f.campaign) `shouldReturn` True
 
   for_ ["finish", "disable", "undo", "unlink"] \completion ->
     it ("retains nested save-as-new predecessors until atomic adoption or fencing by " <> toString completion) $

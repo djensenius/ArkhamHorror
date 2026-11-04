@@ -23,7 +23,7 @@ import Postgres.DispatchSpec (prepareAnswer, answer)
 import Postgres.Harness
 import Postgres.Production
 import Postgres.Remote
-import Postgres.WriteBackSpec (Fixture (..), Seed, fixture, queue)
+import Postgres.WriteBackSpec (Fixture (..), Seed, fixture, queue, runWrites)
 import Relude hiding (first, second)
 import Settings (ArkhamDBSettings)
 import Test.Hspec
@@ -96,6 +96,68 @@ spec harness app settings unexpected source seed = describe "Actual answer versu
           unsafeHandler app (writeBackStore.campaignXpBaseline f.campaign) `shouldReturn` 0
         filter (Text.isPrefixOf "upgrade/") <$> MVar.readMVar remote.calls `shouldReturn` ["upgrade/123/5"]
         arkhamGameStep <$> transaction observer (P.getJust f.gameId) `shouldReturn` 3
+
+  it "records a real answer's push while a linked sync holds its uncommitted link UPDATE" $
+    withConnection harness \syncing -> withConnection harness \observer -> do
+      f <- fixture seed app observer "linked-sync-answer"
+      transaction observer $ P.update f.gameId [ArkhamGameCurrentData P.=. prepareAnswer f]
+      preSync <- transaction observer (P.getBy $ UniqueArkhamDBDeckLinkDeck f.deckId)
+        >>= maybe (fail "Expected linked deck") (pure . arkhamDBDeckLinkLastSyncedDateUpdate . P.entityVal)
+      preSync `shouldNotBe` Just "synced"
+      remote <- newRemote unexpected source
+      editRemote remote source.remoteDeckId \old -> old {dateUpdate = Just "synced"}
+      now <- currentTimeMicros
+      barrier <- newBarrier
+      let pendingPushes = transaction observer $
+            P.count [ArkhamDBPushDeckId P.==. f.deckId, ArkhamDBPushStatus P.==. "pending"]
+      -- Pause after saveSyncedDeck's deck and link UPDATEs, before commit.
+      withAsync (unsafeHandler app $ storeTransaction (const $ pure ()) syncing \store -> do
+        result <- runExceptT $ syncRemoteDeck store (hoistArkhamDBClient liftIO remote.client) settings now f.uid f.deckId
+          (\_ -> liftIO $ fail "Unexpected public fallback")
+        liftIO $ pauseAt barrier
+        pure result) \synchronizing -> do
+          link synchronizing
+          awaitBarrier barrier
+          -- The uncommitted link UPDATE is held: a FOR SHARE reader would skip it.
+          transaction observer (rawSql "SELECT id FROM arkhamdb_deck_links WHERE deck_id = ? FOR SHARE SKIP LOCKED"
+            [toPersistValue f.deckId] :: ReaderT SqlBackend IO [Single ArkhamDBDeckLinkId]) `shouldReturn` []
+          within "answer beside paused linked sync" $
+            unsafeHandler app (updateGameWithAnswerRejection mempty answer f.gameId Nothing) `shouldReturn` Nothing
+          pendingPushes `shouldReturn` 1
+          releaseBarrier barrier
+          result <- within "linked sync commit" $ wait synchronizing
+          void result `shouldBe` Right ()
+      pendingPushes `shouldReturn` 1
+      synced <- transaction observer (P.getBy $ UniqueArkhamDBDeckLinkDeck f.deckId)
+        >>= maybe (fail "Expected linked deck") (pure . P.entityVal)
+      arkhamDBDeckLinkLastSyncedDateUpdate synced `shouldBe` Just "synced"
+      P.Entity _ job <- storedJob observer f
+      arkhamDBPushExpectedDateUpdate job `shouldBe` preSync
+
+  it "records the owner's real answer push while another user's toggle names the deck" $
+    withConnection harness \toggling -> withConnection harness \observer -> do
+      f <- fixture seed app observer "foreign-toggle-answer"
+      (stranger, _, _) <- seed observer "foreign-toggle-stranger"
+      transaction observer $ P.update f.gameId [ArkhamGameCurrentData P.=. prepareAnswer f]
+      barrier <- newBarrier
+      let pendingPushes = transaction observer $
+            P.count [ArkhamDBPushDeckId P.==. f.deckId, ArkhamDBPushStatus P.==. "pending"]
+      -- The deck id comes from the URL; a non-owner's toggle changes nothing
+      -- and must lock nothing on the owner's link while it stays open.
+      withAsync (runWrites app toggling \store -> do
+        changed <- store.toggleWriteBack f.now stranger f.deckId False
+        liftIO $ pauseAt barrier
+        pure changed) \strangerToggle -> do
+          link strangerToggle
+          awaitBarrier barrier
+          within "answer beside a non-owner toggle" $
+            unsafeHandler app (updateGameWithAnswerRejection mempty answer f.gameId Nothing) `shouldReturn` Nothing
+          pendingPushes `shouldReturn` 1
+          releaseBarrier barrier
+          within "non-owner toggle commit" (wait strangerToggle) `shouldReturn` False
+      pendingPushes `shouldReturn` 1
+      transaction observer (fmap (arkhamDBDeckLinkWriteBack . P.entityVal) <$> P.getBy (UniqueArkhamDBDeckLinkDeck f.deckId))
+        `shouldReturn` Just True
 
   it "renews a healthy running push's lease past 60 seconds so another dispatcher cannot steal it" $
     withConnection harness \observer -> do

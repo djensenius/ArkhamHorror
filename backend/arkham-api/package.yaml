@@ -246,6 +246,8 @@ tests:
       - unliftio
       - uuid
       - wai
+      - wai-extra
+      - warp
       - yesod-core
   spec:
     main: Spec.hs

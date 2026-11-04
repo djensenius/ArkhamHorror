@@ -2,7 +2,7 @@
   "artifactVersion": "1.0.0",
   "source": {
     "files": 3,
-    "sha256": "4eedff6ab67d9ccba6c1c136f053c18ca8572f5159ffc7f5a612b513e9e9903e"
+    "sha256": "4290b030b652d8889e74174e91ca997ea5ffae67e8daf07451d2b238414ca10e"
   },
   "variableTypes": {
     "chaosTokenFace": {

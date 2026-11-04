@@ -118,9 +118,9 @@ persistentStoreWith validate database = ArkhamDBStore
       -- Overlay PUT/DELETE only lock this row, not the account. No pre-I/O
       -- overlay or adoption decision may cross this transaction boundary.
       -- NO KEY UPDATE matches lockDeck: it does not skip enqueue's deck
-      -- key-share fence. Known gap: the link UPDATE below still conflicts with
-      -- enqueue's link FOR SHARE SKIP LOCKED; an enqueue reaching the link
-      -- after that UPDATE and before this commit skips the deck's push.
+      -- key-share fence. The link UPDATE below changes no key column, so it
+      -- does not skip enqueue's link KEY SHARE either: a concurrent enqueue
+      -- records its push against the committed pre-sync link markers.
       rows <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? FOR NO KEY UPDATE"
         [toPersistValue deckId] :: ReaderT SqlBackend Handler [Entity ArkhamDeck]
       mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
@@ -209,6 +209,16 @@ writeBackCampaignIdentities known deckId own = do
 -- A relink inserts a fresh account id (generation).
 lockArkhamDBUser :: forall m. MonadIO m => UserId -> ReaderT SqlBackend m ()
 lockArkhamDBUser userId = void (rawSql "SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE" [toPersistValue userId] :: ReaderT SqlBackend m [Single Int64])
+
+-- Opt-out, keep-remote and same-deck push adoption take this after the user
+-- (and any deck) lock, before writing the link or cancelling its pushes. The
+-- cross-campaign adoption branch inserts a new link instead and is fenced by
+-- the association lock. FOR UPDATE conflicts with enqueue's link FOR KEY SHARE
+-- SKIP LOCKED (so a held opt-out is skipped and an in-flight enqueue is waited
+-- for); linked sync's plain non-key UPDATE deliberately does not. Only the
+-- given owner's row is locked: a toggle names an arbitrary deck id.
+lockArkhamDBDeckLink :: forall m. MonadIO m => UserId -> ArkhamDeckId -> ReaderT SqlBackend m ()
+lockArkhamDBDeckLink userId deckId = void (rawSql "SELECT id FROM arkhamdb_deck_links WHERE deck_id = ? AND user_id = ? FOR UPDATE" [toPersistValue deckId, toPersistValue userId] :: ReaderT SqlBackend m [Single ArkhamDBDeckLinkId])
 
 sameAccountGeneration :: MonadIO m => UserId -> ArkhamDBAccountId -> ReaderT SqlBackend m Bool
 sameAccountGeneration userId generation = do

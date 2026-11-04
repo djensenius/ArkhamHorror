@@ -10,17 +10,19 @@ import Arkham.ArkhamDB
 import Api.Arkham.ArkhamDBCleanup (cleanupBatchSize, purgeExpiredLinks)
 import Api.Arkham.ArkhamDBStore (persistentStoreWith)
 import Api.Arkham.ArkhamDBWriteBack (writeBackStore)
+import Api.Arkham.Maintenance (Maintenance (..))
 import Api.Handler.Arkham.ArkhamDB (runArkhamDB)
 import Api.Handler.Arkham.Decks
-  ( deleteApiV1ArkhamDeckOverlayR, putApiV1ArkhamDeckOverlayR, saveDeckOverlay, savePublicSyncedDeck
+  ( saveDeckOverlay, savePublicSyncedDeck
   , validatePlayableDecklist )
 import Arkham.ArkhamDB.WriteBack
 import Arkham.ArkhamDB.Service
 import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Decklist (ArkhamDBDecklist (..))
+import Arkham.Decklist qualified as Decklist
 import Control.Concurrent.MVar qualified as MVar
 import Control.Exception (throwIO)
-import Data.Aeson (Value, decode, encode, object, toJSON, (.=))
+import Data.Aeson (Value (Bool), decode, encode, object, toJSON, (.=))
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time.Clock (UTCTime, addUTCTime)
@@ -33,12 +35,15 @@ import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
 import Entity.Arkham.Game
 import Entity.User (UserId)
-import Foundation (App, Handler, unsafeHandler, userIdToToken)
+import Foundation (App (appMaintenance), Handler, unsafeHandler)
 import GHC.Clock (getMonotonicTime)
-import Network.HTTP.Types (Status, status400, status409, status502)
-import Network.Wai (defaultRequest, requestHeaders, requestMethod, setRequestBodyChunks)
+import Network.HTTP.Types (Status, status200, status400, status401, status404, status405, status409, status502, status503)
+import Network.Wai (rawPathInfo, requestMethod, responseLBS)
+import Network.Wai.Handler.Warp qualified as Warp
+import Postgres.ArchiveSpec qualified as ArchiveSQL
 import Postgres.Harness
 import Postgres.HarnessSpec qualified as Harness
+import Postgres.ClaimSeatSpec qualified as ClaimSeatSQL
 import Postgres.DispatchSpec qualified as DispatchSQL
 import Postgres.PayloadSpec qualified as PayloadSQL
 import Postgres.ConcurrencySpec qualified as ConcurrencySQL
@@ -49,6 +54,7 @@ import Postgres.Production
 import Postgres.WriteBackSpec qualified as WriteBackSQL
 import Relude hiding (first, second)
 import Settings (ArkhamDBSettings (..))
+import System.Environment qualified as Environment
 import System.Timeout (timeout)
 import Test.Hspec
 import UnliftIO.Async (link, wait, withAsync)
@@ -75,6 +81,8 @@ main = withHarness \harness -> withProductionApp harness \app ->
     DeleteSQL.spec harness app settings transport remote (writeBackSeed app)
     EndToEndSQL.spec harness app settings transport remote (writeBackSeed app)
     ThirdEditionSQL.spec harness app
+    ArchiveSQL.spec harness app
+    ClaimSeatSQL.spec harness app seedUser
 
 writeBackSeed :: App -> WriteBackSQL.Seed
 writeBackSeed app connection label = do
@@ -265,6 +273,18 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
 
   it "requires relinking without calling ArkhamDB when no refresh token is stored" $
     refreshFailureCase harness app "refresh-missing-token" Nothing Nothing status409 "tokenExpired"
+      "ArkhamDB token expired; relink required"
+
+  it "keeps the mapping and skips public fallback when a linked sync's token refresh fails remotely" $
+    syncRefreshFailureCase harness app "sync-refresh-remote-error" (Just "fixture-refresh")
+      (Just $ ArkhamDBRemoteError $ leakMarker <> " ArkhamDB is down") status502 "remoteUnavailable" "ArkhamDB request failed"
+
+  it "keeps the mapping and skips public fallback when a linked sync's token refresh is rejected" $
+    syncRefreshFailureCase harness app "sync-refresh-rejected" (Just "fixture-refresh")
+      (Just ArkhamDBUnauthorized) status409 "tokenExpired" "ArkhamDB rejected the token; relink required"
+
+  it "keeps the mapping and skips public fallback when a linked sync has no refresh token" $
+    syncRefreshFailureCase harness app "sync-refresh-missing-token" Nothing Nothing status409 "tokenExpired"
       "ArkhamDB token expired; relink required"
 
   it "does not stage callback credentials when unlink commits during OAuth exchange" $
@@ -596,21 +616,65 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
             maybe (fail "Expected a persisted overlay attachment id") (pure . (,) persisted) $
               arkhamDeckOverlayAttachmentId persisted
       deckId <- transaction connection $ P.insert deck
-      firstSaved <- either (fail . show) pure =<< overlayRoute app uid deckId (Just body)
+      -- The response omits the private attachment id; it must equal the row.
+      void $ expectSaved connection deckId =<< overlayRoute app uid deckId (Just body)
       (firstPersisted, firstId) <- persistedAttachment deckId
-      arkhamDeckOverlayAttachmentId (P.entityVal firstSaved) `shouldBe` Just firstId
       -- A second PUT of the same bytes is a NEW attachment, not a no-op.
-      secondSaved <- either (fail . show) pure =<< overlayRoute app uid deckId (Just body)
+      void $ expectSaved connection deckId =<< overlayRoute app uid deckId (Just body)
       (secondPersisted, secondId) <- persistedAttachment deckId
       secondId `shouldNotBe` firstId
-      arkhamDeckOverlayAttachmentId (P.entityVal secondSaved) `shouldBe` Just secondId
       toJSON secondPersisted `shouldBe` toJSON firstPersisted
-      removed <- either (fail . show) pure =<< overlayRoute app uid deckId Nothing
-      persisted <- transaction connection (P.getJust deckId)
+      persisted <- expectSaved connection deckId =<< overlayRoute app uid deckId Nothing
       arkhamDeckOverlay persisted `shouldBe` Nothing
       arkhamDeckOverlayAttachmentId persisted `shouldBe` Nothing
-      arkhamDeckOverlayAttachmentId (P.entityVal removed) `shouldBe` Nothing
       toJSON persisted `shouldBe` toJSON deck
+
+  it "dispatches overlay PUT and DELETE through WAI routing, JWT authentication, ownership and maintenance" $
+    withConnection harness \connection -> do
+      owner <- seedUser connection "overlay-route-owner"
+      stranger <- seedUser connection "overlay-route-stranger"
+      let overlay = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
+          replacement = DeckOverlay Nothing mempty (Map.singleton "01008" 1) mempty
+          body = encode replacement
+          seeded = UUID.fromWords 0 0 0 7
+          deck = ArkhamDeck owner Nothing "Roland Banks" "Overlay routes" remote.deck (Just overlay) (Just seeded) Nothing
+          json = [("Content-Type", "application/json")]
+      deckId <- transaction connection $ P.insert deck
+      let route method path headers = routeRequest app method (deckPath deckId path) headers
+          snapshot = transaction connection (P.getJust deckId) <&> \d -> (toJSON d, arkhamDeckOverlayAttachmentId d)
+      original <- snapshot
+      snd original `shouldBe` Just seeded
+      ownerToken <- authorizationFor app owner
+      strangerToken <- authorizationFor app stranger
+      for_ [("PUT", body), ("DELETE", "")] \(method, payload) -> do
+        let refused expected path headers = do
+              (status, _) <- route method path (headers <> json) payload
+              (method, path, status) `shouldBe` (method, path, expected)
+              snapshot `shouldReturn` original
+        refused status401 "/overlay" []
+        refused status401 "/overlay" [("Authorization", "Token not-a-jwt")]
+        refused status404 "/overlays" [ownerToken]
+        (status, response) <- route method "/overlay" (strangerToken : json) payload
+        (status, decode @Value response) `shouldBe`
+          (status400, Just $ object ["errorMsg" .= ("Deck does not belong to this user" :: Text)])
+        snapshot `shouldReturn` original
+        missing <- routeRequest app method (deckPath (ArkhamDeckKey $ UUID.fromWords 0 0 0 99) "/overlay") (ownerToken : json) payload
+        fst missing `shouldBe` status404
+        snapshot `shouldReturn` original
+      (patched, _) <- route "PATCH" "/overlay" (ownerToken : json) body
+      patched `shouldBe` status405
+      snapshot `shouldReturn` original
+      -- A foundation copy with its own maintenance flag; the shared app is untouched.
+      since <- currentTimeMicros
+      maintenance <- newTVarIO $ Just $ Maintenance since Nothing
+      for_ [("PUT", body), ("DELETE", "")] \(method, payload) -> do
+        (status, response) <- routeRequest app {appMaintenance = maintenance} method (deckPath deckId "/overlay") (ownerToken : json) payload
+        (status, decode @(Map.Map Text Value) response >>= Map.lookup "maintenance") `shouldBe` (status503, Just (Bool True))
+        snapshot `shouldReturn` original
+      -- The same owner request is accepted once routed normally.
+      saved <- expectSaved connection deckId =<< route "PUT" "/overlay" (ownerToken : json) body
+      arkhamDeckOverlay saved `shouldBe` Just replacement
+      arkhamDeckOverlayAttachmentId saved `shouldSatisfy` maybe False (/= seeded)
 
   for_ [False, True] \public ->
     it ("keeps an actual overlay PUT's attachment id through a later provenance-free "
@@ -627,20 +691,21 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
         void $ seedAccount app connection now uid label encrypted
         Entity deckId _ <- either (fail . show) pure =<< runStoreActionsWith validatePlayableDecklist app connection
           (\store -> runExceptT $ importRemoteDeck store initialClient settings now uid "123" forbiddenPublic)
-        attached <- either (fail . show) pure =<< overlayRoute app uid deckId (Just $ toStrict $ encode overlay)
+        attached <- expectSaved connection deckId =<< overlayRoute app uid deckId (Just $ toStrict $ encode overlay)
         attachment <- maybe (fail "Expected the PUT to assign an attachment id") pure $
-          arkhamDeckOverlayAttachmentId (P.entityVal attached)
-        result <- if public
-          then unsafeHandler app $ runSqlConn (savePublicSyncedDeck uid deckId incoming.deck) connection
-          else runStoreActionsWith validatePlayableDecklist app connection \store ->
-            runExceptT $ syncRemoteDeck store syncingClient settings now uid deckId forbiddenPublic
-        synced <- either (fail . show) pure result
+          arkhamDeckOverlayAttachmentId attached
+        (expected, synced) <- if public
+          then publicSyncRoute app connection uid deckId incoming.deck <&> \(deckUrl, saved) ->
+            (toJSON incoming.deck {Decklist.url = Just deckUrl}, saved)
+          else do
+            result <- runStoreActionsWith validatePlayableDecklist app connection \store ->
+              runExceptT $ syncRemoteDeck store syncingClient settings now uid deckId forbiddenPublic
+            (toJSON $ remoteDecklist settings incoming,) . P.entityVal <$> either (fail . show) pure result
         persisted <- transaction connection (P.getJust deckId)
-        toJSON (arkhamDeckList persisted) `shouldBe`
-          toJSON (if public then incoming.deck else remoteDecklist settings incoming)
+        toJSON (arkhamDeckList persisted) `shouldBe` expected
         arkhamDeckOverlay persisted `shouldBe` Just overlay
         arkhamDeckOverlayAttachmentId persisted `shouldBe` Just attachment
-        arkhamDeckOverlayAttachmentId (P.entityVal synced) `shouldBe` Just attachment
+        arkhamDeckOverlayAttachmentId synced `shouldBe` Just attachment
 
   for_ [False, True] \public ->
     it ("consumes incorporated overlay provenance through actual " <> (if public then "public" else "linked") <> " sync") $
@@ -660,16 +725,46 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
           (\store -> runExceptT $ importRemoteDeck store initialClient settings now uid "123" forbiddenPublic)
         transaction connection $ P.update deckId
           [ArkhamDeckOverlay P.=. Just overlay, ArkhamDeckOverlayAttachmentId P.=. Just attachment]
-        result <- if public
-          then unsafeHandler app $ runSqlConn (savePublicSyncedDeck uid deckId incoming.deck) connection
-          else runStoreActionsWith validatePlayableDecklist app connection \store ->
-            runExceptT $ syncRemoteDeck store syncingClient settings now uid deckId forbiddenPublic
-        saved <- either (fail . show) pure result
+        saved <- if public
+          then snd <$> publicSyncRoute app connection uid deckId incoming.deck
+          else do
+            result <- runStoreActionsWith validatePlayableDecklist app connection \store ->
+              runExceptT $ syncRemoteDeck store syncingClient settings now uid deckId forbiddenPublic
+            P.entityVal <$> either (fail . show) pure result
         persisted <- transaction connection (P.getJust deckId)
         arkhamDeckOverlay persisted `shouldBe` Nothing
         arkhamDeckOverlayAttachmentId persisted `shouldBe` Nothing
         slots (arkhamDeckPlayList persisted) `shouldBe` Map.singleton "01007" 1
-        toJSON persisted `shouldBe` toJSON (P.entityVal saved)
+        toJSON persisted `shouldBe` toJSON saved
+
+  it "refuses public deck sync through WAI without a token, for another user, without a url, or off-route" $
+    withConnection harness \connection -> do
+      owner <- seedUser connection "public-sync-route-owner"
+      stranger <- seedUser connection "public-sync-route-stranger"
+      let deck = ArkhamDeck owner (Just "http://127.0.0.1:9/decklist.json") "Roland Banks" "Public sync routes"
+            remote.deck Nothing Nothing Nothing
+          snapshot deckId = transaction connection (P.getJust deckId) <&> \d -> (toJSON d, arkhamDeckOverlayAttachmentId d)
+          errorBody message = Just $ object ["errorMsg" .= (message :: Text)]
+      deckId <- transaction connection $ P.insert deck
+      unlinked <- transaction connection $ P.insert deck {arkhamDeckUrl = Nothing}
+      ownerToken <- authorizationFor app owner
+      strangerToken <- authorizationFor app stranger
+      original <- snapshot deckId
+      originalUnlinked <- snapshot unlinked
+      -- Every refusal happens before any fetch: the url's discard port is never dialled.
+      for_ [([], deckId, "/sync", status401), ([("Authorization", "Token not-a-jwt")], deckId, "/sync", status401), ([ownerToken], deckId, "/syncs", status404)]
+        \(headers, target, path, expected) -> do
+          (status, _) <- routeRequest app "POST" (deckPath target path) headers ""
+          (path, status) `shouldBe` (path, expected)
+      (getStatus, _) <- routeRequest app "GET" (deckPath deckId "/sync") [ownerToken] ""
+      getStatus `shouldBe` status405
+      (foreignStatus, foreignBody) <- routeRequest app "POST" (deckPath deckId "/sync") [strangerToken] ""
+      (foreignStatus, decode @Value foreignBody) `shouldBe` (status400, errorBody "Deck does not belong to this user")
+      (urlStatus, urlBody) <- routeRequest app "POST" (deckPath unlinked "/sync") [ownerToken] ""
+      (urlStatus, decode @Value urlBody) `shouldBe` (status400, errorBody
+        "This deck was not imported from a url, so there is nothing to sync from. Point it at one first.")
+      snapshot deckId `shouldReturn` original
+      snapshot unlinked `shouldReturn` originalUnlinked
 
   it "rejects overlay removal that would expose unsupported base cards without changing the saved deck" $
     withConnection harness \connection -> do
@@ -678,8 +773,11 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
           deck = ArkhamDeck uid Nothing "Roland Banks" "Hidden unsupported card"
             (remote.deck {slots = Map.singleton "unimplemented-card" 1}) (Just hidden) Nothing Nothing
       deckId <- transaction connection $ P.insert deck
-      result <- runHandlerResponse app $ runSqlConn (saveDeckOverlay uid deckId Nothing) connection
-      either Just (const Nothing) result `shouldBe` Just status400
+      -- The owner's DELETE through routing and JWT authentication; the
+      -- route answers with the deck validation errors, not a 500.
+      (status, body) <- overlayRoute app uid deckId Nothing
+      (status, decode @Value body) `shouldBe` (status400, Just $ toJSON
+        [object ["tag" .= ("UnimplementedCard" :: Text), "contents" .= ("cunimplemented-card" :: Text)]])
       persisted <- transaction connection (P.getJust deckId)
       toJSON persisted `shouldBe` toJSON deck
 
@@ -854,8 +952,8 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
       transaction cleaner (P.get key) >>= (`shouldSatisfy` isNothing)
 
 -- Fixture SQL only; all lifecycle mutations above invoke persistentStoreWith.
--- User's production entity currently includes an admin field not in Sqitch;
--- do not hide that unrelated schema drift by inventing a test-only column.
+-- Columns omitted here, including admin (from Sqitch's add_admin_to_users),
+-- take their schema defaults; do not invent test-only columns.
 seedUser :: SqlBackend -> Text -> IO UserId
 seedUser connection label = transaction connection do
   rows <- rawSql
@@ -952,6 +1050,75 @@ refreshFailureCase harness app label credential outcome status code message =
     linkedRows connection uid `shouldReturn` persisted
     runStore app connection (\store -> store.findAccountGeneration uid) `shouldReturn` Just generation
 
+-- A linked sync whose expired token cannot be refreshed must surface the
+-- sanitized refresh error through runArkhamDB: never the notFound path, so the
+-- mapping is kept and the public fallback is not used. Store actions commit
+-- one at a time (as runDB does), so nothing is hidden by an outer rollback.
+syncRefreshFailureCase :: Harness -> App -> Text -> Maybe Text -> Maybe ArkhamDBClientError -> Status -> Text -> Text -> IO ()
+syncRefreshFailureCase harness app label credential outcome status code message =
+  withConnection harness \connection -> withConnection harness \observer -> do
+    now <- currentTimeMicros
+    uid <- seedUser connection label
+    previous <- encryptedAccount settings now uid (tokens now) {refreshToken = credential}
+    generation <- seedAccount app connection now uid label previous
+    let importer = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right remote}
+    imported@(Entity deckId _) <- either (fail . show) pure =<< runStoreActions app connection
+      (\store -> runExceptT $ importRemoteDeck store importer settings now uid "123" forbiddenPublic)
+    valid <- runStore app observer (\store -> store.findAccount uid) >>= maybe (fail "Expected linked account") pure
+    runStore app connection (\store -> store.updateAccount valid valid {arkhamDBAccountExpiresAt = Just $ addUTCTime (-60) now})
+      `shouldReturn` True
+    stored <- runStore app observer (\store -> store.findAccount uid) >>= maybe (fail "Expected linked account") pure
+    arkhamDBAccountExpiresAt stored `shouldBe` Just (addUTCTime (-60) now)
+    isJust (arkhamDBAccountEncryptedRefreshToken stored) `shouldBe` isJust credential
+    let deckRow = transaction observer
+          (rawSql "SELECT row_to_json(d)::text FROM arkham_decks AS d WHERE d.user_id = ? ORDER BY d.id" [toPersistValue uid])
+            <&> map unSingle :: IO [Text]
+        linkStates = transaction observer
+          (rawSql "SELECT count(*) FROM arkhamdb_link_states WHERE user_id = ?" [toPersistValue uid])
+            <&> map unSingle :: IO [Int64]
+    persisted <- linkedRows observer uid
+    bimap length length persisted `shouldBe` (1, 1)
+    decks <- deckRow
+    length decks `shouldBe` 1
+    linkStates `shouldReturn` [0]
+    counts <- deckCounts observer uid
+    counts `shouldBe` (1, 1)
+    refreshes <- newIORef (0 :: Int)
+    loads <- newIORef (0 :: Int)
+    fallbacks <- MVar.newMVar (0 :: Int)
+    let client = hoistArkhamDBClient liftIO $ transport
+          { refreshTokens = \sent -> do
+              sent `shouldBe` "fixture-refresh"
+              modifyIORef' refreshes (+ 1)
+              -- Never ArkhamDBNotFound: that is the legitimate drop-and-fallback path.
+              maybe (fail "A missing refresh token reached ArkhamDB") (pure . Left) outcome
+          , loadDeck = \_ _ -> do
+              modifyIORef' loads (+ 1)
+              pure $ Left $ ArkhamDBRemoteError "Unexpected remote load after a failed refresh"
+          }
+        -- Counts and returns the deck so a fallback regression reaches the
+        -- row and count assertions below instead of failing inside the handler.
+        public _ = do
+          liftIO $ MVar.modifyMVar_ fallbacks $ pure . (+ 1)
+          pure imported
+    result <- within "linked sync after a failed refresh" $ runHandlerResponseBody app $ runArkhamDB $
+      syncRemoteDeck (persistentStoreWith (const $ pure ()) (`runSqlConn` connection)) client settings now uid deckId public
+    readIORef refreshes `shouldReturn` (if isJust outcome then 1 else 0)
+    readIORef loads `shouldReturn` 0
+    linkedRows observer uid `shouldReturn` persisted
+    deckRow `shouldReturn` decks
+    runStore app observer (\store -> store.findAccountGeneration uid) `shouldReturn` Just generation
+    linkStates `shouldReturn` [0]
+    deckCounts observer uid `shouldReturn` counts
+    MVar.readMVar fallbacks `shouldReturn` 0
+    expectSanitizedError status code message $
+      either (\(actual, body) -> Left (actual, decode body, decodeUtf8 body)) (Right . show . entityKey) result
+    -- The refresh lock's transaction ended: another session takes it at once.
+    -- runSqlConn normally ends it; this guards against a leaked open transaction or held user-row lock from the sync path.
+    locked <- transaction observer
+      (rawSql "SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE NOWAIT" [toPersistValue uid] :: ReaderT SqlBackend IO [Single Int64])
+    length locked `shouldBe` 1
+
 deckCounts :: SqlBackend -> UserId -> IO (Int64, Int64)
 deckCounts connection uid = transaction connection do
   rows <- rawSql
@@ -991,20 +1158,48 @@ transport = ArkhamDBClient
 forbiddenPublic :: MonadIO m => ArkhamDeckId -> m (Entity ArkhamDeck)
 forbiddenPublic _ = liftIO $ fail "Unexpected public fallback"
 
--- The actual JWT-authenticated overlay PUT (with a JSON body) or DELETE handler,
--- not saveDeckOverlay alone. Every call builds a fresh request whose body
--- yields exactly the given bytes once, as WAI does for a real client request.
-overlayRoute :: App -> UserId -> ArkhamDeckId -> Maybe ByteString -> IO (Either Status (Entity ArkhamDeck))
+-- The JWT-authenticated overlay PUT (with a JSON body) or DELETE request,
+-- dispatched by the production WAI application rather than calling a handler.
+overlayRoute :: App -> UserId -> ArkhamDeckId -> Maybe ByteString -> IO (Status, LByteString)
 overlayRoute app uid deckId body = do
-  token <- unsafeHandler app $ userIdToToken uid
-  chunks <- newIORef $ maybeToList body
-  let nextChunk = atomicModifyIORef' chunks \case
-        chunk : rest -> (rest, chunk)
-        [] -> ([], "")
-      request = setRequestBodyChunks nextChunk defaultRequest
-        { requestMethod = maybe "DELETE" (const "PUT") body
-        , requestHeaders = ("Authorization", "Token " <> encodeUtf8 token)
-            : [("Content-Type", "application/json") | isJust body]
-        }
-  runHandlerResponse app $ withRequest request $
-    maybe deleteApiV1ArkhamDeckOverlayR (const putApiV1ArkhamDeckOverlayR) body deckId
+  authorization <- authorizationFor app uid
+  routeRequest app (maybe "DELETE" (const "PUT") body) (deckPath deckId "/overlay")
+    (authorization : [("Content-Type", "application/json") | isJust body]) (maybe "" toLazy body)
+
+-- The JWT-authenticated public deck sync (POST /decks/<id>/sync) through the
+-- production WAI application. The deck's stored url is pointed at a loopback
+-- HTTP fixture serving the decklist, so the handler's real fetch (getDeckList
+-- -> simpleHttp for a non-arkham.build url) reads it; exactly one GET must
+-- arrive. Returns the fetch url and the committed row.
+publicSyncRoute :: App -> SqlBackend -> UserId -> ArkhamDeckId -> ArkhamDBDecklist -> IO (Text, ArkhamDeck)
+publicSyncRoute app connection uid deckId served = do
+  -- http-client would send the fetch through an ambient proxy. Only the
+  -- names of populated variables are compared and reported: a proxy url can
+  -- carry credentials, so its value must never reach a failure message.
+  populated <- flip filterM proxyVariables \name ->
+    maybe False (not . null) <$> Environment.lookupEnv (toString name)
+  populated `shouldBe` []
+  fetches <- newIORef []
+  let fixture request respond = do
+        atomicModifyIORef' fetches \seen -> (seen <> [(requestMethod request, rawPathInfo request)], ())
+        respond $ responseLBS status200 [("Content-Type", "application/json")] $ encode served
+  Warp.testWithApplication (pure fixture) \port -> do
+    let deckUrl = "http://127.0.0.1:" <> show port <> "/decklist.json"
+    transaction connection $ P.update deckId [ArkhamDeckUrl P.=. Just deckUrl]
+    authorization <- authorizationFor app uid
+    saved <- expectSaved connection deckId =<< routeRequest app "POST" (deckPath deckId "/sync") [authorization] ""
+    readIORef fetches `shouldReturn` [("GET", "/decklist.json")]
+    arkhamDeckUrl saved `shouldBe` Just deckUrl
+    pure (deckUrl, saved)
+
+-- Proxy variables http-client or its environment may honour, in both cases.
+proxyVariables :: [Text]
+proxyVariables = [c | base <- ["http_proxy", "https_proxy", "all_proxy"], c <- [base, T.toUpper base]]
+
+-- A 200 response whose JSON is exactly the committed row (ToJSON omits the
+-- private attachment id, so callers read that from the returned row).
+expectSaved :: SqlBackend -> ArkhamDeckId -> (Status, LByteString) -> IO ArkhamDeck
+expectSaved connection deckId (status, body) = do
+  persisted <- transaction connection (P.getJust deckId)
+  (status, decode @Value body) `shouldBe` (status200, Just $ toJSON $ Entity deckId persisted)
+  pure persisted
