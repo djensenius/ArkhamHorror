@@ -177,11 +177,33 @@ that does not exist. A failed restore tells clients one fixed sentence, "The
 archived steps could not be restored.", in the status `error`, the undo refusal
 and `GameUnarchiveFailed`. The row's `error_message`, which the admin panel shows,
 holds only a category (`restore failed: storage`, `database`, `integrity` or
-`unknown`); the underlying exception is in the server log.
+`unknown`).
 A failed admin hand-archive (`POST /admin/archives/#gameId`) likewise answers
 a 500 whose `error` is a fixed sentence ("The game could not be archived. The
-server log has the details."); the underlying failure goes only to the server
-log.
+server log has the details.").
+
+The server log does not have the exception's text either. Archive, restore,
+sweep and hand-archive failures log what kind of failure it was and nothing
+that came from the request or the response — never headers (an
+`X-Amz-Security-Token` from an instance role among them), URLs or query
+strings, response bodies, AWS error messages, file paths or SQL. What a line
+does say, by failure:
+
+| Failure | Logged |
+| --- | --- |
+| AWS service error | `aws service error (status 404, code NoSuchKey, request id 4442587FB7D0A2F9)` |
+| AWS response that would not parse | `aws serialize error (status 500)` |
+| Network or HTTP failure | `aws transport error (StatusCodeException, status 403)`, `(ConnectionFailure)`, `(invalid-url)` |
+| Credentials | `aws credentials error (RetrievalError)` |
+| SQL | `sql error (state 23505)` |
+| I/O | `io error (does not exist)` |
+| Anything else | `exception (ErrorCall)` — the exception's type |
+
+The AWS error code and request id are there because an operator needs them
+to look a failure up; neither is a credential. Each is logged only if it is
+1–64 characters of `[A-Za-z0-9._-]`, and is otherwise replaced by
+`<filtered>` whole, so text that is not shaped like an identifier never
+reaches the log even in part.
 
 A game is only a candidate again once it is fully `restored`. Not merely "not
 archived": a game whose restore *failed* has its old steps only in the object
