@@ -372,7 +372,7 @@ spec harness app remote seed relinkImport = describe "Production write-back queu
             [ArkhamDBPushDeckId P.==. f.deckId, ArkhamDBPushUserId P.==. f.uid, ArkhamDBPushStatus P.<-. ["succeeded", "cancelled"]]
             [P.Desc ArkhamDBPushCreatedAt, P.Desc ArkhamDBPushId]
       -- Newest first: i = 1 is the most recent completed push.
-      seeded <- transaction connection $ for [1 .. 25 :: Int] \i -> do
+      seeded <- transaction connection $ forM [1 .. 25 :: Int] \i -> do
         let at = addUTCTime (negate $ fromIntegral i) f.now
         P.insert $ ArkhamDBPush f.deckId f.uid f.generation (f.campaign <> "/history/" <> show i) f.campaign
           (encodePushDeck remote.deck) 5 (if even i then "cancelled" else "succeeded") "ready" Nothing Nothing
