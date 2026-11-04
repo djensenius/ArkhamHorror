@@ -699,8 +699,9 @@ postApiV1ArkhamGameClaimSeatR gameId = do
       -- Seat rows are written in two formats: deck selection stores the bare
       -- code ("01001"), claim seat and import the 'c'-prefixed one ("c01001").
       -- Compare both ends stripped, as 'Shared' does for achievements, so a
-      -- deck-selected seat still counts as taken.
-      seatCode = T.dropWhile (== 'c')
+      -- deck-selected seat still counts as taken. Strip at most one 'c', so a
+      -- malformed code such as "cc01001" still matches no seat.
+      seatCode t = fromMaybe t (T.stripPrefix "c" t)
   mReservedEvent <- runDB do
     -- Lock the game first, so concurrent claims (and joins) for this game run
     -- one at a time and every check below sees the committed seats.

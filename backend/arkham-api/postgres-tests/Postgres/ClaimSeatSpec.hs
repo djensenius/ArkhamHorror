@@ -108,6 +108,15 @@ spec harness app seedUser = describe "Claim seat" do
       claim app claimer gameId "01002" `shouldReturn` Succeeded
       sort <$> seatRows connection gameId `shouldReturn` sort [(chooser, "01001"), (claimer, "c01002")]
 
+  it "rejects a code with more than one leading c as an invalid seat" $
+    withConnection harness \connection -> do
+      gameId <- seedGame connection "claim-double-c"
+      claimer <- seedUser connection "claim-double-c-claimer"
+      claim app claimer gameId "cc01001" `shouldReturn` BadRequest ["Invalid investigator for this game"]
+      seatRows connection gameId `shouldReturn` []
+      claim app claimer gameId "c01001" `shouldReturn` Succeeded
+      seatRows connection gameId `shouldReturn` [(claimer, "c01001")]
+
   it "reserves one Epic group per event and refuses a second group" $
     withConnection harness \connection -> do
       organizer <- seedUser connection "claim-epic-organizer"
