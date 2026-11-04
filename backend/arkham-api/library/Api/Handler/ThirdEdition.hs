@@ -51,7 +51,7 @@ import Data.UUID.V4 (nextRandom)
 import Database.Redis (RedisChannel)
 import Import
 import Network.HTTP.Types (Status, status400, status403, status404)
-import ThirdEdition.Store (HistoryChange (..), Store (..))
+import ThirdEdition.Store (HistoryChange (..), Store (..), UpdateFailure (..))
 import ThirdEdition.Table
 import Yesod.WebSockets (webSocketsOptions)
 
@@ -118,31 +118,41 @@ postApiV1ThirdEditionTablesR = do
 {- | The table as it stands, or its live feed when the request is a websocket
 upgrade. A client should open the feed first and then fetch, keeping whichever
 copy has the higher @version@.
+
+Open to anyone until the game starts, and then to its members only
+('openOrMemberOf'). The check comes before the upgrade, so a refused socket
+never joins the room.
 -}
 getApiV1ThirdEditionTableR :: UUID -> Handler Value
 getApiV1ThirdEditionTableR tid = do
-  _ <- getRequestUserId
-  wsOptions <- websocketConnectionOptions
-  joining <- anonymousSubscriber
-  webSocketsOptions wsOptions
-    $ streamRoom
-      (joinRoomIn joining appThirdEditionRooms tableChannel tid)
-      (void $ releaseRoomIfEmpty appThirdEditionRooms tid)
+  userId <- getRequestUserId
+  mayWatch <- openOrMemberOf userId
   store <- getStore
   liftIO (store.getTable tid) >>= \case
-    Nothing -> failWith status404 "No such table"
-    Just (t, depth) -> pure (tableView Nothing t depth)
+    Just (t, depth) | mayWatch t -> do
+      wsOptions <- websocketConnectionOptions
+      joining <- anonymousSubscriber
+      webSocketsOptions wsOptions
+        $ streamRoom
+          (joinRoomIn joining appThirdEditionRooms tableChannel tid)
+          (void $ releaseRoomIfEmpty appThirdEditionRooms tid)
+      pure (tableView Nothing t depth)
+    _ -> noSuchTable
 
+{- | Only the host closes a table. Other members are told so; anyone else gets
+the missing-table 404.
+-}
 deleteApiV1ThirdEditionTableR :: UUID -> Handler ()
 deleteApiV1ThirdEditionTableR tid = do
   userId <- getRequestUserId
+  member <- memberOf userId
   store <- getStore
   liftIO (store.getTable tid) >>= \case
-    Nothing -> failWith status404 "No such table"
-    Just (t, _) -> do
+    Just (t, _) | member t -> do
       unless (t.host == userId) $ failWith status403 "Only the host can close the table"
       liftIO (store.deleteTable tid)
       publishTable tid (object ["tag" .= ("TableClosed" :: Text)])
+    _ -> noSuchTable
 
 newtype SeatRequest = SeatRequest {seat :: Maybe Int}
   deriving stock Generic
@@ -152,7 +162,8 @@ postApiV1ThirdEditionJoinR :: UUID -> Handler Value
 postApiV1ThirdEditionJoinR tid = do
   Entity userId user <- getRequestUser
   req <- (requireCheckJsonBody :: Handler SeatRequest)
-  mutate "join" tid \t _ -> do
+  mayJoin <- openOrMemberOf userId
+  mutate "join" tid mayJoin \t _ -> do
     when (started t) $ Left "The game has already started"
     (,KeepHistory) <$> takeSeat userId (userUsername user) req.seat t
 
@@ -160,7 +171,8 @@ postApiV1ThirdEditionLeaveR :: UUID -> Handler Value
 postApiV1ThirdEditionLeaveR tid = do
   userId <- getRequestUserId
   req <- (requireCheckJsonBody :: Handler SeatRequest)
-  mutate "leave" tid \t _ -> do
+  member <- memberOf userId
+  mutate "leave" tid member \t _ -> do
     when (started t) $ Left "The game has already started"
     pure (leaveSeat userId req.seat t, KeepHistory)
 
@@ -168,7 +180,8 @@ postApiV1ThirdEditionStartR :: UUID -> Handler Value
 postApiV1ThirdEditionStartR tid = do
   userId <- getRequestUserId
   seed <- liftIO (getRandomR (0, 2 ^ (30 :: Int)))
-  mutate "start" tid \t _ -> do
+  member <- memberOf userId
+  mutate "start" tid member \t _ -> do
     unless (t.host == userId) $ Left "Only the host can start the game"
     when (started t) $ Left "The game has already started"
     unless (null (freeSeats t)) $ Left "Every seat needs a player first"
@@ -194,7 +207,8 @@ postApiV1ThirdEditionAnswerR :: UUID -> Handler Value
 postApiV1ThirdEditionAnswerR tid = do
   userId <- getRequestUserId
   req <- (requireCheckJsonBody :: Handler AnswerRequest)
-  mutate "answer" tid \t _ -> do
+  member <- memberOf userId
+  mutate "answer" tid member \t _ -> do
     unless (holdsSeat userId req.player t) $ Left "That isn't your seat"
     unless (maybe True (== t.version) req.version)
       $ Left "The table changed before your answer arrived; choose again"
@@ -205,14 +219,16 @@ postApiV1ThirdEditionDebugR :: UUID -> Handler Value
 postApiV1ThirdEditionDebugR tid = do
   userId <- getRequestUserId
   action <- (requireCheckJsonBody :: Handler DebugAction)
-  mutate "debug" tid \t _ -> do
+  member <- memberOf userId
+  mutate "debug" tid member \t _ -> do
     unless (isSeated userId t) $ Left "Only seated players can use debug actions"
     step t (applyDebug action)
 
 postApiV1ThirdEditionUndoR :: UUID -> Handler Value
 postApiV1ThirdEditionUndoR tid = do
   userId <- getRequestUserId
-  mutate "undo" tid \t prev -> do
+  member <- memberOf userId
+  mutate "undo" tid member \t prev -> do
     unless (isSeated userId t) $ Left "Only seated players can undo"
     earlier <- maybe (Left "Nothing to undo") Right prev
     -- Resume from before the action, but keep the seed it reached: undoing a roll
@@ -262,8 +278,6 @@ exportTable isAdmin tid = do
         -- the earlier states ride along, so a filed bug can be rewound rather than
         -- only looked at: third edition has no replay runner
         (TableExport t <$> liftIO (store.getHistory tid))
- where
-  noSuchTable = failWith status404 "No such table"
 
 {- | Run protected table work only for a seated player, the host (who may have
 left their seat) or an admin. As with
@@ -273,10 +287,35 @@ work; the admin lookup runs only for someone who is neither.
 -}
 withTableAccess :: Monad m => UserId -> Table -> m Bool -> m a -> m a -> m a
 withTableAccess userId t lookupAdmin reject protected
-  | t.host == userId || isSeated userId t = protected
+  | hostOrSeated userId t = protected
   | otherwise = do
       admin <- lookupAdmin
       if admin then protected else reject
+
+hostOrSeated :: UserId -> Table -> Bool
+hostOrSeated userId t = t.host == userId || isSeated userId t
+
+{- | Who may watch a started table and act on any table: a seated player, the
+host (who may have left their seat) or an admin. Anyone else is answered with
+'noSuchTable', as for a table that does not exist: table ids are listed
+publicly, so a different answer would disclose which ones are real.
+
+The admin lookup runs first, before the table is read, so a missing table and a
+refused one cost the same.
+-}
+memberOf :: UserId -> Handler (Table -> Bool)
+memberOf userId = do
+  admin <- isAdminUser userId
+  pure \t -> admin || hostOrSeated userId t
+
+{- | 'memberOf', or anyone at all until the game starts: an open table is in the
+public lobby already, and a shared link has to reach its Join button.
+-}
+openOrMemberOf :: UserId -> Handler (Table -> Bool)
+openOrMemberOf userId = memberOf userId <&> \member t -> not (started t) || member t
+
+noSuchTable :: Handler a
+noSuchTable = failWith status404 "No such table"
 
 isAdminUser :: UserId -> Handler Bool
 isAdminUser userId = maybe False (\(Entity _ user) -> user.admin) <$> runDB (getEntity userId)
@@ -314,13 +353,25 @@ step t f = do
 
 {- | Apply a change atomically, then send the new table to everyone in its room.
 The cause lets a client tell an undo (cards going back) from a move.
+
+@allowed@ ('memberOf' or 'openOrMemberOf') is checked under the table's row
+lock, against the table the change applies to. A table it refuses is answered
+as a missing one, and nothing is written or broadcast.
 -}
 mutate
-  :: Text -> UUID -> (Table -> Maybe Game -> Either Text (Table, HistoryChange)) -> Handler Value
-mutate cause tid f = do
+  :: Text
+  -> UUID
+  -> (Table -> Bool)
+  -> (Table -> Maybe Game -> Either Text (Table, HistoryChange))
+  -> Handler Value
+mutate cause tid allowed f = do
   store <- getStore
-  liftIO (store.updateTable tid \t prev -> first bumpVersion <$> f t prev) >>= \case
-    Left e -> failWith status400 e
+  let change t prev
+        | allowed t = bimap Refused (first bumpVersion) (f t prev)
+        | otherwise = Left NoSuchTable
+  liftIO (store.updateTable tid change) >>= \case
+    Left NoSuchTable -> noSuchTable
+    Left (Refused e) -> failWith status400 e
     Right (t, depth) -> do
       let v = tableView (Just cause) t depth
       publishTable tid (object ["tag" .= ("TableUpdate" :: Text), "contents" .= v])
