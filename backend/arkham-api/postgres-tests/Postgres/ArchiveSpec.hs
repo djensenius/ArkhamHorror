@@ -121,6 +121,39 @@ spec harness app = describe "Game archive access and restore failures with produ
             (decodeUtf8 body :: Text) `shouldNotSatisfy` T.isInfixOf sentinel
           for_ stored.errorMessage (`shouldNotSatisfy` T.isInfixOf sentinel)
 
+  {- A failure that arrives after the row is already 'Restored' -- a slow first
+  attempt finishing while a restarted one fails, or an exception after the
+  restore committed. The steps are back, so the row must stay 'Restored' and
+  nobody may be told the restore failed. -}
+  it "leaves a restored archive alone when a late restore failure arrives" $
+    withFixture "archive-late-failure" \f -> do
+      room <- newRoom "archive-spec"
+      MVar.modifyMVar_ app.appGameRooms (pure . Map.insert f.gameId room)
+      info <- anonymousSubscriber
+      (_, listener) <- subscribeToRoom info room
+      flip Exception.finally (MVar.modifyMVar_ app.appGameRooms (pure . Map.delete f.gameId)) do
+        now <- currentTimeMicros
+        claimed <-
+          maybe (fail "Expected to claim the restore") pure
+            =<< db (claimForRestore now (Just f.seated) f.gameId)
+        restoredAt <- addUTCTime 1 <$> currentTimeMicros
+        let
+          restoreThenThrow _ = do
+            db $ P.updateWhere
+              [ArkhamGameArchiveArkhamGameId P.==. f.gameId]
+              [ ArkhamGameArchiveState P.=. Restored
+              , ArkhamGameArchiveRestoredAt P.=. Just restoredAt
+              , ArkhamGameArchiveErrorMessage P.=. Nothing
+              ]
+            throwIO rawAwsError
+        runRestore app restoreThenThrow (publishFromApp app f.gameId) claimed
+
+        stored <- maybe (fail "Expected the archive row") pure =<< db (lookupArchive f.gameId)
+        stored.state `shouldBe` Restored
+        stored.errorMessage `shouldBe` Nothing
+        stored.restoredAt `shouldBe` Just restoredAt
+        drain listener `shouldReturn` []
+
   {- The hand-archive fails before any S3 call: credentials come from fake
   environment keys (the first link of Amazonka's discovery chain, with the
   credential files and instance metadata pointed away), and the export's temp

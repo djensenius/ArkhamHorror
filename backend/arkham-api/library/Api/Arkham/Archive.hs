@@ -888,7 +888,11 @@ runRestore app restore publish archive = do
         <> "): "
         <> T.unpack (archiveFailureDetail failure)
       now <- getCurrentTime
-      runDBIO app $ void $ updateCount \a -> do
+      {- Only a row that is still 'Restoring'. The worker restarts restores
+      that look abandoned, so a slow first attempt can finish while the
+      restarted one fails -- and an exception after the restore commits lands
+      here too. Either way the steps are back, and 'Restored' is the truth. -}
+      changed <- runDBIO app $ updateCount \a -> do
         set
           a
           [ ArkhamGameArchiveState =. val Failed
@@ -896,7 +900,16 @@ runRestore app restore publish archive = do
           , ArkhamGameArchiveRestoredAt =. val (Just now)
           ]
         where_ $ a.arkhamGameId ==. val archive.arkhamGameId
-      publish $ GameUnarchiveFailed archiveRestoreFailedMessage
+        where_ $ a.state ==. val Restoring
+      if changed > 0
+        then publish $ GameUnarchiveFailed archiveRestoreFailedMessage
+        else
+          logArchive
+            $ "archive: late restore failure ignored for game "
+            <> T.unpack (toPathPiece archive.arkhamGameId)
+            <> " ("
+            <> T.unpack (archiveFailureSummary failure)
+            <> "): the archive is no longer restoring"
 
 {- | Pick up restores a replica died in the middle of.
 
