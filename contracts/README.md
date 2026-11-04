@@ -1127,7 +1127,8 @@ log a fixed warning without exception contents and are retried on the next pass.
 The server stops the sweep before closing its database pool. A link-start
 request now only replaces the requesting user's own pending state, so it no
 longer deletes other users' expired rows inside its user lock. A large backlog
-drains at the per-pass batch rate.
+drains at the per-pass batch rate. The `idx_arkhamdb_link_states_user` index
+serves per-user lookups and the cascade when a user is deleted.
 
 Haskell CI (`.github/workflows/haskell.yml`) installs PostgreSQL server tools,
 runs the launcher's own safety and lifecycle checks, and runs `stack test` under
@@ -1174,9 +1175,10 @@ committed answer when ArkhamDB is down, lease renewal, atomic creation payloads
 and their recovery without a second XP creation, checkpoint compare-and-set,
 save-as-new predecessor retention, legacy push handling, an unlink retiring an
 in-flight creation, and owned deck deletion that refuses decks with accounting.
-The launcher's checks also round-trip the expiry-index migration and refuse to
-adopt or drop a same-named foreign index. Lock-contention cases use separate
-sessions and observe real PostgreSQL lock waits rather than timing sleeps. The
+The launcher's checks also round-trip the expiry- and user-index migrations and
+refuse to adopt or drop a same-named foreign index. Lock-contention cases use
+separate sessions and observe real PostgreSQL lock waits rather than timing
+sleeps. The
 unit `spec` suite still uses the in-memory transactional store and
 HTTP-connection stubs; callback response tests dispatch the production callback
 body through Yesod/WAI. The logging probe covers both the production request
