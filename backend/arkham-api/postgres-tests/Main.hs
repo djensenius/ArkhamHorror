@@ -37,6 +37,7 @@ import Foundation (App, Handler, unsafeHandler, userIdToToken)
 import GHC.Clock (getMonotonicTime)
 import Network.HTTP.Types (Status, status400, status409, status502)
 import Network.Wai (defaultRequest, requestHeaders, requestMethod, setRequestBodyChunks)
+import Postgres.ArchiveSpec qualified as ArchiveSQL
 import Postgres.Harness
 import Postgres.HarnessSpec qualified as Harness
 import Postgres.DispatchSpec qualified as DispatchSQL
@@ -75,6 +76,7 @@ main = withHarness \harness -> withProductionApp harness \app ->
     DeleteSQL.spec harness app settings transport remote (writeBackSeed app)
     EndToEndSQL.spec harness app settings transport remote (writeBackSeed app)
     ThirdEditionSQL.spec harness app
+    ArchiveSQL.spec harness app
 
 writeBackSeed :: App -> WriteBackSQL.Seed
 writeBackSeed app connection label = do
