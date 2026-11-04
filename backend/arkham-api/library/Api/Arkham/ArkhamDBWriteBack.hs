@@ -185,7 +185,8 @@ writeBackStoreWith database = ArkhamDBWriteBackStore
           [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushUserId P.==. uid, ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]] []
         games <- loadCampaignIdentities mempty $ map (arkhamDBPushCampaignKey . entityVal) outstanding
         for_ outstanding \(Entity key job) -> replace key $ disabledCampaignPush games job
-      pruneCompletedPushes deckId
+      -- The deck id comes from the URL: only the owner's own toggle may prune its history.
+      when (affected == 1) $ pruneCompletedPushes deckId
       pure $ affected == 1
   , deckWriteBackStatus = \uid -> database do
       links <- selectList [ArkhamDBDeckLinkUserId P.==. uid] [Asc ArkhamDBDeckLinkDeckId]
