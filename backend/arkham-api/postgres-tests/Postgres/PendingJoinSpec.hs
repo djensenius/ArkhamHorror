@@ -10,11 +10,17 @@ module Postgres.PendingJoinSpec (spec) where
 import Api.Arkham.Helpers (ApiResponse (EventChanged), joinEventRoom)
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (WithFriends))
 import Api.Handler.Arkham.PendingGames (putApiV1ArkhamPendingGameR)
+import Arkham.Campaign (lookupCampaign)
+import Arkham.Campaign.Types (campaignStep)
+import Arkham.CampaignStep (CampaignStep (ContinueCampaignStep, ScenarioStep), Continuation (..))
+import Arkham.Classes.Entity (overAttrs)
 import Arkham.Difficulty (Difficulty (Easy))
 import Arkham.Epic.Types (EpicRole (GroupPlayer), emptySharedEventState)
 import Arkham.Game qualified as Game
+import Arkham.Game.State (GameState (IsActive))
 import Control.Concurrent (threadDelay)
 import Data.Aeson (encode)
+import Arkham.Prelude (These (This))
 import Database.Persist (Entity (..), toPersistValue)
 import Database.Persist qualified as P
 import Database.Persist.Sql (Single (..), SqlBackend, rawSql)
@@ -128,6 +134,28 @@ spec harness app seedUser = describe "Pending game join" do
       sort <$> seatRows connection f.group0 `shouldReturn` sort [player, stray]
       announcements `shouldReturn` 0
 
+  it "reserves the membership on a campaign-continuation join and refuses another group afterwards" $
+    withConnection harness \connection -> do
+      organizer <- seedUser connection "join-continuation-organizer"
+      player <- seedUser connection "join-continuation-player"
+      continuing <- seedContinuationGame connection "join-continuation-group-0"
+      lobby <- seedGame connection "join-continuation-group-1"
+      f <- seedEventWith connection "join-continuation" organizer continuing lobby
+      announcements <- watchEvent app f
+      -- The game sits between scenarios, so the join takes the continuation
+      -- path: the seat is added to the live game.
+      pendingJoin app player f.group0 `shouldReturn` Succeeded
+      seatRows connection f.group0 `shouldReturn` [player]
+      gameStep connection f.group0 `shouldReturn` 2
+      membership connection f player `shouldReturn` [(GroupPlayer, Just 0)]
+      announcements `shouldReturn` 1
+      -- That membership now keeps the player out of the event's other group.
+      pendingJoin app player f.group1 `shouldReturn` Forbidden anotherGroup
+      seatRows connection f.group1 `shouldReturn` []
+      gameStep connection f.group1 `shouldReturn` 1
+      membership connection f player `shouldReturn` [(GroupPlayer, Just 0)]
+      announcements `shouldReturn` 1
+
 -- A WithFriends campaign lobby with two seats, so a first join leaves it
 -- pending and runs no setup.
 seedGame :: SqlBackend -> Text -> IO ArkhamGameId
@@ -136,11 +164,27 @@ seedGame connection label = do
   let game = Game.newCampaign "01" Nothing 1 2 Easy False
   transaction connection $ P.insert $ ArkhamGame label game 1 WithFriends now now False
 
+-- A live campaign sitting on its between-scenarios continuation screen, the
+-- only active state a pending join seats a player in.
+seedContinuationGame :: SqlBackend -> Text -> IO ArkhamGameId
+seedContinuationGame connection label = do
+  now <- currentTimeMicros
+  let continuation = ContinueCampaignStep $ Continuation (ScenarioStep "01104") True False Nothing True
+      game = (Game.newCampaign "01" Nothing 1 1 Easy False)
+        { Game.gameGameState = IsActive
+        , Game.gameMode = This $ overAttrs (\attrs -> attrs {campaignStep = continuation}) $ lookupCampaign "01" Easy
+        }
+  transaction connection $ P.insert $ ArkhamGame label game 1 WithFriends now now False
+
 seedEvent :: SqlBackend -> Text -> UserId -> IO EpicFixture
 seedEvent connection label organizer = do
-  now <- currentTimeMicros
   group0 <- seedGame connection (label <> "-group-0")
   group1 <- seedGame connection (label <> "-group-1")
+  seedEventWith connection label organizer group0 group1
+
+seedEventWith :: SqlBackend -> Text -> UserId -> ArkhamGameId -> ArkhamGameId -> IO EpicFixture
+seedEventWith connection label organizer group0 group1 = do
+  now <- currentTimeMicros
   transaction connection do
     eventId <- P.insert $ ArkhamEpicEvent label organizer Nothing Nothing "Easy" (emptySharedEventState 4) 4 0 now now
     for_ [(0 :: Int, group0), (1, group1)] \(ordinal, gameId) ->
