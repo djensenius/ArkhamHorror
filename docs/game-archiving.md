@@ -17,10 +17,10 @@ is offered the history back.
 |---|---|
 | `backend/arkham-api/library/Api/Arkham/Archive.hs` | All of the machinery: the sweep, one game's archive and restore, and the workers. |
 | `backend/arkham-api/library/Api/Handler/Arkham/Archive.hs` | `GET /games/#/archive`, `PUT /games/#/unarchive`, and `checkArchiveSeam`, which the undo endpoints call. |
-| `backend/arkham-api/library/Api/Handler/Arkham/Admin/Archives.hs` | `GET /admin/archives`, `POST /admin/archives/run`. |
+| `backend/arkham-api/library/Api/Handler/Arkham/Admin/Archives.hs` | `GET /admin/archives`, `POST /admin/archives/run`, `POST /admin/archives/#gameId`. |
 | `backend/arkham-api/library/Entity/Arkham/GameArchive.hs` | One row per game: where its history is and what state it is in. |
 | `migrations/deploy/arkham_game_archives.sql` | The table, and the trigger exemption that lets the archiver delete steps. |
-| `frontend/src/components/admin/Archives.vue` | The panel on `/admin`. |
+| `frontend/src/views/AdminArchives.vue` | The panel on `/admin`. |
 
 ## Configuration
 
@@ -178,6 +178,10 @@ archived steps could not be restored.", in the status `error`, the undo refusal
 and `GameUnarchiveFailed`. The row's `error_message`, which the admin panel shows,
 holds only a category (`restore failed: storage`, `database`, `integrity` or
 `unknown`); the underlying exception is in the server log.
+A failed admin hand-archive (`POST /admin/archives/#gameId`) likewise answers
+a 500 whose `error` is a fixed sentence ("The game could not be archived. The
+server log has the details."); the underlying failure goes only to the server
+log.
 
 A game is only a candidate again once it is fully `restored`. Not merely "not
 archived": a game whose restore *failed* has its old steps only in the object
