@@ -1167,9 +1167,10 @@ serializes public and linked sync before and after an overlay add, replace,
 removal or invalid change on the deck row they lock FOR NO KEY UPDATE (the
 delete check alone locks FOR UPDATE). Tests show an overlay save and an
 in-flight campaign write-back enqueue holding FOR KEY SHARE on that deck
-neither wait on nor hide each other, in both orders. Linked sync's link-row
-UPDATE can still hide a push from an enqueue that reaches the link after that
-UPDATE and before that sync commits. Every actual overlay PUT, even
+neither wait on nor hide each other, in both orders. A real game answer's
+enqueue that reaches the link while linked sync holds its uncommitted non-key
+link-row UPDATE does not wait and still records its push against the pre-sync
+markers. Every actual overlay PUT, even
 a byte-identical one, gets a fresh private attachment identity that DELETE
 clears and a later provenance-free sync keeps; incorporated overlay provenance
 is consumed through actual public and linked sync; and overlay removal that
@@ -1458,7 +1459,8 @@ as proof of production SQL correctness. The PostgreSQL/WAI follow-up must name:
   fixture now correctly shows `cancelled`, not `pending`).
 - `queueCampaignWriteBack`: owner + URL matching and stale-seat ownership
   rejection, association creation, generation key-share through insertion,
-  nonblocking link SHARE through insertion versus opt-out in both orders,
+  nonblocking link KEY SHARE through insertion versus opt-out's link FOR UPDATE
+  in both orders,
   payload/story/player-card/sideboard/taboo projection and captured cumulative
   XP; ChooseDecksStep exclusion and both real end/upgrade boundary hooks.
 - Association-first saved-deck upgrade persistence after a campaign copy,
