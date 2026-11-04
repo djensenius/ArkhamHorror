@@ -1692,6 +1692,18 @@ changes the synthetic catalog fixture digests. `nativeClientMinimumRevision`
 stays `0.1.57`; clients pinned to `0.1.57` through `0.1.60` are unaffected and
 need not repin.
 
+#### i18n registry payload digest (revision 0.1.62)
+
+Revision `0.1.62` changes no public JSON shape, route or capability. It records
+a governed generator input change: `scripts/extract_backend_i18n_keys.py` (with
+its test and `scripts/validate-locale-catalog.py`) now identifies
+`backend/arkham-api/i18n-emitted-keys.json` by a `payloadSha256` over the
+registry's own canonical bytes instead of a digest over every backend library
+file, which changes the synthetic catalog fixture digests. The catalog
+manifest's `backend.sourceSha256` keeps its name and format.
+`nativeClientMinimumRevision` stays `0.1.57`; clients pinned to `0.1.57`
+through `0.1.61` are unaffected and need not repin.
+
 ### Locale catalog discovery
 
 `GET /capabilities` advertises a catalog with the `i18n.locale-catalog.v1`

@@ -732,8 +732,8 @@ def validate_backend_requirements(files: dict[str, bytes], manifest: dict) -> No
         "the manifest records a different backend registry than the committed one",
     )
     require(
-        backend["sourceSha256"] == artifact["source"]["sha256"],
-        "the manifest records a different backend source digest than the registry",
+        backend["sourceSha256"] == artifact["payloadSha256"],
+        "the manifest records a different backend payload digest than the registry",
     )
     require(backend["emittedKeys"] == len(emitted), "the manifest miscounts the backend's emitted keys")
 
