@@ -102,6 +102,12 @@ dotSegmentPaths =
   , "/api/v1/arkham%2F%2F..%2Farkhamdb/callback"
   , "/api/v1/arkham/;x/../arkhamdb/callback"
   , "/api/v1/arkham//;x/../../arkhamdb/link/complete"
+  -- ".." pops a whole decoded segment, "%2F" included, as on the raw path.
+  , "/api/v1/arkham/q%2Fr/../arkhamdb/callback"
+  , "/api/v1/arkham/q%2Fr/%2e%2e/arkhamdb/callback"
+  , "/api/v1/arkham/q%2Fr;x/../arkhamdb/callback"
+  , "/api/v1/arkham/q%2Fr/x/../../arkhamdb/link/complete"
+  , "/api/v1/arkham/q%2Fr//../../arkhamdb/callback"
   , -- arkham.build login callback
     "/api/auth/./arkham-build/callback"
   , "/./api/auth/arkham-build/callback"
@@ -118,6 +124,8 @@ dotSegmentPaths =
   , "/api/auth///../../arkham-build/callback/."
   , "/api/auth//%2E%2E/arkham-build/callback"
   , "/api/auth/;x/../arkham-build/callback"
+  , "/api/auth/q%2Fr/../arkham-build/callback"
+  , "/api/auth/q%2Fr;x/%2E%2E/arkham-build/callback"
   , -- arkham.build authorize and verify
     "/api/v1/./arkham-build/authorize"
   , "/api/v1/arkham-build/./verify"
@@ -135,6 +143,8 @@ dotSegmentPaths =
   , "/api/v1///../../arkham-build/verify/."
   , "/api/v1//%2e%2e/arkham-build/authorize"
   , "/api/v1/;x/../arkham-build/authorize"
+  , "/api/v1/q%2Fr/../arkham-build/verify"
+  , "/api/v1/q%2F%2Fr/../arkham-build/authorize"
   ]
 
 -- Empty segments must not suppress logging of ordinary routes.
@@ -168,6 +178,10 @@ ordinaryPaths =
   , "/api/v1/arkham/;x/../decks"
   , "/api/auth//../arkham-build-other/callback"
   , "/api/v1//../arkham-builder/verify"
+  -- Popping a whole decoded segment leaves no credential prefix.
+  , "/api/v1/arkham/q%2Fr/../decks"
+  , "/api/v1/q%2Fr/../arkhamdb/callback"
+  , "/api/auth/q%2Fr/../arkham-build-other/callback"
   ]
 
 -- WaiTest.setPath re-encodes the decoded segments into rawPathInfo, which the

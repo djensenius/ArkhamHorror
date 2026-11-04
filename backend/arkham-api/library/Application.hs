@@ -442,22 +442,26 @@ skipArkhamDBLogging logWare app req sendResponse
   -- A backslash ("\" or "%5C") is deliberately not normalised: browsers
   -- convert it before sending, and Yesod routes it to a 404.
   isCredentialPath path = any (`isPrefixOf` path) credentialRoutes
-  -- Build four views and skip logging if any of them matches:
+  -- Build eight views and skip logging if any of them matches:
   -- * split-then-cut: split each decoded segment on '/' (an encoded "%2F"),
   --   then cut every piece at ';'.
   -- * cut-then-split: cut each decoded segment at ';' first, as a proxy that
   --   strips parameters per raw segment would, so "arkham;%2F..%2F" is "arkham".
   -- * Each of these literally (".." kept) and RFC 3986 dot-resolved (".." pops a
   --   segment, never above the root), so neither form bypasses the exclusion.
+  -- * Each of these also dot-resolved per RFC 3986 section 5.2.4 while empty
+  --   segments are still present, so ".." pops an empty segment as a resolving
+  --   proxy would ("arkham//../arkhamdb" is "arkham/arkhamdb"), and only then
+  --   with the empty segments dropped.
+  -- * Unsplit: dot-resolve the decoded segments themselves (as-is and cut at
+  --   ';'), as a proxy resolving the raw path would, where "%2F" is data, so
+  --   ".." pops all of "q%2Fr"; then split, cut and drop "" and "." segments.
   -- A path that climbs out of a credential prefix, such as
   -- "arkhamdb/../games", is still skipped: privacy wins over logging it.
-  -- Two more views resolve dot segments per RFC 3986 section 5.2.4 while empty
-  -- segments are still present, so ".." pops an empty segment as a resolving
-  -- proxy would ("arkham//../arkhamdb" is "arkham/arkhamdb"), and only then
-  -- drop the empty segments.
   credentialViews =
     concatMap (withResolved . dropEmptyAndDot) segmentViews
       <> map (filter (not . T.null) . resolveDots) segmentViews
+      <> map unsplitView [decodedSegments, map cutParams decodedSegments]
   segmentViews = [splitThenCut, cutThenSplit]
   decodedSegments = map T.toCaseFold (pathInfo req)
   splitThenCut = map cutParams $ concatMap (T.splitOn "/") decodedSegments
@@ -465,6 +469,12 @@ skipArkhamDBLogging logWare app req sendResponse
   cutParams = T.takeWhile (/= ';')
   dropEmptyAndDot = filter (`notElem` ["", "."])
   withResolved path = [path, resolveDots path]
+  unsplitView segments =
+    [ piece
+    | segment <- resolveDots segments
+    , piece <- T.splitOn "/" (cutParams segment)
+    , piece `notElem` ["", "."]
+    ]
   resolveDots = reverse . foldl' resolveSegment []
   resolveSegment segments "." = segments
   resolveSegment segments ".." = drop 1 segments
