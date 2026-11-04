@@ -20,6 +20,7 @@ import Amazonka.Error (serviceError)
 import Api.Arkham.Archive
 import Api.Arkham.Helpers (ApiResponse (GameUnarchiveFailed), publishFromApp)
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (Solo))
+import Api.Handler.Arkham.Admin.Archives (postApiV1AdminArchiveGameR)
 import Api.Handler.Arkham.Archive (checkArchiveSeam, getApiV1ArkhamGameArchiveR, putApiV1ArkhamGameUnarchiveR)
 import Arkham.Difficulty (Difficulty (Easy))
 import Arkham.Game qualified as Game
@@ -29,6 +30,7 @@ import Data.Aeson (Value (..), decode, encode, object, toJSON, (.=))
 import Data.Aeson.KeyMap qualified as KM
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
+import Data.Time.Clock (addUTCTime)
 import Database.Persist qualified as P
 import Database.Persist.Sql (Single (..), SqlBackend, rawExecute, rawSql, runSqlPool, toSqlKey)
 import Database.Persist.Types (PersistValue (..))
@@ -37,12 +39,13 @@ import Entity.Arkham.GameArchive
 import Entity.Arkham.Player
 import Entity.User (UserId)
 import Foundation (App (..), Handler, Subscriber (..), anonymousSubscriber, newRoom, subscribeToRoom, unsafeHandler, userIdToToken)
-import Network.HTTP.Types (Status, status401, status404)
+import Network.HTTP.Types (Status, status401, status404, status500)
 import Network.Wai (defaultRequest, requestHeaders)
 import Postgres.Harness
-import Postgres.Production (withRequest)
+import Postgres.Production (runHandlerResponseBody, withRequest)
 import Relude
 import Settings (AppSettings (..))
+import System.Environment (setEnv, unsetEnv)
 import System.IO.Error (userError)
 import Test.Hspec
 import UnliftIO.Exception qualified as Exception
@@ -117,6 +120,27 @@ spec harness app = describe "Game archive access and restore failures with produ
           for_ (encode status : encode refusal : broadcast) \body ->
             (decodeUtf8 body :: Text) `shouldNotSatisfy` T.isInfixOf sentinel
           for_ stored.errorMessage (`shouldNotSatisfy` T.isInfixOf sentinel)
+
+  {- The hand-archive fails before any S3 call: credentials come from fake
+  environment keys (the first link of Amazonka's discovery chain, with the
+  credential files and instance metadata pointed away), and the export's temp
+  file cannot be opened because TMPDIR names a directory that does not exist --
+  one whose path carries the sentinel into the exception text. -}
+  it "answers a failed admin hand-archive with a fixed sentence and no raw detail" $
+    withFixture "archive-hand-failure" \f -> do
+      old <- addUTCTime (-3 * 86400) <$> currentTimeMicros
+      db $ P.update f.gameId [ArkhamGameUpdatedAt P.=. old]
+      db $ P.deleteWhere [ArkhamGameArchiveArkhamGameId P.==. f.gameId]
+      response <- withEnv failingArchiveEnv
+        $ runHandlerResponseBody bucketApp (postApiV1AdminArchiveGameR f.gameId)
+      case response of
+        Right _ -> expectationFailure "Expected the hand-archive to fail"
+        Left (status, body) -> do
+          status `shouldBe` status500
+          (decode body >>= field "error") `shouldBe` Just (String handArchiveFailedMessage)
+          (decode body >>= field "archived") `shouldBe` Just (Bool False)
+          (decodeUtf8 body :: Text) `shouldNotSatisfy` T.isInfixOf sentinel
+      stateOf f.gameId `shouldReturn` Nothing
  where
   bucketApp = app {appSettings = app.appSettings {appArchiveBucket = Just "test"}}
   db :: ReaderT SqlBackend IO a -> IO a
@@ -150,6 +174,28 @@ failures =
 
 sentinel :: Text
 sentinel = "SENTINEL-raw-request-id SELECT secret"
+
+handArchiveFailedMessage :: Text
+handArchiveFailedMessage = "The game could not be archived. The server log has the details."
+
+failingArchiveEnv :: [(String, String)]
+failingArchiveEnv =
+  [ ("AWS_ACCESS_KEY_ID", "AKIDARCHIVESPEC")
+  , ("AWS_SECRET_ACCESS_KEY", "archive-spec-not-a-secret")
+  , ("AWS_REGION", "us-east-1")
+  , ("AWS_SHARED_CREDENTIALS_FILE", "/nonexistent/archive-spec/credentials")
+  , ("AWS_CONFIG_FILE", "/nonexistent/archive-spec/config")
+  , ("AWS_EC2_METADATA_DISABLED", "true")
+  , ("TMPDIR", "/nonexistent/" <> toString sentinel)
+  ]
+
+-- | Set these variables for the action, restoring each afterwards. Process
+-- wide, so only for a sequential spec.
+withEnv :: [(String, String)] -> IO a -> IO a
+withEnv vars action = Exception.bracket save restore \_ -> traverse_ (uncurry setEnv) vars *> action
+ where
+  save = traverse (\(k, _) -> (k,) <$> lookupEnv k) vars
+  restore = traverse_ \(k, v) -> maybe (unsetEnv k) (setEnv k) v
 
 -- | The text of @contracts/fixtures/game-unarchive-failed.json@.
 fixtureMessage :: Text
