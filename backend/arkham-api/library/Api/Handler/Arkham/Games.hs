@@ -452,18 +452,30 @@ that delete actually removed the row, after the transaction has committed.
 Closing it unconditionally let any signed-in account that knew a game id
 evict everyone playing it. A caller with no seat and a missing game both get
 the same 200 no-op, so the response does not reveal whether the game exists.
+
+A seated player may delete an Epic group game. Its group row cascades away
+with the game, so the event is looked up in the same transaction before the
+delete, and once a delete has removed the row the event's watchers and the
+remaining group rooms get 'EventChanged' to refetch the roster. That goes out
+before the room is closed, because closing it can throw on a Redis
+unsubscribe.
 -}
 deleteApiV1ArkhamGameR :: ArkhamGameId -> Handler ()
 deleteApiV1ArkhamGameR gameId = do
   userId <- getRequestUserId
-  deleted <- runDB $ deleteCount do
-    games <- from $ table @ArkhamGame
-    where_ $ games.id ==. val gameId
-    where_ $ exists do
-      players <- from $ table @ArkhamPlayer
-      where_ $ players.arkhamGameId ==. games.id
-      where_ $ players.userId ==. val userId
-  when (deleted > 0) $ deleteRoom gameId
+  (mEvt, deleted) <- runDB do
+    mEvt <- lookupGameEvent gameId
+    deleted <- deleteCount do
+      games <- from $ table @ArkhamGame
+      where_ $ games.id ==. val gameId
+      where_ $ exists do
+        players <- from $ table @ArkhamPlayer
+        where_ $ players.arkhamGameId ==. games.id
+        where_ $ players.userId ==. val userId
+    pure (mEvt, deleted)
+  when (deleted > 0) do
+    for_ mEvt \(Entity eventId _, _) -> broadcastEventChanged eventId
+    deleteRoom gameId
 
 data PlayabilityRequest = PlayabilityRequest
   { investigatorId :: InvestigatorId
