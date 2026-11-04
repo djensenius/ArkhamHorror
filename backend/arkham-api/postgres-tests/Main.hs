@@ -40,8 +40,10 @@ import GHC.Clock (getMonotonicTime)
 import Network.HTTP.Types (Status, status200, status400, status401, status404, status405, status409, status502, status503)
 import Network.Wai (rawPathInfo, requestMethod, responseLBS)
 import Network.Wai.Handler.Warp qualified as Warp
+import Postgres.ArchiveSpec qualified as ArchiveSQL
 import Postgres.Harness
 import Postgres.HarnessSpec qualified as Harness
+import Postgres.ClaimSeatSpec qualified as ClaimSeatSQL
 import Postgres.DispatchSpec qualified as DispatchSQL
 import Postgres.PayloadSpec qualified as PayloadSQL
 import Postgres.ConcurrencySpec qualified as ConcurrencySQL
@@ -79,6 +81,8 @@ main = withHarness \harness -> withProductionApp harness \app ->
     DeleteSQL.spec harness app settings transport remote (writeBackSeed app)
     EndToEndSQL.spec harness app settings transport remote (writeBackSeed app)
     ThirdEditionSQL.spec harness app
+    ArchiveSQL.spec harness app
+    ClaimSeatSQL.spec harness app seedUser
 
 writeBackSeed :: App -> WriteBackSQL.Seed
 writeBackSeed app connection label = do

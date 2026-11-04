@@ -9840,6 +9840,8 @@ test-suite arkhamdb-postgres
   type: exitcode-stdio-1.0
   main-is: Main.hs
   other-modules:
+      Postgres.ArchiveSpec
+      Postgres.ClaimSeatSpec
       Postgres.ConcurrencySpec
       Postgres.DeleteSpec
       Postgres.DispatchSpec
@@ -9940,6 +9942,7 @@ test-suite spec
       Arkham.Agenda.Cards.TheDunwichLegacy.TheMiskatonicMuseum.ShadowsDeepenSpec
       Arkham.Agenda.Cards.TheScarletKeys.CongressOfTheKeys.TheWorldUnbiddenSpec
       Arkham.Agenda.Cards.TheScarletKeys.DeadHeat.EmptyStreetsSpec
+      Arkham.Api.ArchiveFailureLogSpec
       Arkham.Api.ArkhamDBCleanupSpec
       Arkham.Api.ArkhamDBLoggingSpec
       Arkham.Api.ArkhamDBSpec

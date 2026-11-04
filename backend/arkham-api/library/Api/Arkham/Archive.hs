@@ -40,7 +40,16 @@ module Api.Arkham.Archive (
   claimForRestore,
   restoreGame,
   startRestore,
+  runRestore,
   restoreWorker,
+
+  -- * Failures
+  ArchiveFailure (..),
+  ArchiveFailureKind (..),
+  classifyArchiveException,
+  describeArchiveException,
+  archiveFailureSummary,
+  archiveRestoreFailedMessage,
 
   -- * The daily sweep
   ArchiveSweep (..),
@@ -58,6 +67,8 @@ module Api.Arkham.Archive (
 -- Explicit lists: both modules export record field names (ChunkedBody's
 -- 'length', GetObjectResponse's 'body') that otherwise shadow the prelude.
 import Amazonka (Env, discover, hashedFile, newEnv, runResourceT, send, sinkBody, toBody)
+import Amazonka qualified
+import Amazonka.Auth (AuthError (..))
 import Amazonka.S3 (
   BucketName (..),
   ObjectKey (..),
@@ -68,10 +79,13 @@ import Amazonka.S3 (
  )
 import Amazonka.S3.GetObject (getObjectResponse_body)
 import Amazonka.S3.PutObject (putObject_contentType)
+import Amazonka.Types (ErrorCode (..), RequestId (..))
 import Api.Arkham.Helpers (ApiResponse (GameUnarchiveFailed, GameUnarchived), publishFromApp)
 import Codec.Compression.GZip qualified as GZip
+import Codec.Compression.Zlib.Internal (DecompressError)
 import Conduit (sinkFile)
 import Control.Concurrent (forkIO, threadDelay)
+import Control.Exception (IOException, evaluate)
 import Control.Lens (view, (?~))
 import Control.Monad (foldM)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -80,20 +94,26 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Base16 qualified as B16
 import Data.ByteString.Lazy qualified as BSL
 import Data.ByteString.Lazy.Char8 qualified as BSL8
+import Data.Char (isAlphaNum, isAscii)
 import Data.List.Extra (chunksOf)
 import Data.Text qualified as T
 import Data.Time.Calendar (addGregorianMonthsClip)
 import Data.Time.Clock
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Data.Traversable (for)
+import Data.Typeable (typeOf)
 import Database.Esqueleto.Experimental
 import Database.Persist qualified as P
+import Database.PostgreSQL.Simple qualified as PG
 import Entity.Arkham.GameRaw
 import Entity.Arkham.Player
 import Entity.Arkham.Step
 import Import hiding (delete, exists, on, update, (!=.), (<.), (=.), (==.), (>.), (>=.))
+import Network.HTTP.Client qualified as Client
+import Network.HTTP.Types.Status qualified as HTTP
 import System.Directory (getFileSize, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
+import System.IO.Error (ioeGetErrorType)
 import UnliftIO.Exception (bracket, tryAny)
 
 -- ------------------------------------------------------------------ config ---
@@ -213,8 +233,160 @@ logArchive line = do
 gameParam :: ArkhamGameId -> PersistValue
 gameParam = PersistText . toPathPiece
 
-reason :: SomeException -> Text
-reason = T.take 500 . T.pack . displayException
+{- | What a failure log line may say about an exception.
+
+Never the exception's own text. 'displayException' on a network-level AWS
+failure is the whole request -- headers (an @X-Amz-Security-Token@ from an
+instance role among them), the URL and its query string -- and a service or
+serialisation error carries the response's message and body. None of that
+belongs in a log.
+
+What is kept, by exception:
+
+  * an AWS service error: the HTTP status, plus the AWS error code and request
+    id, each only if it passes 'safeToken';
+  * an AWS serialisation error: the HTTP status;
+  * a transport failure: the name of the @http-client@ failure, plus the status
+    of a 'Client.StatusCodeException', or @invalid-url@;
+  * a credentials failure: the name of the 'AuthError' constructor;
+  * a SQL error: the SQL state;
+  * an I/O error: its type, never the path;
+  * anything else: the exception's type.
+
+Build it with 'describeArchiveExceptionStrict' wherever the result outlives
+the handler, so nothing keeps the raw exception alive behind a thunk.
+-}
+describeArchiveException :: SomeException -> Text
+describeArchiveException e
+  | Just err <- fromException @Amazonka.Error e = describeAwsError err
+  | Just err <- fromException @AuthError e = "aws credentials error (" <> authErrorName err <> ")"
+  | Just err <- fromException @Client.HttpException e = "http error (" <> describeHttpException err <> ")"
+  | Just err <- fromException @PG.SqlError e = "sql error (state " <> safeToken (decodeUtf8 (PG.sqlState err)) <> ")"
+  | Just err <- fromException @IOException e = "io error (" <> show (ioeGetErrorType err) <> ")"
+  | SomeException inner <- e = "exception (" <> show (typeOf inner) <> ")"
+ where
+  describeAwsError = \case
+    Amazonka.TransportError err -> "aws transport error (" <> describeHttpException err <> ")"
+    Amazonka.SerializeError Amazonka.SerializeError' {Amazonka.status = st} ->
+      "aws serialize error (status " <> show (HTTP.statusCode st) <> ")"
+    Amazonka.ServiceError Amazonka.ServiceError' {Amazonka.status = st, Amazonka.code = ErrorCode code, Amazonka.requestId = rid} ->
+      "aws service error (status "
+        <> show (HTTP.statusCode st)
+        <> ", code "
+        <> safeToken code
+        <> ", request id "
+        <> maybe "none" (\(RequestId r) -> safeToken r) rid
+        <> ")"
+  describeHttpException = \case
+    Client.InvalidUrlException _ _ -> "invalid-url"
+    Client.HttpExceptionRequest _ (Client.StatusCodeException resp _) ->
+      "StatusCodeException, status " <> show (HTTP.statusCode (Client.responseStatus resp))
+    Client.HttpExceptionRequest _ content -> constructorName content
+  authErrorName :: AuthError -> Text
+  authErrorName = \case
+    RetrievalError _ -> "RetrievalError"
+    MissingEnvError _ -> "MissingEnvError"
+    MissingFileError _ -> "MissingFileError"
+    InvalidFileError _ -> "InvalidFileError"
+    InvalidIAMError _ -> "InvalidIAMError"
+    CredentialChainExhausted -> "CredentialChainExhausted"
+    AuthServiceError _ -> "AuthServiceError"
+    OtherAuthError _ -> "OtherAuthError"
+  {- The leading word of a derived 'Show', which is the constructor's name.
+  Only as far as the first non-alphanumeric character, so none of the
+  constructor's arguments is ever rendered. -}
+  constructorName :: Show a => a -> Text
+  constructorName x = safeToken $ T.pack $ takeWhile isAlphaNum $ take 64 $ show x
+
+-- | 'classifyArchiveException', forced before it is returned.
+classifyStrict :: SomeException -> IO ArchiveFailure
+classifyStrict = evaluate . classifyArchiveException
+
+-- | 'describeArchiveException', forced before it is returned.
+describeArchiveExceptionStrict :: SomeException -> IO Text
+describeArchiveExceptionStrict = evaluate . describeArchiveException
+
+-- | Run an action whose failures are text, turning a throw into the same.
+describingFailure :: IO (Either Text a) -> IO (Either Text a)
+describingFailure action = tryAny action >>= either (fmap Left . describeArchiveExceptionStrict) pure
+
+{- | An AWS error code or request id, if it looks like one.
+
+One to 64 characters of @[A-Za-z0-9._-]@, or a fixed placeholder. Replaced
+rather than stripped: these come from the response, and text that is not
+shaped like an identifier is not logged even in part.
+-}
+safeToken :: Text -> Text
+safeToken t
+  | not (T.null t) && T.length t <= 64 && T.all allowed t = t
+  | otherwise = "<filtered>"
+ where
+  allowed c = isAscii c && (isAlphaNum c || c `elem` ("._-" :: String))
+
+-- ---------------------------------------------------------------- failures ---
+
+{- | The one thing a client is ever told about a restore that did not work.
+
+The underlying failure is an Amazonka request, a SQL statement, or a byte
+mismatch in someone's history, and none of that belongs on a socket that
+unauthenticated spectators can join, or in a response a player can read. The
+detail goes to the server log; this goes everywhere else. It is the text of
+@contracts/fixtures/game-unarchive-failed.json@.
+-}
+archiveRestoreFailedMessage :: Text
+archiveRestoreFailedMessage = "The archived steps could not be restored."
+
+-- | Which part of a restore broke, coarse enough to show an operator safely.
+data ArchiveFailureKind
+  = -- | The object store, or the credentials to reach it.
+    ArchiveStorageFailure
+  | -- | The database.
+    ArchiveDatabaseFailure
+  | -- | The object came back but is not a readable archive.
+    ArchiveIntegrityFailure
+  | ArchiveUnknownFailure
+  deriving stock (Show, Eq)
+
+{- | A classified failure and its detail.
+
+'archiveFailureDetail' is for the server log only. For a thrown exception it is
+'describeArchiveException': a kind, a status and identifiers, never the
+exception's text.
+-}
+data ArchiveFailure = ArchiveFailure
+  { archiveFailureKind :: ArchiveFailureKind
+  , archiveFailureDetail :: Text
+  }
+  deriving stock Show
+
+{- | Sort an exception into a 'ArchiveFailureKind'. Never looks at the text, so
+nothing an exception says can choose what is stored.
+-}
+classifyArchiveException :: SomeException -> ArchiveFailure
+classifyArchiveException e = ArchiveFailure kind (describeArchiveException e)
+ where
+  kind
+    | is @Amazonka.Error = ArchiveStorageFailure
+    | is @AuthError = ArchiveStorageFailure
+    | is @PG.SqlError = ArchiveDatabaseFailure
+    | is @PG.QueryError = ArchiveDatabaseFailure
+    | is @PG.ResultError = ArchiveDatabaseFailure
+    | is @PG.FormatError = ArchiveDatabaseFailure
+    | is @P.PersistException = ArchiveDatabaseFailure
+    | is @DecompressError = ArchiveIntegrityFailure
+    | otherwise = ArchiveUnknownFailure
+  is :: forall x. Exception x => Bool
+  is = isJust (fromException @x e)
+
+{- | What @error_message@ holds for a failed restore: the category, never the
+detail. The admin panel shows it as a tooltip.
+-}
+archiveFailureSummary :: ArchiveFailure -> Text
+archiveFailureSummary failure = "restore failed: " <> case archiveFailureKind failure of
+  ArchiveStorageFailure -> "storage"
+  ArchiveDatabaseFailure -> "database"
+  ArchiveIntegrityFailure -> "integrity"
+  ArchiveUnknownFailure -> "unknown"
 
 -- ----------------------------------------------------------------- reading ---
 
@@ -419,7 +591,7 @@ Nothing is held in memory but a page of steps: both files are written and read
 incrementally, and 'hashedFile' hashes and uploads in constant space.
 -}
 archiveGame :: App -> ArchiveConfig -> Env -> ArkhamGameId -> IO (Either Text ArchiveOutcome)
-archiveGame app cfg env gameId = either (Left . reason) id <$> tryAny go
+archiveGame app cfg env gameId = describingFailure go
  where
   bucket = archiveConfigBucket cfg
   go = do
@@ -567,10 +739,9 @@ cutoff: the whole point of it is that somebody has decided about this game.
 -}
 archiveOne :: App -> ArchiveConfig -> ArkhamGameId -> IO (Either Text ArchiveOutcome)
 archiveOne app cfg gameId = do
-  result <-
-    either (Left . reason) id <$> tryAny do
-      env <- newEnv discover
-      archiveGame app cfg env gameId
+  result <- describingFailure do
+    env <- newEnv discover
+    archiveGame app cfg env gameId
   {- Logged as well as returned. The caller is a synchronous request, and for a
   large game that request can be cut off by a proxy long before the work ends;
   without this there would be no record of how it went. -}
@@ -686,7 +857,7 @@ time that the writer and the reader had drifted apart, it is nothing.
 -}
 verifyArchive :: Env -> Text -> Text -> Int -> ByteString -> IO (Either Text ())
 verifyArchive env bucket key expectedSteps expectedDigest =
-  either (Left . reason) id <$> tryAny do
+  describingFailure do
     withArchiveFile env bucket key \path -> do
       digest <- SHA256.hashlazy <$> archiveBody path
       if digest /= expectedDigest
@@ -728,14 +899,14 @@ archived. Those steps are above the archive's top step and are the ones to keep;
 the clause makes the restore idempotent as well, so a retry after a half-finished
 attempt is harmless.
 -}
-restoreGame :: App -> ArkhamGameArchive -> IO (Either Text Int)
-restoreGame app archive = either (Left . reason) id <$> tryAny go
+restoreGame :: App -> ArkhamGameArchive -> IO (Either ArchiveFailure Int)
+restoreGame app archive = tryAny go >>= either (fmap Left . classifyStrict) pure
  where
   go = do
     env <- newEnv discover
     withArchiveFile env archive.bucket archive.objectKey \path -> do
       archiveBody path >>= \body -> case stepLines body of
-        Left err -> pure $ Left $ "could not read archive: " <> err
+        Left err -> pure $ Left $ ArchiveFailure ArchiveIntegrityFailure $ "could not read archive: " <> err
         Right steps -> do
           now <- getCurrentTime
           restored <- runDBIO app do
@@ -770,32 +941,71 @@ player over the game's websocket, which is also how it reaches them when the
 replica that served the request is not the one holding their socket.
 -}
 startRestore :: App -> ArkhamGameArchive -> IO ()
-startRestore app archive = void $ forkIO $ void $ tryAny do
-  result <- restoreGame app archive
+startRestore app archive =
+  void
+    $ forkIO
+    $ void
+    $ tryAny
+    $ runRestore app (logArchive . T.unpack) (restoreGame app) (publishFromApp app archive.arkhamGameId) archive
+
+{- | The body of 'startRestore', run in the calling thread.
+
+The logger, the restore and the publish are parameters so a test can drive the
+failure path without object storage and read what it logged. A restore that
+throws rather than returning 'Left' is classified the same way.
+
+Whatever went wrong, the row records only 'archiveFailureSummary' and the room
+is told only 'archiveRestoreFailedMessage'; the detail is logged.
+-}
+runRestore
+  :: App
+  -> (Text -> IO ())
+  -> (ArkhamGameArchive -> IO (Either ArchiveFailure Int))
+  -> (ApiResponse -> IO ())
+  -> ArkhamGameArchive
+  -> IO ()
+runRestore app logLine restore publish archive = do
+  result <- tryAny (restore archive) >>= either (fmap Left . classifyStrict) pure
   case result of
     Right n -> do
-      publishFromApp app archive.arkhamGameId GameUnarchived
-      logArchive
+      publish GameUnarchived
+      logLine
         $ "archive: restored "
         <> show n
         <> " steps for game "
-        <> T.unpack (toPathPiece archive.arkhamGameId)
-    Left err -> do
+        <> toPathPiece archive.arkhamGameId
+    Left failure -> do
+      -- Logged first: if recording the failure throws too, the cause is not lost.
+      logLine
+        $ "archive: restore FAILED for game "
+        <> toPathPiece archive.arkhamGameId
+        <> " ("
+        <> archiveFailureSummary failure
+        <> "): "
+        <> archiveFailureDetail failure
       now <- getCurrentTime
-      runDBIO app $ void $ updateCount \a -> do
+      {- Only a row that is still 'Restoring'. The worker restarts restores
+      that look abandoned, so a slow first attempt can finish while the
+      restarted one fails -- and an exception after the restore commits lands
+      here too. Either way the steps are back, and 'Restored' is the truth. -}
+      changed <- runDBIO app $ updateCount \a -> do
         set
           a
           [ ArkhamGameArchiveState =. val Failed
-          , ArkhamGameArchiveErrorMessage =. val (Just err)
+          , ArkhamGameArchiveErrorMessage =. val (Just $ archiveFailureSummary failure)
           , ArkhamGameArchiveRestoredAt =. val (Just now)
           ]
         where_ $ a.arkhamGameId ==. val archive.arkhamGameId
-      publishFromApp app archive.arkhamGameId $ GameUnarchiveFailed err
-      logArchive
-        $ "archive: restore FAILED for game "
-        <> T.unpack (toPathPiece archive.arkhamGameId)
-        <> ": "
-        <> T.unpack err
+        where_ $ a.state ==. val Restoring
+      if changed > 0
+        then publish $ GameUnarchiveFailed archiveRestoreFailedMessage
+        else
+          logLine
+            $ "archive: late restore failure ignored for game "
+            <> toPathPiece archive.arkhamGameId
+            <> " ("
+            <> archiveFailureSummary failure
+            <> "): the archive is no longer restoring"
 
 {- | Pick up restores a replica died in the middle of.
 
@@ -996,7 +1206,8 @@ runAndRecordSweep app cfg = do
     tryAny (runArchiveSweep app cfg) >>= \case
       Right sweep -> pure sweep
       Left err -> do
-        logArchive $ "archive: sweep failed: " <> T.unpack (reason err)
+        detail <- describeArchiveExceptionStrict err
+        logArchive $ "archive: sweep failed: " <> T.unpack detail
         pure (ArchiveSweep 0 1 0 0)
   finishedAt <- getCurrentTime
   let elapsedMs = round $ 1000 * diffUTCTime finishedAt startedAt

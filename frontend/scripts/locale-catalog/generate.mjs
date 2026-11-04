@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { CARD_NAMES_PACK, CARD_ONLY_LOCALES, loadCardNameEntries } from './card-names.mjs'
 import { canonicalJson, sha256Hex } from './canonical.mjs'
 import { analyzeComposition, findDuplicateKeys } from './inventory.mjs'
 import {
@@ -105,9 +106,12 @@ const CANONICAL_LOCALE_PATTERN = /^[a-z]{2,3}(?:-(?:[A-Z]{2}|[A-Z][a-z]{3}|(?![a
 
 // Language tags probed through the production resolver so native clients get
 // the web client's exact locale/fallback behavior instead of guessing at it.
+// pl, pt, ru and uk resolve to their card-only locales (see card-names.mjs);
+// ja (whose card file is empty) and nl show an unsupported language -> en.
 const PROBE_LANGUAGE_TAGS = [
-  'de', 'de-AT', 'en', 'en-GB', 'es', 'es-MX', 'fr', 'fr-CA', 'it', 'ko',
-  'pt-BR', 'ru', 'zh', 'zh-CN', 'zh-Hans', 'zh-Hant', 'zh-TW',
+  'de', 'de-AT', 'en', 'en-GB', 'es', 'es-MX', 'fr', 'fr-CA', 'it', 'ja', 'ko', 'nl',
+  'pl', 'pl-PL', 'pt', 'pt-BR', 'pt-PT', 'ru', 'ru-RU', 'uk', 'uk-UA',
+  'zh', 'zh-CN', 'zh-Hans', 'zh-Hant', 'zh-TW',
 ]
 
 class GenerationError extends Error {}
@@ -306,6 +310,33 @@ function packOf(key) {
   const pack = key.includes('.') ? key.slice(0, key.indexOf('.')) : 'core'
   if (!PACK_PATTERN.test(pack)) fail(`unsafe pack id derived from ${key}`)
   return pack
+}
+
+/**
+ * The card-name pack is card data, not backend-emitted text, so it takes no
+ * part in the required/untranslated accounting. A backend or fixture key
+ * inside it would be answered by a card name instead of its own text.
+ */
+export function assertNoCardNameClaims(keys) {
+  const claimed = [...keys].filter((key) => packOf(key) === CARD_NAMES_PACK)
+  if (claimed.length > 0) {
+    fail(`backend or fixture key(s) fall in the ${CARD_NAMES_PACK} pack: ${claimed.slice(0, 5).join(', ')}`)
+  }
+}
+
+/**
+ * Adds each locale's `cardNames` pack, resolved from its `cards_<locale>.json`
+ * by the web's own lookup rules (see card-names.mjs). The pack belongs to the
+ * card data alone: a locale message filed under it is refused rather than
+ * silently shadowed.
+ */
+export function addCardNames(normalized, frontendDir) {
+  for (const [locale, entries] of normalized) {
+    for (const key of entries.keys()) {
+      if (packOf(key) === CARD_NAMES_PACK) fail(`${locale} locale sources define ${key}, inside the card-name pack`)
+    }
+    for (const [key, entry] of loadCardNameEntries(frontendDir, locale)) entries.set(key, entry)
+  }
 }
 
 function normalizeLocale(messages, classifyVariable) {
@@ -672,30 +703,51 @@ function canonicalLocaleTag(raw) {
   })].join('-')
 }
 
-function catalogLocaleMap(sources) {
+/**
+ * Maps every published source locale -- the UI locales first, then the
+ * card-only ones -- to its canonical catalog tag. A card-only locale whose tag
+ * a UI locale already publishes is refused: one tag cannot be both a full UI
+ * translation and a card-names-only slice.
+ */
+export function catalogLocaleMap(uiLocales, cardOnlyLocales = Object.keys(CARD_ONLY_LOCALES)) {
   const bySource = new Map()
   const seen = new Map()
-  for (const sourceLocale of sources.locales) {
+  const uiTags = new Set()
+  const tagged = [
+    ...uiLocales.map((locale) => [locale, false]),
+    ...cardOnlyLocales.map((locale) => [locale, true]),
+  ]
+  for (const [sourceLocale, cardOnly] of tagged) {
     if (!LOCALE_PATTERN.test(sourceLocale)) fail(`unsafe locale id ${JSON.stringify(sourceLocale)}`)
     const catalogLocale = canonicalLocaleTag(sourceLocale)
     if (catalogLocale === null || !CANONICAL_LOCALE_PATTERN.test(catalogLocale)) {
       fail(`unsafe canonical locale id ${JSON.stringify(sourceLocale)}`)
     }
+    if (cardOnly && uiTags.has(catalogLocale)) {
+      fail(`card-only locale ${sourceLocale} clashes with UI locale ${seen.get(catalogLocale)} (${catalogLocale})`)
+    }
     const previous = seen.get(catalogLocale)
     if (previous !== undefined) {
       fail(`locales ${previous} and ${sourceLocale} both publish as ${catalogLocale}`)
     }
+    if (!cardOnly) uiTags.add(catalogLocale)
     bySource.set(sourceLocale, catalogLocale)
     seen.set(catalogLocale, sourceLocale)
   }
   return bySource
 }
 
-function localeResolutionTable(sources, catalogLocales) {
-  return PROBE_LANGUAGE_TAGS.map((tag) => ({
-    tag,
-    locale: catalogLocales.get(sources.uiLocaleFor(sources.preferredLanguage(tag))),
-  })).sort((a, b) => (a.tag < b.tag ? -1 : 1))
+/**
+ * Probes the web's device-language choice: a UI language resolves to its UI
+ * locale, a card-only language (`preferredLanguage` is also how the web picks
+ * its card file) to its card-only locale, anything else to the default.
+ */
+function localeResolutionTable(sources, catalogLocales, cardOnlyLocales) {
+  return PROBE_LANGUAGE_TAGS.map((tag) => {
+    const language = sources.preferredLanguage(tag)
+    const cardOnly = !sources.uiLocales.includes(language) && cardOnlyLocales.includes(language)
+    return { tag, locale: catalogLocales.get(cardOnly ? language : sources.uiLocaleFor(language)) }
+  }).sort((a, b) => (a.tag < b.tag ? -1 : 1))
 }
 
 /** Builds the whole catalog in memory. Nothing is written by this function. */
@@ -705,6 +757,9 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
 
   const fixtureKeys = collectRequiredKeys()
   const backend = loadBackendKeys()
+  // UI locales plus the card-only ones; a tag clash fails before anything else.
+  const catalogLocales = catalogLocaleMap(sources.locales)
+  const cardOnlyLocales = [...catalogLocales.keys()].filter((locale) => !sources.locales.includes(locale))
   const provenance = {
     schemaVersion: SCHEMA_VERSION,
     generator: { name: GENERATOR_NAME, version: GENERATOR_VERSION, sources: generatorSourceDigests() },
@@ -719,18 +774,19 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
       path: BACKEND_KEYS,
       sha256: backend.sha256,
       artifactVersion: backend.artifact.artifactVersion,
-      sourceSha256: backend.artifact.source.sha256,
+      sourceSha256: backend.artifact.payloadSha256,
       emittedKeys: backend.keys.size,
     },
-    localeSources: collectSourceFiles(frontendDir),
+    localeSources: collectSourceFiles(frontendDir, [...catalogLocales.keys()]),
     // The exact resolved dependency closure, integrity hashes included.
     lockfile: digestRepoFiles(['frontend/package-lock.json']),
   }
   const defaultLocale = sources.uiLocaleFor('')
   if (!sources.locales.includes(defaultLocale)) fail(`default locale ${defaultLocale} is not supported`)
-  const catalogLocales = catalogLocaleMap(sources)
   const defaultCatalogLocale = catalogLocales.get(defaultLocale)
 
+  // Composition integrity covers the UI locales only: a card-only locale has
+  // no locale sources to compose.
   const ownership = await loadOwnershipTrees(frontendDir)
   assertSourceIntegrity(frontendDir, provenance.localeSources, sources, ownership)
 
@@ -738,6 +794,10 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
   for (const locale of sources.locales) {
     normalized.set(locale, normalizeLocale(sources.messages[locale], classifyVariable))
   }
+  // A card-only locale's only keys are its card names; every other key falls
+  // back to the default locale.
+  for (const locale of cardOnlyLocales) normalized.set(locale, new Map())
+  addCardNames(normalized, frontendDir)
   // A downgrade can invalidate an entry that linked to it, so the graph is
   // re-resolved until it stops changing.
   for (let pass = 0; pass < 8; pass += 1) {
@@ -766,6 +826,7 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
   for (const key of fixtureKeys) {
     if (!defaultEntries.has(key)) fail(`contract fixture key ${key} is missing from ${defaultLocale}`)
   }
+  assertNoCardNameClaims([...fixtureKeys, ...backend.keys.keys()])
 
   // Every offending key is collected before failing: fixing these one build at
   // a time, with 6,000 required keys, is not a workflow anyone should have.
@@ -837,7 +898,7 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
 
   // Phase 1: the catalog's content, with no revision and no URLs in it yet.
   const bodies = []
-  for (const sourceLocale of [...sources.locales].sort((a, b) => {
+  for (const sourceLocale of [...catalogLocales.keys()].sort((a, b) => {
     const byCatalog = catalogLocales.get(a).localeCompare(catalogLocales.get(b))
     return byCatalog || a.localeCompare(b)
   })) {
@@ -875,7 +936,7 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
   let totalKeys = 0
   let totalUnsupported = 0
 
-  for (const sourceLocale of [...sources.locales].sort((a, b) => {
+  for (const sourceLocale of [...catalogLocales.keys()].sort((a, b) => {
     const byCatalog = catalogLocales.get(a).localeCompare(catalogLocales.get(b))
     return byCatalog || a.localeCompare(b)
   })) {
@@ -944,7 +1005,7 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
     chunkPathPrefix: `${BASE_PATH}/c/`,
     digestAlgorithm: 'sha256',
     defaultLocale: defaultCatalogLocale,
-    languageResolution: localeResolutionTable(sources, catalogLocales),
+    languageResolution: localeResolutionTable(sources, catalogLocales, cardOnlyLocales),
     locales,
     totals: {
       locales: locales.length,
@@ -956,7 +1017,7 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
     backend: {
       artifactPath: BACKEND_KEYS,
       artifactSha256: backend.sha256,
-      sourceSha256: backend.artifact.source.sha256,
+      sourceSha256: backend.artifact.payloadSha256,
       emittedKeys: backend.keys.size,
       requiredKeys: requiredKeys.size,
       untranslatedKeys: untranslated,
