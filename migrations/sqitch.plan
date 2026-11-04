@@ -42,6 +42,7 @@ arkhamdb_write_back_accounting_fences [arkhamdb_write_back] 2026-10-28T01:00:00Z
 arkham_deck_overlay_attachment [arkham_deck_overlay] 2026-10-28T02:00:00Z David Jensenius <david@jensenius.com> # Private identity for each saved overlay attachment
 arkhamdb_write_back_lookup_indexes [arkhamdb_write_back] 2026-11-03T04:08:14Z David Jensenius <david@jensenius.com> # Indexed write-back campaign identity lookups
 arkhamdb_link_states_expiry_index [arkhamdb_account_linking] 2026-11-03T09:30:00Z David Jensenius <david@jensenius.com> # Ordered bounded expiry cleanup for nonces and staged credentials
+arkhamdb_link_states_user_index [arkhamdb_account_linking] 2026-11-03T22:52:10Z David Jensenius <david@jensenius.com> # Index link states by user for user-deletion cascades and per-user lookups
 arkham_build_connections [users] 2026-10-11T00:00:00Z Claude <noreply@anthropic.com> # arkham.build OAuth connections and pending authorization requests
 arkham_game_archives [arkham_games users] 2026-10-12T00:00:00Z Claude <noreply@anthropic.com> # Undo history offloaded to object storage, and the way back
 add_features_to_users [users] 2026-10-13T00:00:00Z Claude <noreply@anthropic.com> # Per-account grants for features that are not general yet
