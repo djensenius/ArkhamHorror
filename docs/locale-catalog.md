@@ -217,12 +217,15 @@ top-level `payloadSha256`: the sha256 of the registry's own canonical bytes
 extracted keys, variable types and dynamic-site inventory alone also leaves the
 file byte-identical, and unrelated backend PRs do not all conflict on one
 digest line. Nothing is lost: `--check` re-derives every byte of the registry
-anyway. (A dynamic site is recorded as `file:line`, so moving such a site to
-another line still changes the inventory.) The catalog generator records
-`payloadSha256` as `backend.sourceSha256` in both the manifest and the
-provenance, next to `backend.artifactSha256` (the digest of the committed
-file), and `validate-locale-catalog` requires both to match the committed
-registry. The catalog build consumes it and **fails** if any emitted key that the default locale
+anyway. Sites are still line-sensitive: each key's `keys[].site` (the first
+`file:line` that emits it) and each dynamic site are recorded as `file:line`,
+so an edit that moves an emitting line still changes the registry. Making those
+sites line-stable is tracked as follow-up TASK-2.95. The catalog generator
+records `payloadSha256` as `backend.sourceSha256` in both the manifest and the
+provenance. `validate-locale-catalog` requires the manifest's
+`backend.sourceSha256` to equal the committed registry's `payloadSha256` and
+the manifest's `backend.artifactSha256` to equal the digest of the committed
+registry file. The catalog build consumes it and **fails** if any emitted key that the default locale
 translates is unsupported — those keys are gameplay content, not decoration.
 Keys the backend emits that no locale translates at all are a content gap in
 the locale sources, not a rendering failure: writing the missing prose is not
