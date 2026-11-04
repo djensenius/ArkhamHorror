@@ -15,6 +15,7 @@ import Arkham.Game qualified as Game
 import Arkham.Investigator.Types (investigatorPlayerId, investigatorXp)
 import Arkham.Message (Message (..))
 import Arkham.Prelude (These (This))
+import Control.Concurrent (ThreadId, threadDelay)
 import Control.Concurrent.MVar qualified as MVar
 import Control.Exception (throwIO)
 import Data.Map.Strict qualified as Map
@@ -25,11 +26,13 @@ import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Game
 import Entity.Arkham.Step
 import Foundation (App (..), Handler, unsafeHandler)
+import GHC.Conc (ThreadStatus (..), threadStatus)
 import Postgres.Harness
 import Postgres.Remote
 import Postgres.WriteBackSpec (Fixture (..), Seed, fixture)
 import Relude
 import Settings (ArkhamDBSettings)
+import System.Timeout (timeout)
 import Test.Hspec
 import UnliftIO.Async (link, wait, withAsync)
 import UnliftIO.Exception qualified as Exception
@@ -101,6 +104,9 @@ spec harness app settings unexpected source seed = describe "Actual Games.Shared
         let foundation = app {appArkhamDBWriteBackExecutor = executor}
         seen <- MVar.newEmptyMVar
         swept <- MVar.newEmptyMVar
+        -- Holds the executor thread inside its startup sweep until the
+        -- precommit checks are done, so it cannot take (and hide) a wake.
+        gate <- MVar.newEmptyMVar
         barrier <- newBarrier
         let verifyCommitted = do
               committed <- transaction observer $ P.getJust f.gameId
@@ -128,9 +134,22 @@ spec harness app settings unexpected source seed = describe "Actual Games.Shared
               result <- action
               liftIO $ pauseAt barrier
               pure result) writer
-            sweep = push foundation settings client f False 0 >> MVar.putMVar swept ()
-        withAsync (runArkhamDBExecutor executor sweep) \worker -> do
-          link worker
+            -- Every sweep reports its outcome: the executor thread itself
+            -- does not propagate a sweep's synchronous exception. A sweep
+            -- returns to the executor loop only once the gate is open.
+            sweep = do
+              (Exception.try (push foundation settings client f False 0) :: IO (Either SomeException ()))
+                >>= MVar.putMVar swept . first (show @Text)
+              MVar.readMVar gate
+            swept' label = within label (MVar.takeMVar swept) >>= either (expectationFailure . toString) pure
+        -- The production executor thread, as the server starts it.
+        startArkhamDBExecutor executor $ runArkhamDBExecutor executor sweep
+        flip Exception.finally (void $ timeout 2000000 $ stopArkhamDBExecutor executor) do
+          -- Startup fills the wake slot, so a first sweep runs at once with
+          -- nothing queued; drain it before the answer. The executor thread
+          -- now waits on the gate, so it takes no wake until it opens.
+          swept' "startup sweep"
+          MVar.tryReadMVar seen `shouldReturn` Nothing
           withAsync (unsafeHandler foundation $
             updateGameWithAnswerRejectionWith database mempty answer f.gameId Nothing) \answering -> do
               link answering
@@ -139,20 +158,27 @@ spec harness app settings unexpected source seed = describe "Actual Games.Shared
               arkhamGameStep committed `shouldBe` 2
               xp (arkhamGameCurrentData committed) `shouldBe` 5
               transaction observer (P.count [ArkhamDBPushDeckId P.==. f.deckId]) `shouldReturn` 0
+              -- The gated executor cannot have consumed a wake, so an empty
+              -- wake slot proves nothing woke it before commit; no further
+              -- sweep and no remote call has happened either.
+              MVar.tryReadMVar swept `shouldReturn` Nothing
               MVar.tryReadMVar seen `shouldReturn` Nothing
               MVar.tryReadMVar executor.executorWake `shouldReturn` Nothing
+              -- Reopen the executor loop while the answer is still held
+              -- before commit; only the postcommit wake can start a sweep.
+              MVar.putMVar gate ()
               releaseBarrier barrier
-              -- Linked child exceptions propagate; completion is independently
-              -- signalled only after real dispatch, transport and persistence.
-              within "postcommit production dispatch" $ MVar.takeMVar swept
+              -- Completion is independently signalled only after real
+              -- dispatch, transport and persistence.
+              swept' "postcommit production dispatch"
               within "actual answer response" (wait answering) `shouldReturn` Nothing
               void verifyCommitted
               P.Entity _ job <- storedJob observer f
               arkhamDBPushStatus job `shouldBe` if outage then "failed" else "succeeded"
               when outage $ arkhamDBPushError job `shouldBe` Just "remoteUnavailable"
-        -- The directly run worker is already cancelled; stop is permanent and
-        -- has no registered thread to join.
-        stopArkhamDBExecutor executor
+          running <- runningExecutor executor
+          timeout 2000000 (stopArkhamDBExecutor executor) `shouldReturn` Just ()
+          assertExecutorStopped executor running
 
   it "executes the unparameterized production answer entry point" $
     withConnection harness \connection -> do
@@ -163,3 +189,23 @@ spec harness app settings unexpected source seed = describe "Actual Games.Shared
       arkhamGameStep committed `shouldBe` 3
       xp (arkhamGameCurrentData committed) `shouldBe` 6
       transaction connection (P.count [ArkhamDBPushDeckId P.==. f.deckId]) `shouldReturn` 1
+
+-- The started executor's registered thread, still running.
+runningExecutor :: ArkhamDBExecutor -> IO (ThreadId, MVar ())
+runningExecutor executor = do
+  current <- MVar.readMVar executor.executorState
+  (tid, done) <- maybe (fail "The executor was never started") pure current.executorThread
+  MVar.tryReadMVar done `shouldReturn` Nothing
+  pure (tid, done)
+
+-- After stop: the thread's completion is signalled, the executor refuses
+-- wakes, and the thread itself has exited (a blocked thread is still alive).
+assertExecutorStopped :: ArkhamDBExecutor -> (ThreadId, MVar ()) -> IO ()
+assertExecutorStopped executor (tid, done) = do
+  MVar.tryReadMVar done `shouldReturn` Just ()
+  wakeArkhamDBExecutor executor `shouldReturn` False
+  let exited = threadStatus tid >>= \case
+        ThreadFinished -> pure ()
+        ThreadDied -> pure ()
+        _ -> threadDelay 10000 >> exited
+  timeout 2000000 exited `shouldReturn` Just ()

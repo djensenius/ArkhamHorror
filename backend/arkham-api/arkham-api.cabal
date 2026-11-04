@@ -9910,6 +9910,8 @@ test-suite arkhamdb-postgres
     , unliftio
     , uuid
     , wai
+    , wai-extra
+    , warp
     , yesod-core
   default-language: GHC2021
 
