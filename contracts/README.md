@@ -1660,11 +1660,12 @@ code straight to the server's English title. Today every UI locale publishes
 the same code set (11,794 keys, about 1.2 MB per locale chunk), so this only
 matters for future data gaps.
 
-Slice 1 covers the eight UI catalog locales (`de`, `en`, `es`, `fr`, `it`,
-`ko`, `zh`, `zh-CN`). The card-only web languages (`pl`, `po` for Portuguese,
-`ru` and `uk`) are pending a later revision. `ja` is excluded
-because its card file is empty. The synthetic fixtures pin the Night of the
-Zealot names in `en` and `de` (`pt-BR` has no card pack and falls back to `en`).
+Revision `0.1.60` covers the eight UI catalog locales (`de`, `en`, `es`, `fr`,
+`it`, `ko`, `zh`, `zh-CN`). Revision `0.1.63` adds the card-only web languages
+`pl`, `pt` (read from the web's `cards_po.json`), `ru` and `uk` (see below).
+`ja` is excluded because its card file is empty. The synthetic fixtures pin the
+Night of the Zealot names in `en`, `de` and the card-only `pl` (`pt-BR` has no
+card pack and falls back to `en`).
 `frontend/tests/localeCatalogCardNames.test.mjs` proves those pinned names
 equal the real generator output and cover every Night of the Zealot name the
 fixture labels use. If an upstream sync renames a pinned card in
@@ -1703,6 +1704,35 @@ file, which changes the synthetic catalog fixture digests. The catalog
 manifest's `backend.sourceSha256` keeps its name and format.
 `nativeClientMinimumRevision` stays `0.1.57`; clients pinned to `0.1.57`
 through `0.1.61` are unaffected and need not repin.
+
+#### Card-only locales (revision 0.1.63)
+
+Revision `0.1.63` completes the localized card names. The catalog now also
+publishes `pl`, `pt`, `ru` and `uk` as card-only locales: ordinary catalog
+locales whose only keys are `cardNames.*`, with `"fallback": "en"` for every
+other key. They are the languages the web shows card names in but has no UI
+translation for. `pt` is built from the web's `frontend/public/cards_po.json`;
+there is no `cards_pt.json`. The keys follow the same lookup rules as revision
+`0.1.60`. A card-only locale whose tag a UI locale already publishes fails the
+build. So if an upstream sync adds `ru`, `pl`, `uk` or `pt` as a UI locale, the
+generator's clash refusal fails the build, and the fix is to drop that entry
+from `CARD_ONLY_LOCALES` in `frontend/scripts/locale-catalog/card-names.mjs`
+(and `CARD_SOURCE_ALIASES` in `scripts/validate-locale-catalog.py` for `pt`).
+
+`languageResolution` now sends `pl`, `pt`, `ru` and `uk` device languages, bare
+or regional (`pl-PL`, `pt-BR`, `pt-PT`, `ru-RU`, `uk-UA`), to their card-only
+locale, so a client shows those card names and the `en` UI text. Before this
+revision `pt-BR` and `ru` resolved to `en`. Unsupported languages still resolve to `en`; the
+probe list now includes `ja` and `nl` to show it. This follows the web's automatic
+card-language choice (`preferredLanguage`), except that `pt-BR` uses the
+Portuguese card data rather than the web's missing `cards_pt.json`.
+
+The manifest shape is unchanged: no new field or per-locale flag, so closed
+decoders keep working. The production catalog grows from 8 to 12 locales and
+by about 5 MB (45,879 card-name keys). The synthetic catalog fixture gains a
+card-only `pl` locale with the Night of the Zealot names.
+`nativeClientMinimumRevision` stays `0.1.57`; clients pinned to `0.1.57`
+through `0.1.62` are unaffected and need not repin.
 
 ### Locale catalog discovery
 

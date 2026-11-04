@@ -30,9 +30,24 @@ function fail(message) {
   throw new Error(`locale-catalog: ${message}`)
 }
 
-/** `public/cards_<locale>.json`, the file `dbCards.ts` loads for that locale. */
+/**
+ * Card-only catalog locales: languages the web shows card names in
+ * (`preferredLanguage` in `src/locales/language.ts` picks the card file from
+ * the device language) but has no UI translation for. Each is published as an
+ * ordinary catalog locale whose only keys are `cardNames.*`, falling back to
+ * the default locale for everything else. The value is the suffix of the
+ * committed card file: Portuguese card data lives in `cards_po.json`.
+ * Japanese is left out because `cards_ja.json` is empty.
+ *
+ * Keep in step with CARD_SOURCE_ALIASES in scripts/validate-locale-catalog.py,
+ * which repeats the pt -> po mapping for its card-file coverage check.
+ */
+export const CARD_ONLY_LOCALES = Object.freeze({ pl: 'pl', pt: 'po', ru: 'ru', uk: 'uk' })
+
+/** `public/cards_<file>.json`, the card file the catalog reads for a locale. */
 export function cardSourcePath(locale) {
-  return `public/cards_${locale}.json`
+  const file = Object.hasOwn(CARD_ONLY_LOCALES, locale) ? CARD_ONLY_LOCALES[locale] : locale
+  return `public/cards_${file}.json`
 }
 
 /** Mirrors `buildCardIndex` in `src/stores/dbCards.ts`, step for step. */
@@ -102,7 +117,7 @@ export function cardNameEntries(cards, source) {
   return entries
 }
 
-/** Reads and resolves `public/cards_<locale>.json` for one catalog locale. */
+/** Reads and resolves the card file (`cardSourcePath`) of one catalog locale. */
 export function loadCardNameEntries(frontendDir, locale) {
   const path = cardSourcePath(locale)
   let text

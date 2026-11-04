@@ -1,8 +1,8 @@
 {
   "artifactVersion": "1.0.0",
   "source": {
-    "files": 3,
-    "sha256": "4290b030b652d8889e74174e91ca997ea5ffae67e8daf07451d2b238414ca10e"
+    "files": 4,
+    "sha256": "c505d91d299cef36647ce15bc9c492df4932ed9f2d2cb30efedddc8e0d278ba6"
   },
   "variableTypes": {
     "chaosTokenFace": {
