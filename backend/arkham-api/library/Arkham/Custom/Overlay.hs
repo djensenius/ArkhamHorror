@@ -10,6 +10,7 @@ through "Arkham.Card.CustomCard"'s registry the way it resolves any other.
 module Arkham.Custom.Overlay (
   DeckOverlay (..),
   applyOverlay,
+  applySeatOverlay,
   investigatorOverlay,
   needsOverlayInvestigator,
   overlaySignatures,
@@ -138,6 +139,19 @@ applyOverlay overlay decklist =
   slots' =
     Map.filter (> 0)
       $ Map.foldrWithKey (\cardCode n m -> Map.adjust (subtract n) cardCode m) added (overlayRemove overlay)
+
+{- | What a seat's upgrade loads: the overlay over the list, after dropping parallel
+faces whose front this app cannot build (the predicate, e.g. 'isKnownInvestigator',
+which this module cannot import). The seat's own investigator is then seated
+instead of the upgrade being rejected; a known parallel front is kept.
+-}
+applySeatOverlay
+  :: (InvestigatorId -> Bool) -> Maybe DeckOverlay -> ArkhamDBDecklist -> ArkhamDBDecklist
+applySeatOverlay isKnown overlay decklist = maybe id applyOverlay overlay decklist'
+ where
+  decklist'
+    | isKnown (decklistInvestigatorId decklist) = decklist
+    | otherwise = decklist {meta = withoutParallelFaces <$> meta decklist}
 
 -- | Meta that will not parse as an object is left exactly as it came.
 withoutParallelFaces :: Text -> Text

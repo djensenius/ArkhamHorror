@@ -44,7 +44,7 @@ import Arkham.Classes.Entity (attr)
 import Arkham.Classes.HasQueue
 import Arkham.Custom.Overlay (
   DeckOverlay (..),
-  applyOverlay,
+  applySeatOverlay,
   decklistCustomCards,
   investigatorOverlay,
   needsOverlayInvestigator,
@@ -305,7 +305,8 @@ putApiV1ArkhamGameDecksR gameId = do
 
         -- What the engine loads. The raw list is what the deck row keeps, so the overlay
         -- stays beside it rather than being folded in (see 'putApiV1ArkhamDeckOverlayR').
-        let mPlayList = (\decklist -> maybe id applyOverlay (overlayFor decklist) decklist) <$> mDecklist
+        -- A parallel front this app cannot build is dropped, so the seat plays as itself.
+        let mPlayList = (\decklist -> applySeatOverlay isKnownInvestigator (overlayFor decklist) decklist) <$> mDecklist
 
         -- A seat is owed a deck exactly while its own deck question is parked: answering
         -- drops it (and re-parks only the seats still waiting). Without this check a

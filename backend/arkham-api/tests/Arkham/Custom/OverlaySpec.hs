@@ -90,6 +90,24 @@ spec = describe "a deck built on an arkham.build placeholder" do
         meta played `shouldBe` Just raw
         getField @"investigator" played `shouldBe` InvestigatorId ownCode
 
+  -- An upgrade's fallback lays the seat's own investigator over a list whose front
+  -- this app cannot build; keeping that front would reject the upgrade (TASK-2.50 review).
+  describe "a seat's upgrade through applySeatOverlay" do
+    it "seats the base code over a parallel front this app does not know" do
+      let seat = Just (investigatorOverlay "01001")
+      decklistInvestigatorError (applyOverlay (investigatorOverlay "01001") unknownFrontDeck)
+        `shouldSatisfy` isJust
+      let played = applySeatOverlay isKnownInvestigator seat unknownFrontDeck
+      getField @"investigator" played `shouldBe` "01001"
+      decklistInvestigatorError played `shouldBe` Nothing
+      metaKeys played `shouldBe` Just ["taboo"]
+
+    it "keeps a parallel front this app knows" do
+      let played = applySeatOverlay isKnownInvestigator (Just (investigatorOverlay "01001")) parallelDeck
+      meta played `shouldBe` meta parallelDeck
+      getField @"investigator" played `shouldBe` "90024"
+      decklistInvestigatorError played `shouldBe` Nothing
+
   describe "isKnownInvestigator" do
     it "knows a printed investigator" do
       isKnownInvestigator "01001" `shouldBe` True
@@ -169,6 +187,14 @@ parallelDeck =
 
 alternateBackDeck :: ArkhamDBDecklist
 alternateBackDeck = decklist {meta = Just "{\"alternate_back\":\"90024\",\"taboo\":1}"}
+
+-- | Roland Banks with an arkham.build front nothing here registers.
+unknownFrontDeck :: ArkhamDBDecklist
+unknownFrontDeck =
+  decklist
+    { meta =
+        Just "{\"alternate_front\":\"*00000000000000000000000000000f00\",\"alternate_back\":\"01001\",\"taboo\":1}"
+    }
 
 metaKeys :: ArkhamDBDecklist -> Maybe [Text]
 metaKeys d = Map.keys <$> (decode @(Map.Map Text Value) . BL.fromStrict . encodeUtf8 =<< meta d)
