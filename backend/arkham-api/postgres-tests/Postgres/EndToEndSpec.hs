@@ -321,10 +321,59 @@ savedUpgradeSpec harness app settings unexpected source seed = describe "Saved-u
       userPushes `shouldReturn` []
       remotes <- newRemotes unexpected source
       -- The PUT ran at wall-clock time, after the fixture's clock.
+      -- With no push rows this dispatch can only confirm zero remote calls: it
+      -- guards against a hidden or untracked dispatch for either deck.
       for_ [f, fB] \target -> push foundation settings remotes.client target False 60
       MVar.readMVar remotes.calls `shouldReturn` []
       userPushes `shouldReturn` []
       associationRows `shouldReturn` initialRows
+
+  -- Positive control for the test above: the same fixture and PUT without the
+  -- older unsuffixed association. Admission then enqueues and dispatches to
+  -- the current part-key deck, so the empty-push result above comes from the
+  -- legacy-row fence and not from a broken enqueue.
+  it "pushes a saved upgrade to the currently associated deck when no older full-campaign association exists" $
+    withConnection harness \connection -> do
+      f <- fixture seed app connection "e2e-saved-upgrade-control"
+      deckB <- importDeckB app connection settings unexpected source f
+      let deckA = f.deckId
+          fB = f {deckId = deckB}
+      savedA <- transaction connection $ P.getJust deckA
+      savedB <- transaction connection $ P.getJust deckB
+      staleUrl <- maybe (fail "Deck A has no URL") pure $ arkhamDeckUrl savedA
+      let questKey = UUID.toText (coerce f.gameId) <> "/01001/dreamQuest"
+          userPushes = transaction connection $
+            map ((\job -> (arkhamDBPushCampaignKey job, arkhamDBPushDeckId job, arkhamDBPushStatus job)) . entityVal)
+              <$> P.selectList [ArkhamDBPushUserId P.==. f.uid] []
+      -- Only the current association, as a campaign-copy push would leave it.
+      transaction connection $ P.insert_ $ ArkhamDBCampaignDeck questKey deckB f.uid 0
+      let upgraded = (arkhamDeckList savedB) {Deck.slots = Map.fromList [("01006", 2), ("01007", 1)]}
+      openUpgradeWindow connection f $ dreamGame f staleUrl Dream.TheDreamQuest 4
+      executor <- newArkhamDBExecutor
+      let foundation = app {appArkhamDBWriteBackExecutor = executor}
+      upgradeRoute foundation f.uid f.gameId upgraded `shouldReturn` Right ()
+      stopArkhamDBExecutor executor
+
+      afterA <- transaction connection $ P.getJust deckA
+      afterB <- transaction connection $ P.getJust deckB
+      toJSON afterA `shouldBe` toJSON savedA
+      Deck.slots (arkhamDeckList afterB) `shouldBe` upgraded.slots
+      userPushes `shouldReturn` [(questKey, deckB, "pending")]
+      remotes <- newRemotes unexpected source
+      for_ [f, fB] \target -> push foundation settings remotes.client target False 60
+      -- Deck A has no work; deck B's push upgrades 456 and saves its upgrade 457.
+      MVar.readMVar remotes.calls `shouldReturn` ["load/456", "upgrade/456/4", "load/457", "save/457", "load/457"]
+      jobs <- pushes connection deckB
+      case jobs of
+        [job] -> do
+          arkhamDBPushCampaignKey job `shouldBe` questKey
+          arkhamDBPushStatus job `shouldBe` "succeeded"
+          payloadUrl job `shouldSatisfy` maybe False ("/456" `T.isSuffixOf`)
+          payloadSlots job `shouldSatisfy` maybe False \slots ->
+            Map.lookup "01006" slots == Just 2 && Map.lookup "01007" slots == Just 1
+        _ -> expectationFailure $ "Expected exactly one push, got " <> show (length jobs)
+      (map arkhamDBPushCampaignKey <$> pushes connection deckA) `shouldReturn` []
+      (remoteSlots remotes "457" <&> (>>= Map.lookup "01006")) `shouldReturn` Just 2
 
   it "pushes an overlay upgrade naming the owner's own custom card after a server restart" $
     withConnection harness \connection -> do
