@@ -40,6 +40,56 @@ lookupGameEvent gameId = do
     (evt, Value ordinal) : _ -> Just (evt, GroupOrdinal ordinal)
     [] -> Nothing
 
+-- | The outcome of 'reserveGroupMembership'.
+data GroupMembershipReservation
+  = -- | This call created the player's membership row for the group.
+    GroupMembershipInserted
+  | -- | The player already held a membership row for this same group.
+    GroupMembershipExisting
+  | {- | The player's membership row names a different group (the stored
+    ordinal is carried), or has no group (@Nothing@), so they may not take a
+    seat in this one.
+    -}
+    GroupMembershipInOtherGroup (Maybe Int)
+  deriving stock (Eq, Show)
+
+{- | Reserve the player's one group in an event before they take a seat in it.
+
+A player may occupy seats in only one group of an event. The row is written
+with @INSERT ... ON CONFLICT DO NOTHING@ on the members' unique key, so two
+concurrent seat takers in different groups cannot both create a row: the
+second waits for the first and then reads the committed row back. It does not
+lock the event row, so it adds no lock-order edge beyond game-then-event.
+
+A membership row with no group ordinal is not this group, matching the pending
+join check. Nothing is thrown: the caller decides how to refuse, and rolls the
+transaction back when it does.
+-}
+reserveGroupMembership
+  :: MonadIO m
+  => ArkhamEpicEventId
+  -> UserId
+  -> GroupOrdinal
+  -> ReaderT SqlBackend m GroupMembershipReservation
+reserveGroupMembership eid userId (GroupOrdinal ordinal) = do
+  inserted <-
+    rawExecuteCount
+      "INSERT INTO arkham_epic_members (arkham_epic_event_id, user_id, role, group_ordinal) \
+      \VALUES (?, ?, ?, ?) \
+      \ON CONFLICT (arkham_epic_event_id, user_id, role) DO NOTHING"
+      [ toPersistValue eid
+      , toPersistValue userId
+      , toPersistValue GroupPlayer
+      , toPersistValue (Just ordinal)
+      ]
+  mMember <- P.getBy (UniqueEpicMember eid userId GroupPlayer)
+  pure $ case arkhamEpicMemberGroupOrdinal . entityVal <$> mMember of
+    Just (Just stored)
+      | stored == ordinal ->
+          if inserted > 0 then GroupMembershipInserted else GroupMembershipExisting
+    Just stored -> GroupMembershipInOtherGroup stored
+    Nothing -> GroupMembershipInOtherGroup Nothing
+
 {- | Build a per-action 'EpicEnv': the current shared state in an 'IORef' plus an
 empty delta buffer that the run loop appends to.
 -}
