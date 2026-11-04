@@ -1,0 +1,728 @@
+{
+  "schemaVersion": "1.0.0",
+  "locale": "pl",
+  "fallback": "en",
+  "pack": "cardNames",
+  "entries": {
+    "cardNames.01001": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Roland Banks"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01001b": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Roland Banks"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01002": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Daisy Walker"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01003": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "\"Ślizg\" O'Toole"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01004": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Agnes Baker"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01005": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Wendy Adams"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01101": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Mafijny egzekutor długów"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01102": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Akolita Srebrnego Świtu"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01103": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Uparty detektyw"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01111": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Gabinet"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01112": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Hol"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01113": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Strych"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01114": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Piwnica"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01115": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Salon"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01116": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Kapłan ghouli"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01117": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Lita Chantler"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01118": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Pożeracz ciał"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01119": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Lodowy Ghoul"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01121": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Myśliwy czy zwierzyna?"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01121b": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Zamaskowany łowca"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01124": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Twój dom"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01125": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Rivertown"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01126": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Southside"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01127": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Southside"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01128": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Szpital św Marii"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01129": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Uniwersytet Miskatonic"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01130": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Downtown"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01131": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Downtown"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01132": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Easttown"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01133": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Cmentarz"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01134": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Northside"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01135": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Prześladujący cień"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01136": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Fałszywy trop"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01137": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Drew \"Człowiek-wilk\""
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01138": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Herman Collins"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01139": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Peter Warren"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01140": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Victoria Devereux"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01141": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Ruth Turner"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01149": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Główna ścieżka"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01150": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Lasy Arkham"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01151": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Lasy Arkham"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01152": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Lasy Arkham"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01153": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Lasy Arkham"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01154": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Lasy Arkham"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01155": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Lasy Arkham"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01156": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Miejsce rytuału"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01157": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Umôrdhoth"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01158": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Gniew Umôrdhotha"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01159": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Rój szczurów"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01160": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Ghoul sługus"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01161": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Wygłodniały ghoul"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01162": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Chwytające dłonie"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01163": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Gnijące szczątki"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01164": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Sparaliżowany ze strachu"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01165": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Kakofonia głosów"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01166": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Pradawne zło"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01167": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Grobowy chłód"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01168": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Gęsta mgła"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01169": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Akolita"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01170": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Czarownik bractwa"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01171": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Tajemnicze pieśni"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01172": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Polujące Skrzydlate Dziecię Nocy"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01173": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Na skrzydłach ciemności"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01174": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Zamknięte drzwi"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01175": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Wrzeszczący Byakhee"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01176": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Żółty Znak"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01177": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Yithian obserwator"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01178": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Oferta potęgi"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01179": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Nieustępliwe Mroczne Młode"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01180": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Kozi pomiot"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01181": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Młoda Istota z Głębin"
+        }
+      ],
+      "variables": []
+    },
+    "cardNames.01182": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "Sny o R'lyeh"
+        }
+      ],
+      "variables": []
+    }
+  }
+}
