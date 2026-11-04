@@ -73,6 +73,10 @@ CLEAN_CLONE_PREFIXES = (
     "contracts/",
 )
 CLEAN_CLONE_PATTERNS = (re.compile(r"frontend/public/cards_[a-z]{2}(?:-[a-z]{2})?\.json"),)
+# Catalog locales whose card file has another name: the web's Portuguese card
+# data is cards_po.json, published as the card-only locale pt. Keep in step
+# with CARD_ONLY_LOCALES in frontend/scripts/locale-catalog/card-names.mjs.
+CARD_SOURCE_ALIASES = {"pt": "po"}
 CLEAN_CLONE_FILES = (
     "frontend/package.json",
     "frontend/package-lock.json",
@@ -876,9 +880,11 @@ def validate_provenance(provenance_path: Path, manifest: dict, tracked: set[str]
         covered.add(schema.relative_to(ROOT).as_posix())
     for generator in (FRONTEND / "scripts" / "locale-catalog").glob("*.mjs"):
         covered.add(generator.relative_to(ROOT).as_posix())
-    # Each catalog locale's card data feeds its cardNames pack.
+    # Each catalog locale's card data feeds its cardNames pack. The card-only
+    # pt locale reads cards_po.json (CARD_ONLY_LOCALES in card-names.mjs).
     for locale in manifest["locales"]:
-        covered.add(f"frontend/public/cards_{locale['locale'].lower()}.json")
+        tag = locale["locale"].lower()
+        covered.add(f"frontend/public/cards_{CARD_SOURCE_ALIASES.get(tag, tag)}.json")
 
     for relative in sorted(covered):
         require(relative in tracked, f"{relative} is not tracked by git")

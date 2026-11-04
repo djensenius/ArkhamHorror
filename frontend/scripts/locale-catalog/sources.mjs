@@ -72,8 +72,8 @@ function homebrewSourceFiles(frontendDir) {
 /**
  * Every committed file the generated catalog is derived from, path-sorted.
  *
- * `cardLocales` adds each locale's `public/cards_<locale>.json`, the card data
- * the `cardNames` pack is resolved from (see card-names.mjs).
+ * `cardLocales` adds each catalog locale's card file (`cardSourcePath`), the
+ * card data the `cardNames` pack is resolved from (see card-names.mjs).
  */
 export function collectSourceFiles(frontendDir, cardLocales = []) {
   const files = []
