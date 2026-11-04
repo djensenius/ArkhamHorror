@@ -134,6 +134,8 @@ spec harness app settings unexpected source seed = describe "Dream-Eaters end-to
       let gameKey = UUID.toText (coerce f.gameId) <> "/01001"
           questKey = gameKey <> "/dreamQuest"
           webKey = gameKey <> "/webOfDreams"
+      -- These rows stand in for the associations earlier campaign-copy pushes
+      -- would have created: each team's part key already names its own deck.
       transaction connection do
         P.insert_ $ ArkhamDBCampaignDeck questKey deckA f.uid 0
         P.insert_ $ ArkhamDBCampaignDeck webKey deckB f.uid 0
@@ -158,15 +160,24 @@ spec harness app settings unexpected source seed = describe "Dream-Eaters end-to
       map (\job -> (arkhamDBPushCampaignKey job, arkhamDBPushStatus job)) questJobs `shouldBe` [(questKey, "pending")]
       (map arkhamDBPushCampaignKey <$> pushes connection deckB) `shouldReturn` []
       pushBoth 0
+      -- The full ordered call list: team A's push touches only 123 and its
+      -- upgrade 124; deck B has no work yet and makes no remote call.
+      MVar.readMVar remotes.calls `shouldReturn`
+        ["load/123", "upgrade/123/6", "load/124", "save/124", "load/124"]
 
       answerWith (dreamGame f staleUrl Dream.TheWebOfDreams 5) 3
       webJobs <- pushes connection deckB
       map (\job -> (arkhamDBPushCampaignKey job, arkhamDBPushStatus job)) webJobs `shouldBe` [(webKey, "pending")]
       map arkhamDBPushCampaignKey <$> pushes connection deckA `shouldReturn` [questKey]
       pushBoth 60
-
-      filter (T.isPrefixOf "upgrade/") <$> MVar.readMVar remotes.calls `shouldReturn`
-        ["upgrade/123/6", "upgrade/456/3"]
+      -- Team B's round upgrades and saves only 456 and its upgrade 457. Its
+      -- single read of 124 is runWriteBack's ownedElsewhere scan: before
+      -- upgrading, it walks deck A's now campaign-bound chain (read-only) to
+      -- prove 456 is not owned by another campaign. Deck A's finished push
+      -- makes no further remote call of any kind.
+      MVar.readMVar remotes.calls `shouldReturn`
+        [ "load/123", "upgrade/123/6", "load/124", "save/124", "load/124"
+        , "load/456", "load/124", "upgrade/456/3", "load/457", "save/457", "load/457" ]
       finalA <- pushes connection deckA
       finalB <- pushes connection deckB
       for_ [(finalA, deckA, questKey, "/123", 6), (finalB, deckB, webKey, "/456", 3)]
