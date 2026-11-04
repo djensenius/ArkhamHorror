@@ -36,7 +36,9 @@ Set MISE_ENV=haskell and the lane's libpq/pcre environment before invoking it.
 Build outside the launcher: its default command deadline is 180 seconds.
 PostgreSQL server binaries must be on PATH or in ARKHAM_TEST_PG_BIN/--pg-bin.
 Use one server installation, not the client-only Homebrew libpq bin/.
-No Docker daemon, pre-existing database, TCP listener, or live URL is used.
+No Docker daemon, pre-existing database, PostgreSQL TCP listener, or live URL
+is used. The public deck sync test binds its own loopback (127.0.0.1) HTTP
+fixture on a random port; an ambient http_proxy/HTTP_PROXY fails that test.
 
 Manifest edits require regeneration with native Hpack 0.39.6:
   cd backend

@@ -19,6 +19,7 @@ import Arkham.ArkhamDB.WriteBack
 import Arkham.ArkhamDB.Service
 import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Decklist (ArkhamDBDecklist (..))
+import Arkham.Decklist qualified as Decklist
 import Control.Concurrent.MVar qualified as MVar
 import Control.Exception (throwIO)
 import Data.Aeson (Value (Bool), decode, encode, object, toJSON, (.=))
@@ -37,6 +38,8 @@ import Entity.User (UserId)
 import Foundation (App (appMaintenance), Handler, unsafeHandler)
 import GHC.Clock (getMonotonicTime)
 import Network.HTTP.Types (Status, status200, status400, status401, status404, status405, status409, status502, status503)
+import Network.Wai (rawPathInfo, requestMethod, responseLBS)
+import Network.Wai.Handler.Warp qualified as Warp
 import Postgres.Harness
 import Postgres.HarnessSpec qualified as Harness
 import Postgres.DispatchSpec qualified as DispatchSQL
@@ -49,6 +52,7 @@ import Postgres.Production
 import Postgres.WriteBackSpec qualified as WriteBackSQL
 import Relude hiding (first, second)
 import Settings (ArkhamDBSettings (..))
+import System.Environment qualified as Environment
 import System.Timeout (timeout)
 import Test.Hspec
 import UnliftIO.Async (link, wait, withAsync)
@@ -686,17 +690,18 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
         attached <- expectSaved connection deckId =<< overlayRoute app uid deckId (Just $ toStrict $ encode overlay)
         attachment <- maybe (fail "Expected the PUT to assign an attachment id") pure $
           arkhamDeckOverlayAttachmentId attached
-        result <- if public
-          then unsafeHandler app $ runSqlConn (savePublicSyncedDeck uid deckId incoming.deck) connection
-          else runStoreActionsWith validatePlayableDecklist app connection \store ->
-            runExceptT $ syncRemoteDeck store syncingClient settings now uid deckId forbiddenPublic
-        synced <- either (fail . show) pure result
+        (expected, synced) <- if public
+          then publicSyncRoute app connection uid deckId incoming.deck <&> \(deckUrl, saved) ->
+            (toJSON incoming.deck {Decklist.url = Just deckUrl}, saved)
+          else do
+            result <- runStoreActionsWith validatePlayableDecklist app connection \store ->
+              runExceptT $ syncRemoteDeck store syncingClient settings now uid deckId forbiddenPublic
+            (toJSON $ remoteDecklist settings incoming,) . P.entityVal <$> either (fail . show) pure result
         persisted <- transaction connection (P.getJust deckId)
-        toJSON (arkhamDeckList persisted) `shouldBe`
-          toJSON (if public then incoming.deck else remoteDecklist settings incoming)
+        toJSON (arkhamDeckList persisted) `shouldBe` expected
         arkhamDeckOverlay persisted `shouldBe` Just overlay
         arkhamDeckOverlayAttachmentId persisted `shouldBe` Just attachment
-        arkhamDeckOverlayAttachmentId (P.entityVal synced) `shouldBe` Just attachment
+        arkhamDeckOverlayAttachmentId synced `shouldBe` Just attachment
 
   for_ [False, True] \public ->
     it ("consumes incorporated overlay provenance through actual " <> (if public then "public" else "linked") <> " sync") $
@@ -716,16 +721,46 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
           (\store -> runExceptT $ importRemoteDeck store initialClient settings now uid "123" forbiddenPublic)
         transaction connection $ P.update deckId
           [ArkhamDeckOverlay P.=. Just overlay, ArkhamDeckOverlayAttachmentId P.=. Just attachment]
-        result <- if public
-          then unsafeHandler app $ runSqlConn (savePublicSyncedDeck uid deckId incoming.deck) connection
-          else runStoreActionsWith validatePlayableDecklist app connection \store ->
-            runExceptT $ syncRemoteDeck store syncingClient settings now uid deckId forbiddenPublic
-        saved <- either (fail . show) pure result
+        saved <- if public
+          then snd <$> publicSyncRoute app connection uid deckId incoming.deck
+          else do
+            result <- runStoreActionsWith validatePlayableDecklist app connection \store ->
+              runExceptT $ syncRemoteDeck store syncingClient settings now uid deckId forbiddenPublic
+            P.entityVal <$> either (fail . show) pure result
         persisted <- transaction connection (P.getJust deckId)
         arkhamDeckOverlay persisted `shouldBe` Nothing
         arkhamDeckOverlayAttachmentId persisted `shouldBe` Nothing
         slots (arkhamDeckPlayList persisted) `shouldBe` Map.singleton "01007" 1
-        toJSON persisted `shouldBe` toJSON (P.entityVal saved)
+        toJSON persisted `shouldBe` toJSON saved
+
+  it "refuses public deck sync through WAI without a token, for another user, without a url, or off-route" $
+    withConnection harness \connection -> do
+      owner <- seedUser connection "public-sync-route-owner"
+      stranger <- seedUser connection "public-sync-route-stranger"
+      let deck = ArkhamDeck owner (Just "http://127.0.0.1:9/decklist.json") "Roland Banks" "Public sync routes"
+            remote.deck Nothing Nothing Nothing
+          snapshot deckId = transaction connection (P.getJust deckId) <&> \d -> (toJSON d, arkhamDeckOverlayAttachmentId d)
+          errorBody message = Just $ object ["errorMsg" .= (message :: Text)]
+      deckId <- transaction connection $ P.insert deck
+      unlinked <- transaction connection $ P.insert deck {arkhamDeckUrl = Nothing}
+      ownerToken <- authorizationFor app owner
+      strangerToken <- authorizationFor app stranger
+      original <- snapshot deckId
+      originalUnlinked <- snapshot unlinked
+      -- Every refusal happens before any fetch: the url's discard port is never dialled.
+      for_ [([], deckId, "/sync", status401), ([("Authorization", "Token not-a-jwt")], deckId, "/sync", status401), ([ownerToken], deckId, "/syncs", status404)]
+        \(headers, target, path, expected) -> do
+          (status, _) <- routeRequest app "POST" (deckPath target path) headers ""
+          (path, status) `shouldBe` (path, expected)
+      (getStatus, _) <- routeRequest app "GET" (deckPath deckId "/sync") [ownerToken] ""
+      getStatus `shouldBe` status405
+      (foreignStatus, foreignBody) <- routeRequest app "POST" (deckPath deckId "/sync") [strangerToken] ""
+      (foreignStatus, decode @Value foreignBody) `shouldBe` (status400, errorBody "Deck does not belong to this user")
+      (urlStatus, urlBody) <- routeRequest app "POST" (deckPath unlinked "/sync") [ownerToken] ""
+      (urlStatus, decode @Value urlBody) `shouldBe` (status400, errorBody
+        "This deck was not imported from a url, so there is nothing to sync from. Point it at one first.")
+      snapshot deckId `shouldReturn` original
+      snapshot unlinked `shouldReturn` originalUnlinked
 
   it "rejects overlay removal that would expose unsupported base cards without changing the saved deck" $
     withConnection harness \connection -> do
@@ -1123,6 +1158,29 @@ overlayRoute app uid deckId body = do
   authorization <- authorizationFor app uid
   routeRequest app (maybe "DELETE" (const "PUT") body) (deckPath deckId "/overlay")
     (authorization : [("Content-Type", "application/json") | isJust body]) (maybe "" toLazy body)
+
+-- The JWT-authenticated public deck sync (POST /decks/<id>/sync) through the
+-- production WAI application. The deck's stored url is pointed at a loopback
+-- HTTP fixture serving the decklist, so the handler's real fetch (getDeckList
+-- -> simpleHttp for a non-arkham.build url) reads it; exactly one GET must
+-- arrive. Returns the fetch url and the committed row.
+publicSyncRoute :: App -> SqlBackend -> UserId -> ArkhamDeckId -> ArkhamDBDecklist -> IO (Text, ArkhamDeck)
+publicSyncRoute app connection uid deckId served = do
+  -- http-client would send a plain-http fetch through an ambient proxy.
+  proxies <- traverse (\name -> (name,) <$> Environment.lookupEnv name) ["http_proxy", "HTTP_PROXY"]
+  filter (isJust . snd) proxies `shouldBe` []
+  fetches <- newIORef []
+  let fixture request respond = do
+        atomicModifyIORef' fetches \seen -> (seen <> [(requestMethod request, rawPathInfo request)], ())
+        respond $ responseLBS status200 [("Content-Type", "application/json")] $ encode served
+  Warp.testWithApplication (pure fixture) \port -> do
+    let deckUrl = "http://127.0.0.1:" <> show port <> "/decklist.json"
+    transaction connection $ P.update deckId [ArkhamDeckUrl P.=. Just deckUrl]
+    authorization <- authorizationFor app uid
+    saved <- expectSaved connection deckId =<< routeRequest app "POST" (deckPath deckId "/sync") [authorization] ""
+    readIORef fetches `shouldReturn` [("GET", "/decklist.json")]
+    arkhamDeckUrl saved `shouldBe` Just deckUrl
+    pure (deckUrl, saved)
 
 -- A 200 response whose JSON is exactly the committed row (ToJSON omits the
 -- private attachment id, so callers read that from the returned row).
