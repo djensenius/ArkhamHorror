@@ -487,10 +487,12 @@ skipArkhamDBLogging logWare app req sendResponse
 -- Fail-closed backstop for skipArkhamDBLogging: skip logging an irregular path
 -- that mentions a credential route name anywhere, whatever a proxy would
 -- normalise it to. Irregular: a decoded segment other than a single trailing
--- empty one is "", "." or "..", or contains ';', '/', '\\' or '%'. Mentions:
+-- empty one is "", "." or "..", or contains ';', '/', '\\', '%' or U+FFFD.
+-- U+FFFD is what lenient UTF-8 decoding leaves of an overlong separator such
+-- as "%C0%AF", which a broken proxy could still read as '/'. Mentions:
 -- after percent-decoding the raw path until it stops changing (at most 8
--- rounds, to catch double encoding), casefolding, splitting on '/' and '\\'
--- and cutting at ';', some piece is exactly a credential route name. Exact
+-- rounds, to catch double encoding), casefolding, splitting on '/', '\\' and
+-- U+FFFD and cutting at ';', some piece is exactly a credential route name. Exact
 -- pieces keep "arkhamdb-other" or "arkham-builder" logged. Such requests are
 -- 404s or redirects, so over-excluding them never hides a handled request.
 isIrregularCredentialPath :: [Text] -> ByteString -> Bool
@@ -501,11 +503,13 @@ isIrregularCredentialPath decodedSegments rawPath = irregular && mentionsCredent
     _ -> decodedSegments
   irregular = any irregularSegment segments
   irregularSegment segment =
-    segment `elem` ["", ".", ".."] || T.any (`elem` [';', '/', '\\', '%']) segment
+    segment `elem` ["", ".", ".."] || T.any (`elem` ([';', '%'] <> separators)) segment
+  -- Shared by both checks so an irregular separator is always a split point.
+  separators = ['/', '\\', '\xFFFD']
   mentionsCredentialName =
     any (`elem` ["arkhamdb", "arkham-build"])
       $ map (T.takeWhile (/= ';'))
-      $ T.split (`elem` ['/', '\\'])
+      $ T.split (`elem` separators)
       $ T.toCaseFold (decodeUtf8 (fullyDecoded (8 :: Int) rawPath))
   fullyDecoded rounds path
     | rounds <= 0 || decoded == path = path
