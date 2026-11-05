@@ -510,7 +510,7 @@ postApiV1ArkhamEventReadyR eid = do
     let
       nowEpoch = floor (utcTimeToPOSIXSeconds now) :: Int
       fullMask = (1 `shiftL` numGroups) - 1
-    newState <- runDB $ modifySharedStateLocked eid \s ->
+    mNewState <- runDB $ modifySharedStateLocked eid \s ->
       let
         mask' = sharedCounter GroupsReadyMask s .|. (1 `shiftL` ordinal)
         s' = setSharedCounter GroupsReadyMask mask' s
@@ -518,7 +518,8 @@ postApiV1ArkhamEventReadyR eid = do
         if mask' == fullMask && sharedCounter TimerStartedAt s == 0
           then setSharedCounter TimerStartedAt nowEpoch s'
           else s'
-    broadcastSharedToEvent eid newState
+    -- The event was deleted after the membership check.
+    maybe notFound (broadcastSharedToEvent eid) mNewState
 
 {- | Organizer-mediated excess-clue distribution on a shared act advance. The
 coordinator has gated the stage with @AwaitingOrganizer stage == 1@; the organizer
@@ -591,8 +592,9 @@ postApiV1ArkhamEventReplicateR eid = do
     gameId
 
 {- | Swap two groups' readied Main Street investigators (organizer only). A
-missing event is 404 before any organizer check, as for deletion. A refused
-swap changes nothing: a missing group or game is 404, anything else is
+missing event is 404 before any organizer check, as for deletion. The swap
+commits as one unit ('swapMainStreetInvestigators'). A refused swap changes
+nothing: a missing event, group or game is 404, anything else is
 'mainStreetSwapErrorStatus' with a stable @{"error": code}@ body.
 -}
 postApiV1ArkhamEventSwapMainStreetR :: ArkhamEpicEventId -> Handler ()
@@ -609,14 +611,15 @@ postApiV1ArkhamEventSwapMainStreetR eid = do
       | otherwise -> sendStatusJSON errorStatus $ object ["error" .= code]
 
 {- | The status and stable error code for a refused Main Street swap: 400 for a
-malformed request, 404 for a group or game that does not exist, 409 for groups
-not ready to swap (@main-street-not-ready@) or whose readiness no longer holds
-(@main-street-stale@).
+malformed request, 404 for an event, group or game that does not exist, 409 for
+groups not ready to swap (@main-street-not-ready@, including a readiness that
+an earlier swap spent) or whose readiness no longer holds (@main-street-stale@).
 -}
 mainStreetSwapErrorStatus :: MainStreetSwapError -> (Status.Status, Text)
 mainStreetSwapErrorStatus = \case
   SwapSameGroup -> (Status.status400, "main-street-same-group")
   SwapBadOrdinal _ -> (Status.status400, "main-street-bad-group")
+  SwapEventMissing -> (Status.status404, "main-street-event-missing")
   SwapGroupMissing _ -> (Status.status404, "main-street-group-missing")
   SwapGroupHasNoGame _ -> (Status.status404, "main-street-game-missing")
   SwapGameMissing _ -> (Status.status404, "main-street-game-missing")

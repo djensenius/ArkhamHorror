@@ -5,11 +5,21 @@ import Api.Handler.Arkham.Games.Shared (
   MainStreetSwapError (..),
   MainStreetSwapPlan (..),
   MainStreetSwapSide (..),
+  clearMainStreetReady,
+  mainStreetSwapSide,
   planMainStreetSwap,
+  requireMainStreetReady,
   resolveSwapGames,
  )
 import Arkham.Classes.Entity (attr, overAttrs)
-import Arkham.Epic.Types (GroupOrdinal (..))
+import Arkham.Difficulty (Difficulty (Easy))
+import Arkham.Epic.Types (
+  GroupOrdinal (..),
+  SharedKey (MainStreetReady),
+  emptySharedEventState,
+  setSharedCounter,
+ )
+import Arkham.Game (newScenario, setInitialScenarioMeta)
 import Arkham.Id (InvestigatorId, LocationId (..), PlayerId (..))
 import Arkham.Investigator (lookupInvestigator)
 import Arkham.Investigator.Types (Investigator, investigatorPlacement)
@@ -118,12 +128,37 @@ spec = do
       planMainStreetSwap firstSide (movedTo Unplaced)
         `shouldBe` Left (SwapInvestigatorMoved (GroupOrdinal 1))
 
+  describe "requireMainStreetReady" do
+    let ready ordinals =
+          foldr
+            (\o -> setSharedCounter (MainStreetReady (GroupOrdinal o)) 1)
+            (emptySharedEventState 2)
+            ordinals
+    it "accepts two groups whose readiness is still unspent" do
+      requireMainStreetReady (ready [0, 1]) (GroupOrdinal 0) (GroupOrdinal 1) `shouldBe` Right ()
+
+    it "refuses a group whose readiness is spent or was never raised" do
+      requireMainStreetReady (ready [1]) (GroupOrdinal 0) (GroupOrdinal 1)
+        `shouldBe` Left (SwapNotReady (GroupOrdinal 0))
+      requireMainStreetReady (ready [0]) (GroupOrdinal 0) (GroupOrdinal 1)
+        `shouldBe` Left (SwapNotReady (GroupOrdinal 1))
+      requireMainStreetReady (ready []) (GroupOrdinal 1) (GroupOrdinal 0)
+        `shouldBe` Left (SwapNotReady (GroupOrdinal 1))
+
+  describe "clearMainStreetReady" do
+    it "forgets the investigator the scenario readied at Main Street" do
+      let readied = setInitialScenarioMeta "mainStreetReady" roland $ newScenario "85001" 1 2 Easy False
+      mainStreetSideReady (mainStreetSwapSide (GroupOrdinal 0) readied) `shouldBe` Just roland
+      mainStreetSideReady (mainStreetSwapSide (GroupOrdinal 0) (clearMainStreetReady readied))
+        `shouldBe` Nothing
+
   describe "mainStreetSwapErrorStatus" do
     it "maps every refusal to a stable 4xx status and code" do
       map
         mainStreetSwapErrorStatus
         [ SwapSameGroup
         , SwapBadOrdinal (-1)
+        , SwapEventMissing
         , SwapGroupMissing (GroupOrdinal 2)
         , SwapGroupHasNoGame (GroupOrdinal 1)
         , SwapGameMissing gameA
@@ -134,6 +169,7 @@ spec = do
         ]
         `shouldBe` [ (Status.status400, "main-street-same-group")
                    , (Status.status400, "main-street-bad-group")
+                   , (Status.status404, "main-street-event-missing")
                    , (Status.status404, "main-street-group-missing")
                    , (Status.status404, "main-street-game-missing")
                    , (Status.status404, "main-street-game-missing")
