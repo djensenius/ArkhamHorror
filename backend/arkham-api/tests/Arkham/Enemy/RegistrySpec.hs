@@ -2,7 +2,7 @@ module Arkham.Enemy.RegistrySpec (spec) where
 
 import Arkham.Enemy.CardDefs.Standalone qualified as Enemies
 import Arkham.Enemy.Types (allEnemyCards)
-import Arkham.Matcher (enemyIsExact)
+import Arkham.Matcher (EnemyMatcher (EnemyWithId), enemyIsExact)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.UUID (nil)
@@ -32,6 +32,15 @@ spec = describe "enemy registry" do
       ]
       `shouldBe` []
 
+  -- Each allowlisted code must still be a def without a builder; once either
+  -- stops being true the entry is stale and has to go.
+  it "keeps the unbuilt allowlist current" $ io do
+    [ code
+      | code <- Set.toList knownUnbuilt
+      , not (Map.member code allEnemyCards) || Map.member code allEnemies
+      ]
+      `shouldBe` []
+
   it "spawns a Replicating Aberration in The Blob That Ate Everything"
     . scenarioTest "85001"
     $ \self -> do
@@ -42,6 +51,29 @@ spec = describe "enemy registry" do
         $ toJSON (toCardCode Enemies.replicatingAberrationB, toTarget location)
       -- Exact: plain enemyIs would also accept the other sides of 89010.
       assertAny $ enemyIsExact Enemies.replicatingAberrationB
+
+  -- Only Replicating Aberration A discards the enemy it replicates. B is a
+  -- distinct card even though Eq CardCode pairs "89010b" with "89010a".
+  it "discards the replicated enemy only for Replicating Aberration A"
+    . scenarioTest "85001"
+    $ \self -> do
+      location <- testLocation
+      self `moveTo` location
+      replicatedByB <- testEnemy
+      replicatedByB `spawnAt` location
+      run
+        $ ScenarioSpecific "blobSpawnAberration"
+        $ toJSON (toCardCode Enemies.replicatingAberrationB, toTarget replicatedByB)
+      assertAny $ enemyIsExact Enemies.replicatingAberrationB
+      assertAny $ EnemyWithId replicatedByB.id
+
+      replicatedByA <- testEnemy
+      replicatedByA `spawnAt` location
+      run
+        $ ScenarioSpecific "blobSpawnAberration"
+        $ toJSON (toCardCode Enemies.replicatingAberrationA, toTarget replicatedByA)
+      assertAny $ enemyIsExact Enemies.replicatingAberrationA
+      assertNone $ EnemyWithId replicatedByA.id
 
 -- TestImport's expectations are lifted; pin the plain hspec examples to IO.
 io :: IO () -> IO ()

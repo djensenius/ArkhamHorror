@@ -279,9 +279,11 @@ simply is not registered).  Each mode is handed the whole right-hand side and
 decides how much of it has to match, so a helper such as
 @permanent :: CardDef -> CardDef@ is not mistaken for a definition.
 
-A signature may also name several builders at once (@foo, bar :: EnemyCard X@,
-including the fourmolu-wrapped form below); it yields one entry per name, and
-only if every name is a valid builder. -}
+A signature may also name several builders at once, either on one line
+(@foo, bar :: EnemyCard X@) or in fourmolu's leading-comma layout below; it
+yields one entry per name, and only if every name is a valid builder.  Other
+layouts (trailing commas, for instance) are not recognised and, like any other
+unrecognised declaration, are skipped. -}
 readHomebrewEntries :: HomebrewSpec -> Module -> IO [HomebrewEntry]
 readHomebrewEntries spec mod' = do
   source <- readFile $ modulePath mod'
@@ -353,7 +355,7 @@ readHomebrewEntries spec mod' = do
   isIdentChar x = isAlphaNum x || x == '_' || x == '\''
 
   validBuilder [] = False
-  validBuilder (c : cs) = isLower c && all (\x -> isAlphaNum x || x == '_' || x == '\'') cs
+  validBuilder (c : cs) = isLower c && all isIdentChar cs
 
   trim = dropWhileEnd isSpace . dropWhile isSpace
 
