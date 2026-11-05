@@ -9843,6 +9843,7 @@ test-suite arkhamdb-postgres
       Postgres.ArchiveSpec
       Postgres.ClaimSeatSpec
       Postgres.ConcurrencySpec
+      Postgres.CustomCardArtSpec
       Postgres.DeleteSpec
       Postgres.DispatchSpec
       Postgres.EndToEndSpec
@@ -9951,6 +9952,7 @@ test-suite spec
       Arkham.Api.ArkhamDBSpec
       Arkham.Api.ArkhamDBWriteBackSpec
       Arkham.Api.CampaignCatalogSpec
+      Arkham.Api.CustomCardArtUploadSpec
       Arkham.Api.Events.EventCreationSpec
       Arkham.Api.Events.EventDeletionSpec
       Arkham.Api.Events.EventListSpec
