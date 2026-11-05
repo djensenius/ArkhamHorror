@@ -17,11 +17,15 @@ by a committed, narrative-free authority file under
     locale-catalog-chunk-<sha256>.json   the rendered chunks, content-addressed
     locale-catalog-manifest.json         the v1 manifest, derived from the above
 
-`generatorSha256` and `schemasSha256` are the digests of the *real* inputs --
-every repository-local module this generator executes (its own bytes plus the
-`scripts/` import closure, `strict_json` included) and the published v1 schemas
--- rather than of a committed description of them, so editing any of them
-really does move the catalog revision, as it does in production.
+`schemasSha256` is the digest of the *real* published v1 schemas, so editing
+them really does move the catalog revision. `generatorSha256` is derived from
+the generator's identity alone -- its schema-pinned name and
+`GENERATOR_VERSION` -- so editing tooling (this script, its `scripts/` import
+closure, the launchers, mise.toml, the workflows, the Dockerfile, ...) never
+reaches governed bytes and never forces a contract revision bump. Those tooling
+bytes are pinned instead by the non-governed, committed
+`scripts/locale_catalog_tooling_lock.json`, which `--check` requires to match
+exactly (see `tooling_lock_bytes()`).
 
 Every digest, count, path, `outputSha256` and provenance value in that manifest
 is *computed here* from those bytes -- nothing is asserted by hand. `--check`
@@ -64,15 +68,18 @@ CAPABILITIES_FIXTURES = (
 )
 CATALOG_SCHEMA_DIR = ROOT / "frontend" / "schemas" / "locale-catalog" / "v1"
 
-# The generator's own sources and the schema set it renders against, hashed as
-# themselves rather than described by a committed stand-in: `generatorSha256`
-# is the digest of every repository-local module this script executes (see
-# `generator_sources()`), `schemasSha256` the digest of the published v1
-# schemas. Editing either changes the catalog revision, which is exactly what
-# the production generator's provenance means -- and is why a change to this
-# script is followed by `mise run contracts:catalog-fixture-write`.
+# The generator's own sources and execution environment (see
+# `generator_sources()`) are tooling: their per-file digests live in the
+# non-governed TOOLING_LOCK, checked by `--check`, so a tooling edit moves that
+# reviewed lock rather than a governed contract hash. `schemasSha256` stays the
+# digest of the published v1 schemas, so a schema edit still changes the
+# catalog revision. `generatorSha256` is derived from the generator name and
+# GENERATOR_VERSION only (see `derive_generator_sha256()`); bump
+# GENERATOR_VERSION when a generator change alters what the fixture means.
 GENERATOR_ENTRY = "scripts/build-locale-catalog-fixture.py"
 RUNTIME_PROFILE = "scripts/locale_catalog_python_runtime.json"
+TOOLING_LOCK = "scripts/locale_catalog_tooling_lock.json"
+TOOLING_LOCK_FORMAT_VERSION = 1
 GENERATOR_EXECUTION_SOURCES = (
     "mise.toml",
     "pyproject.toml",
@@ -590,6 +597,87 @@ def read_repository_files(relative_paths: tuple[str, ...]) -> list[tuple[str, by
     return entries
 
 
+def derive_generator_sha256(generator_name: str, generator_version: str) -> str:
+    """The fixture's `generatorSha256`: a reproducible digest of the generator's
+    identity, spelled as `derive_provenance_sha256` spells it. No tooling file
+    contents reach it, so a tooling edit cannot move governed bytes; the
+    tooling is pinned by TOOLING_LOCK instead.
+    """
+    return sha256_hex(f"{generator_name}@{generator_version}".encode("utf-8"))
+
+
+def tooling_lock_bytes(entries: list[tuple[str, bytes]]) -> bytes:
+    """The exact committed bytes TOOLING_LOCK must hold for these tooling
+    files: a sorted path -> sha256 map plus a format version, in this
+    script's one canonical JSON spelling with a trailing newline.
+    """
+    paths = [path for path, _ in entries]
+    require(len(paths) == len(set(paths)), f"{TOOLING_LOCK} inputs name a path twice")
+    return canonical_bytes(
+        {
+            "formatVersion": TOOLING_LOCK_FORMAT_VERSION,
+            "files": {path: sha256_hex(data) for path, data in sorted(entries)},
+        }
+    )
+
+
+def tooling_lock_failure(expected: bytes, found: bytes | None) -> str | None:
+    """Compare the committed lock against the tooling's actual digests,
+    returning a failure message that names TOOLING_LOCK (and prints the
+    expected bytes, for a reviewed hand update) rather than raising, so the
+    self-tests can drive this exact comparison over mutated locks.
+    """
+    if found == expected:
+        return None
+    detail = "the file is missing or not a regular file"
+    if found is not None:
+        try:
+            committed = strict_json.strict_json_loads(found, source=TOOLING_LOCK)
+        except strict_json.StrictJSONError as error:
+            committed = None
+            detail = f"it is not strict JSON ({error})"
+        if committed is not None:
+            wanted = json.loads(expected)
+            if not (
+                isinstance(committed, dict)
+                and set(committed) == {"formatVersion", "files"}
+                and committed["formatVersion"] == wanted["formatVersion"]
+                and isinstance(committed["files"], dict)
+            ):
+                detail = f"it is not a format-version {wanted['formatVersion']} tooling lock"
+            else:
+                actual, recorded = wanted["files"], committed["files"]
+                changed = sorted(path for path in set(actual) & set(recorded) if actual[path] != recorded[path])
+                missing = sorted(set(actual) - set(recorded))
+                unexpected = sorted(set(recorded) - set(actual))
+                if changed or missing or unexpected:
+                    detail = (
+                        f"changed {changed}, missing {missing}, unexpected {unexpected}"
+                    )
+                else:
+                    detail = "its digests match but its bytes are not the canonical spelling"
+    return (
+        f"{TOOLING_LOCK} does not match the locale-catalog tooling digests: {detail}. "
+        "This lock is not a governed contract artifact, so no schemaRevision bump is needed; "
+        f"review the tooling change, then replace {TOOLING_LOCK} with exactly:\n"
+        + expected.decode("utf-8")
+    )
+
+
+def read_tooling_lock() -> bytes | None:
+    path = ROOT / TOOLING_LOCK
+    if path.is_symlink() or not path.is_file():
+        return None
+    return path.read_bytes()
+
+
+def check_tooling_lock() -> None:
+    failure = tooling_lock_failure(
+        tooling_lock_bytes(read_repository_files(generator_sources())), read_tooling_lock()
+    )
+    require(failure is None, failure or "")
+
+
 def catalog_constants() -> dict[str, str]:
     """Every fixed value the v1 schemas already pin, read from their own `const`
     declarations instead of being re-typed here. A schema that moved the
@@ -775,7 +863,7 @@ def build_all() -> dict[str, bytes]:
     source_entries = [(path, data) for path, data in files.items() if path.startswith(f"{FIXTURE_PREFIX}source-")]
     output_sha256 = fileset_digest(list(chunk_files.items()))
     locale_sources_sha256 = fileset_digest(source_entries)
-    generator_sha256 = fileset_digest(read_repository_files(generator_sources()))
+    generator_sha256 = derive_generator_sha256(constants["generatorName"], GENERATOR_VERSION)
     schemas_sha256 = fileset_digest(read_repository_files(SCHEMA_SOURCES))
     artifact_sha256 = sha256_hex(files[f"{FIXTURE_PREFIX}backend-registry.json"])
 
@@ -1205,10 +1293,13 @@ def run_generator_boundary_self_tests() -> None:
 
 
 def run_provenance_input_self_tests(manifest: dict) -> None:
-    """`generatorSha256` and `schemasSha256` are digests of real repository
-    bytes, so prove they move: appending one byte to this script or to either
-    published v1 schema, renaming an input, or changing only the generator
-    version must each produce a different revision.
+    """`schemasSha256` is a digest of real repository bytes and
+    `generatorSha256` a digest of the generator's identity, so prove each
+    moves the revision: appending one byte to either published v1 schema,
+    renaming or dropping one, changing the generator name or version, a locale
+    source or the contract revision must each produce a different revision.
+    The generator's tooling bytes are the lock's job, proven separately by
+    `run_tooling_lock_self_tests`.
     """
     sources = generator_sources()
     generator_inputs = read_repository_files(sources)
@@ -1218,18 +1309,19 @@ def run_provenance_input_self_tests(manifest: dict) -> None:
     runtime = runtime_identity()
 
     require(
-        provenance["generatorSha256"] == fileset_digest(generator_inputs),
-        "Self-test failure: generatorSha256 is not the digest of this generator's own sources",
+        provenance["generatorSha256"]
+        == derive_generator_sha256(constants["generatorName"], provenance["generator"]["version"]),
+        "Self-test failure: generatorSha256 is not derived from the generator name and version",
     )
     require(
         GENERATOR_ENTRY in sources and "scripts/strict_json.py" in sources,
-        "Self-test failure: the generator source closure must contain this module and every local "
-        f"helper it executes; got {sources}",
+        "Self-test failure: the tooling lock's source closure must contain this module and every "
+        f"local helper it executes; got {sources}",
     )
     for source in sources:
         require(
             (ROOT / source).is_file(),
-            f"Self-test failure: the generator source closure names a missing file {source}",
+            f"Self-test failure: the tooling lock's source closure names a missing file {source}",
         )
     require(
         provenance["schemasSha256"] == fileset_digest(schema_inputs),
@@ -1237,7 +1329,7 @@ def run_provenance_input_self_tests(manifest: dict) -> None:
     )
     require(
         RUNTIME_PROFILE in sources and runtime["python"]["version"] == "3.14.7",
-        "Self-test failure: generator provenance omitted the validated runtime identity",
+        "Self-test failure: the tooling lock omitted the validated runtime identity",
     )
 
     baseline = derive_provenance_sha256(
@@ -1273,42 +1365,34 @@ def run_provenance_input_self_tests(manifest: dict) -> None:
         arguments.update(overrides)
         return derive_provenance_sha256(**arguments)
 
-    edited_generator = fileset_digest([(path, data + b"\n") for path, data in generator_inputs])
-    edited_helper = fileset_digest(
-        [
-            (path, data + b"\n" if path != GENERATOR_ENTRY else data)
-            for path, data in generator_inputs
-        ]
-    )
-    added_local_import = fileset_digest(
-        generator_inputs + [("scripts/new_helper.py", b"# a new local helper\n")]
-    )
-    dropped_helper = fileset_digest(
-        [(path, data) for path, data in generator_inputs if path == GENERATOR_ENTRY]
-    )
-    renamed_helper = fileset_digest(
-        [
-            (path if path == GENERATOR_ENTRY else path + ".moved", data)
-            for path, data in generator_inputs
-        ]
-    )
     edited_schemas = fileset_digest([(path, data + b"\n") for path, data in schema_inputs])
     renamed_schemas = fileset_digest(
         [(path + ".moved", data) for path, data in schema_inputs]
     )
     partial_schemas = fileset_digest(schema_inputs[:1])
+    bumped_generator = derive_generator_sha256(constants["generatorName"], "9.9.9")
+    renamed_generator = derive_generator_sha256("something-else", provenance["generator"]["version"])
+    edited_sources = fileset_digest(
+        [
+            (name, data + b" ")
+            for name, data in build_sources().items()
+        ]
+    )
 
     for label, digest in (
-        ("an edited generator source", perturbed(generator_sha256=edited_generator)),
-        ("an edited generator helper", perturbed(generator_sha256=edited_helper)),
-        ("a newly imported local helper", perturbed(generator_sha256=added_local_import)),
-        ("a dropped generator helper", perturbed(generator_sha256=dropped_helper)),
-        ("a renamed generator helper", perturbed(generator_sha256=renamed_helper)),
         ("an edited v1 schema", perturbed(schemas_sha256=edited_schemas)),
         ("a renamed v1 schema", perturbed(schemas_sha256=renamed_schemas)),
         ("a dropped v1 schema", perturbed(schemas_sha256=partial_schemas)),
-        ("a different generator version", perturbed(generator_version="9.9.9")),
-        ("a different generator name", perturbed(generator_name="something-else")),
+        ("an edited locale source", perturbed(locale_sources_sha256=edited_sources)),
+        (
+            "a different generator version",
+            perturbed(generator_version="9.9.9", generator_sha256=bumped_generator),
+        ),
+        (
+            "a different generator name",
+            perturbed(generator_name="something-else", generator_sha256=renamed_generator),
+        ),
+        ("a different generator digest", perturbed(generator_sha256=bumped_generator)),
         ("a different contract revision", perturbed(contract_revision="0.0.1")),
     ):
         require(
@@ -1317,21 +1401,111 @@ def run_provenance_input_self_tests(manifest: dict) -> None:
             "actually bound into the catalog revision",
         )
 
-    for label, digest in (
-        ("an edited generator source", edited_generator),
-        ("an edited generator helper", edited_helper),
-        ("a newly imported local helper", added_local_import),
-        ("a dropped generator helper", dropped_helper),
-        ("a renamed generator helper", renamed_helper),
-    ):
-        require(
-            digest != provenance["generatorSha256"],
-            f"Self-test failure: {label} produced the same generator fileset digest",
-        )
+    require(
+        bumped_generator != provenance["generatorSha256"]
+        and renamed_generator != provenance["generatorSha256"],
+        "Self-test failure: a different generator name or version produced the same generatorSha256",
+    )
     require(
         edited_schemas != provenance["schemasSha256"]
         and renamed_schemas != provenance["schemasSha256"],
         "Self-test failure: a mutated schema input produced the same fileset digest",
+    )
+    require(
+        edited_sources != provenance["localeSourcesSha256"],
+        "Self-test failure: an edited locale source produced the same fileset digest",
+    )
+
+    run_tooling_lock_self_tests(generator_inputs)
+
+
+def run_tooling_lock_self_tests(generator_inputs: list[tuple[str, bytes]]) -> None:
+    """The tooling is pinned by TOOLING_LOCK, not by governed bytes. Prove both
+    halves: every way of perturbing a tooling input (an edited workflow,
+    launcher, generator source or helper, an added, dropped or renamed file)
+    fails the lock check with a message that names the lock, while the governed
+    fixture derivation -- which reads no tooling bytes -- is byte-identical.
+    """
+    expected = tooling_lock_bytes(generator_inputs)
+    committed = read_tooling_lock()
+    require(
+        tooling_lock_failure(expected, committed) is None,
+        "self-test precondition: the committed tooling lock must match before mutations can "
+        "prove anything",
+    )
+    paths = [path for path, _ in generator_inputs]
+    workflow = ".github/workflows/contracts.yml"
+    require(
+        workflow in paths and GENERATOR_ENTRY in paths and RUNTIME_PROFILE in paths,
+        "Self-test failure: the tooling lock does not cover the workflows, this generator and the "
+        "runtime profile",
+    )
+
+    def edited(target: str) -> list[tuple[str, bytes]]:
+        return [(path, data + b"\n" if path == target else data) for path, data in generator_inputs]
+
+    perturbations: list[tuple[str, list[tuple[str, bytes]]]] = [
+        (f"an edited {path}", edited(path))
+        for path in (
+            workflow,
+            "mise.toml",
+            "Dockerfile",
+            "scripts/run-locale-catalog-python.sh",
+            GENERATOR_ENTRY,
+            "scripts/strict_json.py",
+        )
+    ]
+    perturbations += [
+        ("an added tooling file", generator_inputs + [("scripts/new_helper.py", b"VALUE = 1\n")]),
+        ("a dropped tooling file", [entry for entry in generator_inputs if entry[0] != workflow]),
+        (
+            "a renamed tooling file",
+            [(path + ".moved" if path == workflow else path, data) for path, data in generator_inputs],
+        ),
+    ]
+    for label, inputs in perturbations:
+        failure = tooling_lock_failure(tooling_lock_bytes(inputs), committed)
+        require(
+            failure is not None and TOOLING_LOCK in failure,
+            f"Self-test failure: {label} was not caught by the tooling lock check, or the "
+            "failure did not name the lock",
+        )
+
+    lock = json.loads(expected)
+    first = sorted(lock["files"])[0]
+    lock_mutations: list[tuple[str, bytes | None]] = [
+        ("a missing lock", None),
+        ("an appended byte", expected + b" "),
+        ("a non-canonical spelling", json.dumps(lock, sort_keys=True).encode("utf-8") + b"\n"),
+        ("a duplicate key", expected.replace(b'"formatVersion"', b'"formatVersion": 1, "formatVersion"', 1)),
+        ("a different format version", canonical_bytes({**lock, "formatVersion": 2})),
+        ("an extra field", canonical_bytes({**lock, "generatorSha256": "0" * 64})),
+        ("a mutated digest", canonical_bytes({**lock, "files": {**lock["files"], first: "0" * 64}})),
+        (
+            "a dropped entry",
+            canonical_bytes({**lock, "files": {k: v for k, v in lock["files"].items() if k != first}}),
+        ),
+        ("an extra entry", canonical_bytes({**lock, "files": {**lock["files"], "zz/extra": "0" * 64}})),
+    ]
+    for label, found in lock_mutations:
+        failure = tooling_lock_failure(expected, found)
+        require(
+            failure is not None and TOOLING_LOCK in failure,
+            f"Self-test failure: {label} in {TOOLING_LOCK} survived the tooling lock check",
+        )
+
+    # The governed half: tooling bytes never reach the derivation, so the
+    # generator digest is a function of name and version alone. The
+    # end-to-end proof -- an edited workflow in a probe tree fails this check
+    # naming the lock while the rewritten governed fixtures stay byte-identical
+    # -- is `test_tooling_lock_end_to_end` in
+    # scripts/test_locale_catalog_python_boundary.py.
+    constants = catalog_constants()
+    require(
+        derive_generator_sha256(constants["generatorName"], GENERATOR_VERSION)
+        == json.loads(build_all()[f"{FIXTURE_PREFIX}manifest.json"])["provenance"]["generatorSha256"],
+        "Self-test failure: the fixture's generatorSha256 is not derived from the generator "
+        "identity alone",
     )
 
 
@@ -1356,6 +1530,7 @@ def main() -> None:
 
     if arguments.check:
         check(files)
+        check_tooling_lock()
         run_self_tests(files)
         print(
             f"locale-catalog fixture: {len(files)} committed artifacts re-derived and verified "

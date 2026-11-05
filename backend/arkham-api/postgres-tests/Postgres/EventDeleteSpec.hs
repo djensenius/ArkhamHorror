@@ -14,13 +14,11 @@ import Api.Handler.Arkham.Events (deleteApiV1ArkhamEventR)
 import Arkham.Difficulty (Difficulty (Easy))
 import Arkham.Epic.Types (EpicRole (..), SharedEventState, emptySharedEventState)
 import Arkham.Game qualified as Game
-import Control.Concurrent (threadDelay)
 import Data.Time.Clock (UTCTime)
 import Data.UUID qualified as UUID
 import Database.Persist (toPersistValue)
 import Database.Persist qualified as P
 import Database.Persist.Sql (Single (..), SqlBackend, rawSql)
-import Database.Persist.Types (PersistValue (..))
 import Entity.Arkham.Epic
 import Entity.Arkham.Game
 import Entity.User (UserId)
@@ -189,21 +187,3 @@ route app uid action = do
       HCError NotFound -> pure Missing
       HCError (PermissionDenied _) -> pure Denied
       other -> Exception.throwIO other
-
--- Pool sessions have no PID the test can name up front, so wait until the
--- expected number of sessions are blocked, directly or behind each other, on
--- the holder's lock.
-awaitBlockedSessions :: SqlBackend -> Int64 -> Int64 -> IO ()
-awaitBlockedSessions observer holder expected = within "deletes queued behind the game lock" loop
- where
-  loop = do
-    rows <- transaction observer $
-      rawSql
-        "SELECT count(*)::bigint FROM pg_stat_activity \
-        \WHERE datname = current_database() AND pid <> ?::integer \
-        \AND cardinality(pg_blocking_pids(pid)) > 0"
-        [PersistInt64 holder]
-    case rows of
-      [Single n] | n >= expected -> pure ()
-      [Single _] -> threadDelay 10000 >> loop
-      _ -> fail "Expected one PostgreSQL lock observation"

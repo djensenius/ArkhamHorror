@@ -70,6 +70,7 @@ pattern QuestionPresentationWithMetadata version kind choiceCount choices metada
   QuestionPresentationV2 version kind choiceCount choices metadata
 
 {-# COMPLETE QuestionPresentationWithMetadata #-}
+{-# COMPLETE QuestionPresentation #-}
 
 data ChoicePresentation = ChoicePresentationV2
   Int
@@ -629,15 +630,15 @@ autoChoice label =
     $ ChoicePresentation 0 AutoChoice Nothing Nothing (Just $ EmbeddedI18nLabel label) Nothing Nothing
 
 groupedPresentations :: [[UI Message.Message]] -> [ChoicePresentation]
-groupedPresentations groups = go 0 0 groups
+groupedPresentations groups = go 0 (0 :: Int) groups
  where
   go _ _ [] = []
-  go sourceIndex groupIndex (group : rest) =
+  go sourceIndex groupIndex (choiceGroup : rest) =
     let rendered =
           [ addChoiceField "groupIndex" (Aeson.toJSON groupIndex) $ presentChoice GeneralChoiceContext idx choice
-          | (idx, choice) <- zip [sourceIndex ..] group
+          | (idx, choice) <- zip [sourceIndex ..] choiceGroup
           ]
-     in rendered <> go (sourceIndex + length group) (groupIndex + 1) rest
+     in rendered <> go (sourceIndex + length choiceGroup) (groupIndex + 1) rest
 
 readChoicePresentation :: ReadChoices Message.Message -> ([UI Message.Message], Map Text Value)
 readChoicePresentation = \case
@@ -660,12 +661,12 @@ readChoicePresentation = \case
     (choices, Map.singleton "readChoiceKind" (String "leadInvestigatorMustDecide"))
 
 paymentAmountChoice :: PaymentAmountChoice Message.Message -> Value
-paymentAmountChoice PaymentAmountChoice {..} =
+paymentAmountChoice PaymentAmountChoice {minBound = minAmount, maxBound = maxAmount, ..} =
   jsonObject
     [ ("choiceId", Aeson.toJSON choiceId)
     , ("investigatorId", Aeson.toJSON investigatorId)
-    , ("min", Aeson.toJSON minBound)
-    , ("max", Aeson.toJSON maxBound)
+    , ("min", Aeson.toJSON minAmount)
+    , ("max", Aeson.toJSON maxAmount)
     , ("title", Aeson.toJSON $ EmbeddedI18nLabel title)
     ]
 
@@ -721,7 +722,7 @@ presentChoice context sourceIndex choice = case choice of
   TargetLabel target messages ->
     case entityFromTarget target of
       Just entity -> targetChoice sourceIndex (targetChoiceKind entity messages) entity
-      Nothing -> opaqueChoice sourceIndex "TargetLabel" Nothing $ Map.singleton "target" (Aeson.toJSON target)
+      Nothing -> opaqueChoice sourceIndex ("TargetLabel" :: Text) Nothing $ Map.singleton "target" (Aeson.toJSON target)
   EvadeLabel enemyId _ ->
     actionTargetChoice sourceIndex Evade (EnemyEntity enemyId)
   EvadeLabelWithSkill enemyId skillType _ ->
@@ -894,9 +895,9 @@ presentChoice context sourceIndex choice = case choice of
   ScenarioLabel label scenarioId _ ->
     labeledChoice sourceIndex label (Just $ ScenarioEntity scenarioId)
  where
-  opaqueChoice sourceIndex tag mLabel metadata =
+  opaqueChoice opaqueIndex tag mLabel metadata =
     ChoicePresentationWithMetadata
-      sourceIndex
+      opaqueIndex
       OpaqueChoice
       Nothing
       Nothing

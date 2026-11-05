@@ -38,9 +38,7 @@ import Arkham.Attack.Types
   )
 import Arkham.Campaign (lookupCampaign)
 import Arkham.ChaosBagStepState (ChaosBagStep (..), ChaosTokenStrategy (..))
-import Arkham.ChaosToken.Types (ChaosTokenFace (Zero))
 import Arkham.Campaign.Types (Campaign)
-import Arkham.Card.Id (unsafeMakeCardId)
 import Arkham.Asset.Cards qualified as AssetCards
 import Arkham.EnemyLocation (lookupEnemyLocation)
 import Arkham.EnemyLocation.Cards qualified as EnemyLocationCards
@@ -132,9 +130,7 @@ import Arkham.Replay.Checkpoint (canonicalQuestionSha256)
 import Arkham.Replay.ImportAuthority (ReplayImportReceipt)
 import Arkham.Resolution (Resolution (Resolution))
 import Arkham.Scenario.Types (Field (ScenarioDiscard, ScenarioSetAsideCards), Scenario)
-import Arkham.SkillType (SkillType (SkillWillpower))
 import Arkham.Tarot (TarotCard (TarotCard), TarotCardArcana (TheFool0), TarotCardFacing (Upright))
-import Arkham.Text (Tooltip (Tooltip))
 import Arkham.Timing qualified as Timing
 import Arkham.Treachery.CardDefs.NightOfTheZealot qualified as WeaknessCards
 import Arkham.Treachery.CardDefs.NightOfTheZealot.StrikingFear qualified as TreacheryCards
@@ -3694,8 +3690,8 @@ spec = describe "Native client contract fixtures" do
           , Just (Aeson.String name) <- [AesonKeyMap.lookup "name" fields]
           ]
     fixtureNames `shouldBe` representativeNames
-    for_ (zip [0 :: Int ..] $ zip representativeNames representativeQuestions) \(index, (name, question)) -> do
-      let expectedPresentation = Aeson.toJSON $ QuestionPresentation.questionPresentation (300 + index) question
+    for_ (zip [0 :: Int ..] $ zip representativeNames representativeQuestions) \(fixtureIndex, (name, question)) -> do
+      let expectedPresentation = Aeson.toJSON $ QuestionPresentation.questionPresentation (300 + fixtureIndex) question
       case find (\case
         Aeson.Object fields -> AesonKeyMap.lookup "name" fields == Just (Aeson.String name)
         _ -> False) fixturePresentations of
