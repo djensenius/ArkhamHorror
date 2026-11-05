@@ -53,11 +53,16 @@ getApiV1ArkhamPendingGameR gameId = do
 
 -- | Refuses a join inside the game-locked transaction. Thrown rather than
 -- answered there, so the transaction rolls back; 'putApiV1ArkhamPendingGameR'
--- turns it into the 403 (or, when the event is gone, the 404) once runDB has
+-- turns it into the 403 (or, for 'EpicEventGone', the 404) once runDB has
 -- returned.
 data PendingJoinRefused
   = SeatedInAnotherGroup
-  | -- | The game's event was deleted before the join could lock it.
+  | {- | The event row was gone when the join locked it. The event delete
+    handler cannot cause this: it locks the game first, through
+    'canonicalEpicGameLockOrder', so the join sees the event either whole or
+    not at all. Only a delete that bypasses that order (raw SQL, or a future
+    path) can; it is answered 404 rather than failing the member insert.
+    -}
     EpicEventGone
   deriving stock Show
   deriving anyclass Exception
@@ -117,6 +122,9 @@ putApiV1ArkhamPendingGameR gameId = do
             if alreadyExists
               then unchanged
               else do
+                -- No shared deltas are committed here, but the event is locked
+                -- FOR UPDATE all the same, so every seating join keeps one lock
+                -- order, and a vanished event answers the same 404.
                 mLockedCtx <- reserveMembership
                 mLastStep <- getBy (UniqueStep gameId arkhamGameStep)
                 let currentQueue = maybe [] (choiceMessages . arkhamStepChoice . entityVal) mLastStep

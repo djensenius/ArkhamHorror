@@ -173,6 +173,10 @@ spec harness app seedUser = describe "Pending game join" do
       -- joins have started when they go on. Before the event was locked ahead
       -- of the member insert, each join held KEY SHARE and then deadlocked
       -- waiting for FOR UPDATE to commit its setup's shared delta.
+      -- Once released, the second join waits on the event lock for the whole
+      -- of the first join's setup, so this relies on the launcher's
+      -- lock_timeout (3s) outlasting that setup. Here it is tiny: setup
+      -- pauses at ChooseDeck.
       outcomes <-
         joinsBehind holding observer
           (eventRowLock "FOR SHARE" f)
@@ -189,25 +193,51 @@ spec harness app seedUser = describe "Pending game join" do
       gameStep observer game0 `shouldReturn` 2
       gameStep observer game1 `shouldReturn` 2
 
-  it "answers 404, not 500, when the event is deleted while a join waits for it" $
+  it "answers 404, not 500, when a delete outside the canonical lock order removes the event under a waiting join" $
     withConnection harness \holding -> withConnection harness \observer -> do
       organizer <- seedUser observer "join-gone-organizer"
       player <- seedUser observer "join-gone-player"
       f <- seedEvent observer "join-gone" organizer
-      held <- newBarrier
-      holderPid <- backendPid holding
-      withAsync (transaction holding do
-        P.delete f.eventId
-        liftIO $ pauseAt held) \holder -> do
-          link holder
-          awaitBarrier held
-          withAsync (pendingJoin app player f.group0) \joining -> do
-            awaitBlockedSessions observer holderPid 1
-            releaseBarrier held
-            within "event delete commit" $ wait holder
-            within "join" (wait joining) `shouldReturn` Missing
+      joinAfterRawEventDelete holding observer f (pendingJoin app player f.group0)
+        `shouldReturn` Missing
       seatRows observer f.group0 `shouldReturn` []
       gameStep observer f.group0 `shouldReturn` 1
+
+  it "answers 404, not 500, when a delete outside the canonical lock order removes the event under a waiting continuation join" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      organizer <- seedUser observer "join-gone-continuation-organizer"
+      player <- seedUser observer "join-gone-continuation-player"
+      continuing <- seedContinuationGame observer "join-gone-continuation-group-0"
+      lobby <- seedGame observer "join-gone-continuation-group-1"
+      f <- seedEventWith observer "join-gone-continuation" organizer continuing lobby
+      original <- transaction observer $ P.getJust continuing
+      joinAfterRawEventDelete holding observer f (pendingJoin app player continuing)
+        `shouldReturn` Missing
+      seatRows observer continuing `shouldReturn` []
+      afterwards <- transaction observer $ P.getJust continuing
+      arkhamGameStep afterwards `shouldBe` arkhamGameStep original
+      encode (arkhamGameCurrentData afterwards) `shouldBe` encode (arkhamGameCurrentData original)
+
+-- The event delete handler locks the group games first
+-- ('canonicalEpicGameLockOrder'), so a join never sees its event vanish. This
+-- holder deletes the event row directly instead, bypassing that order, to
+-- model a raw-SQL or future delete path: the join, already past its event
+-- lookup, waits on the event lock and finds the row gone once the delete
+-- commits.
+joinAfterRawEventDelete :: SqlBackend -> SqlBackend -> EpicFixture -> IO Outcome -> IO Outcome
+joinAfterRawEventDelete holding observer f joinAction = do
+  held <- newBarrier
+  holderPid <- backendPid holding
+  withAsync (transaction holding do
+    P.delete f.eventId
+    liftIO $ pauseAt held) \holder -> do
+      link holder
+      awaitBarrier held
+      withAsync joinAction \joining -> do
+        awaitBlockedSessions observer holderPid 1
+        releaseBarrier held
+        within "event delete commit" $ wait holder
+        within "join" (wait joining)
 
 -- A WithFriends campaign lobby with two seats, so a first join leaves it
 -- pending and runs no setup.
@@ -344,17 +374,25 @@ route app uid action = do
       other -> Exception.throwIO other
 
 -- Pool sessions have no PID the test can name up front, so wait until the
--- expected number of sessions are blocked, directly or behind each other, on
--- the holder's lock.
+-- expected number of sessions are blocked by the holder. Waiters on one row
+-- queue behind each other: PostgreSQL reports the second as blocked by the
+-- first waiter (which holds the tuple lock), not by the holder. So a session
+-- counts when the holder blocks it directly or through a chain of such
+-- waiters, which holds for joins on different rows and on the same row alike.
 awaitBlockedSessions :: SqlBackend -> Int64 -> Int64 -> IO ()
 awaitBlockedSessions observer holder expected = within "joins queued behind the holder's lock" loop
  where
   loop = do
     rows <- transaction observer $
       rawSql
-        "SELECT count(*)::bigint FROM pg_stat_activity \
-        \WHERE datname = current_database() AND pid <> ?::integer \
-        \AND cardinality(pg_blocking_pids(pid)) > 0"
+        "WITH RECURSIVE waiting(pid) AS ( \
+        \  SELECT pid FROM pg_stat_activity \
+        \  WHERE datname = current_database() AND ?::integer = ANY(pg_blocking_pids(pid)) \
+        \  UNION \
+        \  SELECT a.pid FROM pg_stat_activity a JOIN waiting w \
+        \    ON w.pid = ANY(pg_blocking_pids(a.pid)) \
+        \  WHERE a.datname = current_database() \
+        \) SELECT count(*)::bigint FROM waiting"
         [PersistInt64 holder]
     case rows of
       [Single n] | n >= expected -> pure ()
