@@ -4,9 +4,10 @@ import Amazonka (Error (..), SerializeError (..))
 import Amazonka.Auth (AuthError (..))
 import Amazonka.Error (serviceError)
 import Amazonka.Types (ErrorCode (..), ErrorMessage (..), RequestId (..))
-import Api.Arkham.Archive (describeArchiveException)
+import Api.Arkham.Archive (describeArchiveException, logArchiveFailures)
 import Arkham.Prelude
-import Control.Exception (ErrorCall (..))
+import Control.Exception (AsyncException (ThreadKilled), ErrorCall (..))
+import Control.Exception qualified as Base
 import Data.Text qualified as T
 import Database.PostgreSQL.Simple qualified as PG
 import Network.HTTP.Client qualified as Client
@@ -65,6 +66,38 @@ spec = describe "archive failure log rendering" do
       let longest = T.replicate 64 "A"
       describeArchiveException (awsService status404 longest Nothing)
         `shouldBe` "aws service error (status 404, code " <> longest <> ", request id none)"
+
+  -- What a forked restore and the worker and sweeper loops do with a throw
+  -- nothing else would hear about (TASK-2.87).
+  describe "logArchiveFailures" do
+    it "logs one safe line for a throw and lets nothing escape" do
+      logged <- newIORef []
+      logArchiveFailures (\line -> modifyIORef' logged (line :)) "restore worker tick"
+        $ Base.throwIO
+        $ TransportError statusCodeFailure
+      lines' <- readIORef logged
+      lines'
+        `shouldBe` ["archive: restore worker tick FAILED (storage): aws transport error (StatusCodeException, status 403)"]
+      for_ allSentinels \s -> for_ lines' (`shouldNotSatisfy` T.isInfixOf s)
+
+    it "lets nothing escape when writing the line throws" do
+      attempts <- newIORef (0 :: Int)
+      let throwingLogger _ = modifyIORef' attempts (+ 1) >> Base.throwIO (userError "stdout closed")
+      logArchiveFailures throwingLogger "sweeper tick" (pure ())
+      readIORef attempts `shouldReturn` 0
+      logArchiveFailures throwingLogger "sweeper tick" (Base.throwIO $ TransportError statusCodeFailure)
+      readIORef attempts `shouldReturn` 1
+
+    it "logs nothing when the action succeeds" do
+      logged <- newIORef []
+      logArchiveFailures (\line -> modifyIORef' logged (line :)) "sweeper tick" (pure ())
+      readIORef logged `shouldReturn` []
+
+    it "rethrows an asynchronous exception without logging it" do
+      logged <- newIORef []
+      logArchiveFailures (\line -> modifyIORef' logged (line :)) "restore of game x" (Base.throwIO ThreadKilled)
+        `shouldThrow` (== ThreadKilled)
+      readIORef logged `shouldReturn` []
 
 -- | Label, exception, the sentinels its text carries, and its rendering.
 fixtures :: [(String, SomeException, [Text], Text)]

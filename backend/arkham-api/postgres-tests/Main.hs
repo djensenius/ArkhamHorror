@@ -44,6 +44,7 @@ import Postgres.ArchiveSpec qualified as ArchiveSQL
 import Postgres.Harness
 import Postgres.HarnessSpec qualified as Harness
 import Postgres.ClaimSeatSpec qualified as ClaimSeatSQL
+import Postgres.CustomCardArtSpec qualified as CustomCardArtSQL
 import Postgres.DispatchSpec qualified as DispatchSQL
 import Postgres.PayloadSpec qualified as PayloadSQL
 import Postgres.PendingJoinSpec qualified as PendingJoinSQL
@@ -91,6 +92,7 @@ main = withHarness \harness -> withProductionApp harness \app ->
     EventDeleteSQL.spec harness app seedUser
     MainStreetSwapSQL.spec harness app seedUser
     EventReplicateSQL.spec harness app seedUser
+    CustomCardArtSQL.spec harness app
 
 writeBackSeed :: App -> WriteBackSQL.Seed
 writeBackSeed app connection label = do

@@ -430,6 +430,8 @@ data SubscriberStopped
     SlowSubscriber
   | -- | The room was deleted out from under it.
     RoomWasClosed
+  | -- | Its feed refused a message (see 'runSubscriberSenderWhile').
+    NoLongerAdmitted
   deriving stock Show
   deriving anyclass Exception
 
@@ -440,7 +442,15 @@ A closed subscriber drains what is already queued before it stops, so the
 the client receives rather than a casualty of the teardown.
 -}
 runSubscriberSender :: Subscriber -> WebSocketsT Handler ()
-runSubscriberSender Subscriber {subQueue, subOverflow, subClosed} =
+runSubscriberSender = runSubscriberSenderWhile (const (pure True))
+
+{- | 'runSubscriberSender', asking @admit@ about each message before it is sent.
+The first message refused is not sent, and the socket ends there, as an
+evicted one does.
+-}
+runSubscriberSenderWhile
+  :: (BSL.ByteString -> Handler Bool) -> Subscriber -> WebSocketsT Handler ()
+runSubscriberSenderWhile admit Subscriber {subQueue, subOverflow, subClosed} =
   forever
     ( do
         msg <- atomically do
@@ -451,6 +461,8 @@ runSubscriberSender Subscriber {subQueue, subOverflow, subClosed} =
             Nothing -> do
               closed <- readTVar subClosed
               if closed then throwSTM RoomWasClosed else retry
+        admitted <- lift (admit msg)
+        unless admitted $ throwIO NoLongerAdmitted
         sendTextData msg
     )
     `catch` (\(_ :: SubscriberStopped) -> pure ())
@@ -473,13 +485,21 @@ happen under the rooms lock, so it can't be decided out here.
 -}
 streamRoom
   :: Handler (Room, Int, Subscriber) -> Handler () -> WebSocketsT Handler ()
-streamRoom joinRoom onLeave = catchingConnectionException $ withKeepAlive do
+streamRoom = streamRoomWhile (const (pure True))
+
+-- | 'streamRoom', sending only what @admit@ allows ('runSubscriberSenderWhile').
+streamRoomWhile
+  :: (BSL.ByteString -> Handler Bool)
+  -> Handler (Room, Int, Subscriber)
+  -> Handler ()
+  -> WebSocketsT Handler ()
+streamRoomWhile admit joinRoom onLeave = catchingConnectionException $ withKeepAlive do
   let cleanup room subId = do
         unsubscribeFromRoom room subId
         lift onLeave
   bracket (lift joinRoom) (\(room, subId, _) -> cleanup room subId) \(_room, _subId, sub) ->
     race_
-      (runSubscriberSender sub)
+      (runSubscriberSenderWhile admit sub)
       (runConduit $ sourceWS .| mapM_C (\(_ :: ByteString) -> pure ()))
 
 {- | A broadcast callback. Used to fan out log lines and game-state updates
@@ -525,10 +545,15 @@ while still preventing one poison game from monopolising a worker.
 runMessagesTimeoutMicros :: Int
 runMessagesTimeoutMicros = 30 * 1000000
 
-{- | Thrown by updateGame when 'runMessages' exceeds 'runMessagesTimeoutMicros'.
-The Yesod handler turns this into a 500; the important effect is that the
-exception propagates out of runDB, rolls back the transaction, and frees
-the worker. Search Honeycomb / logs for this to find poison games.
+{- | Thrown when one engine run (the whole 'runGameApp' block, which may call
+'runMessages' more than once) outlasts 'runMessagesTimeoutMicros'. updateGame,
+the pending-game join and 'runMessagesInGroupCore' each time their run this
+way, inside the transaction that holds the game lock. The exception
+propagates out of runDB, so the transaction rolls back (nothing from the run
+is written) and the game lock and worker are freed. A request handler answers
+it as a 500; callers that catch per group and log (the Epic shared-state sync
+and time-up forcing) skip that group. Search Honeycomb / logs for this to
+find poison games.
 -}
 data RunMessagesTimeout = RunMessagesTimeout ArkhamGameId Int
   deriving stock Show
@@ -1337,8 +1362,11 @@ runMessagesInGroupCore p msgs gid = do
         queueRef <- liftIO $ newQueue msgs
         genRef <- liftIO $ newIORef (mkStdGen (gameSeed arkhamGameCurrentData))
         liftIO
-          $ runGameApp (GameApp gameRef queueRef genRef (pure . const ()) Nothing)
-          $ runMessages (gameIdToText gid) noRunObservers
+          $ maybe (throwIO $ RunMessagesTimeout gid runMessagesTimeoutMicros) pure
+          =<< timeout runMessagesTimeoutMicros
+            ( runGameApp (GameApp gameRef queueRef genRef (pure . const ()) Nothing)
+                $ runMessages (gameIdToText gid) noRunObservers
+            )
         updatedGame <- liftIO $ readIORef gameRef
         -- The queue left after the run: empty for a pure board sync (it drains to
         -- empty), or the continuation of a question the run parked (e.g. the

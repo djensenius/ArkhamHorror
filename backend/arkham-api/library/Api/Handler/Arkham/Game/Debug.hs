@@ -28,6 +28,7 @@ module Api.Handler.Arkham.Game.Debug (
 
 import Api.Arkham.Epic (
   GroupMembershipReservation (..),
+  lockEpicEventRow,
   lookupGameEvent,
   reserveGroupMembership,
  )
@@ -726,9 +727,16 @@ postApiV1ArkhamGameClaimSeatR gameId = do
       lift $ permissionDenied "You already have a seat in this game"
     -- Epic Multiplayer: a player may occupy seats in only one group of an
     -- event, so the seat reserves the same membership a pending join would.
+    -- The event row is locked FOR UPDATE first, as the pending join does, so
+    -- both keep the game -> event -> member order. Otherwise this insert's
+    -- foreign-key KEY SHARE waits behind a join's event lock while that join
+    -- waits on this uncommitted membership row. An event row that is gone
+    -- (only a delete bypassing 'canonicalEpicGameLockOrder' can do that) is
+    -- answered 404, like the pending join.
     mEvent <- lookupGameEvent gameId
     mReserved <- forM mEvent \(eventEntity, ordinal) -> do
       let eventId = entityKey eventEntity
+      whenNothingM_ (lockEpicEventRow eventId) $ lift notFound
       reserveGroupMembership eventId userId ordinal >>= \case
         GroupMembershipInserted -> pure (Just eventId)
         GroupMembershipExisting -> pure Nothing

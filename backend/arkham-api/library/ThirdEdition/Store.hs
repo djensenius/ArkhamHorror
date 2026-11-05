@@ -18,6 +18,7 @@ Each table keeps a short history of earlier game states for undo.
 module ThirdEdition.Store (
   Store (..),
   HistoryChange (..),
+  UpdateFailure (..),
   newPostgresStore,
 ) where
 
@@ -45,6 +46,14 @@ import ThirdEdition.Table
 -- | What an update does to the undo history.
 data HistoryChange = KeepHistory | PushHistory Game | PopHistory
 
+-- | Why an update changed nothing.
+data UpdateFailure
+  = -- | the table is not there, or the caller may not know that it is
+    NoSuchTable
+  | -- | the change is refused as the table stands
+    Refused Text
+  deriving stock (Eq, Show)
+
 data Store = Store
   { getTable :: UUID -> IO (Maybe (Table, Int))
   -- ^ the table and how many earlier states it can undo to
@@ -56,8 +65,8 @@ data Store = Store
   -- ^ a new table and the history it starts with (newest first), in one write
   , updateTable
       :: UUID
-      -> (Table -> Maybe Game -> Either Text (Table, HistoryChange))
-      -> IO (Either Text (Table, Int))
+      -> (Table -> Maybe Game -> Either UpdateFailure (Table, HistoryChange))
+      -> IO (Either UpdateFailure (Table, Int))
   {- ^ atomically: the function sees the table and its most recent earlier
   state, and returns the new table. @Left@ changes nothing.
   -}
@@ -107,7 +116,7 @@ newPostgresStore pool =
           -- the write that follows it see the same table
           locked <- lockTable tid
           case locked >>= decodeJsonValue of
-            Nothing -> pure (Left "No such table")
+            Nothing -> pure (Left NoSuchTable)
             Just t -> do
               prev <- latestHistory (key tid)
               case f t prev of
