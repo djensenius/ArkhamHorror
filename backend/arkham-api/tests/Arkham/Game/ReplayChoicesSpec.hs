@@ -1,7 +1,6 @@
 module Arkham.Game.ReplayChoicesSpec (spec) where
 
 import Arkham.Classes.HasGame (getGame)
-import Arkham.Game (ReplayChoicesError (..), replayChoices)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Patch (Operation (..), Patch (..))
 import Data.Aeson.Pointer (Key (..), Pointer (..))

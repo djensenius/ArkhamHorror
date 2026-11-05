@@ -288,7 +288,7 @@ newStore = do
 applySyncedDeckUpdates :: ArkhamDeckId -> ArkhamDeck -> ArkhamDeck -> ArkhamDeck
 applySyncedDeckUpdates key updated previous = entityVal $ foldl' apply (Entity key previous) $ syncedDeckUpdates updated
  where
-  apply entity (Update field value Assign) = runIdentity $ fieldLens field (const $ Identity value) entity
+  apply entity (Update updateField value Assign) = runIdentity $ fieldLens updateField (const $ Identity value) entity
   apply _ _ = error "Only field assignments are used by linked sync"
 
 linkAccount :: ArkhamDBStore IO -> IO ()
@@ -436,7 +436,7 @@ spec = describe "ArkhamDB account linking and private decks" do
     it ("returns the actual saved-deck DELETE HTTP response for unused=" <> show unused) do
       called <- newIORef (0 :: Int)
       (store, _) <- newStore
-      application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient (modifyIORef' called (+1) >> pure unused)
+      application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient (modifyIORef' called (+ 1) >> pure unused)
       response <- WaiTest.runSession
         (WaiTest.request $ (WaiTest.setPath WaiTest.defaultRequest "/deck") {Wai.requestMethod = "DELETE"}) application
       WaiTest.simpleStatus response `shouldBe` if unused then status200 else status409
@@ -453,16 +453,16 @@ spec = describe "ArkhamDB account linking and private decks" do
           incoming = remote {deck = remote.deck {meta = Just "{\"ahn_push\":\"legacy-push\"}"}}
           client = stubClient {loadDeck = \_ _ -> pure $ Right incoming}
       modifyIORef' ref \s -> s {storedDecks = Map.adjust (\d -> d {arkhamDeckOverlay = Just overlay}) deckId s.storedDecks}
-      before <- Map.lookup deckId . storedDecks <$> readIORef ref
+      storedBefore <- Map.lookup deckId . storedDecks <$> readIORef ref
       application <- Yesod.toWaiAppPlain $ CallbackSite store client (pure True)
       response <- WaiTest.runSession
         (WaiTest.request $ (WaiTest.setPath WaiTest.defaultRequest path) {Wai.requestMethod = "POST"}) application
       WaiTest.simpleStatus response `shouldBe` status400
       eitherDecode @Value (WaiTest.simpleBody response) `shouldBe` Right (object
         ["code" .= String "validationFailed", "error" .= String "Campaign overlay provenance is unavailable; refusing ambiguous adoption"])
-      after <- Map.lookup deckId . storedDecks <$> readIORef ref
-      fmap arkhamDeckList after `shouldBe` fmap arkhamDeckList before
-      fmap arkhamDeckOverlay after `shouldBe` Just (Just overlay)
+      storedAfter <- Map.lookup deckId . storedDecks <$> readIORef ref
+      fmap arkhamDeckList storedAfter `shouldBe` fmap arkhamDeckList storedBefore
+      fmap arkhamDeckOverlay storedAfter `shouldBe` Just (Just overlay)
 
   for_ [("upgrade", "PUT /api/oauth2/deck/upgrade/123", "xp=5"), ("new", "POST /api/oauth2/deck/new", "investigator=01001"), ("save", "PUT /api/oauth2/deck/save/124", "slots=%7B%2201006%22%3A1%7D")] \(operation, methodPath, fieldName) ->
     it ("uses ArkhamDB's documented method and form for " <> operation) do
@@ -484,19 +484,19 @@ spec = describe "ArkhamDB account linking and private decks" do
       request `shouldSatisfy` BS8.isInfixOf methodPath
       request `shouldSatisfy` BS8.isInfixOf fieldName
       when (operation == "save") do
-        for_ ["description_md=Guide", "tags=campaign", "ignored=%7B%2201006%22%3A1%7D", "problem=too_few_cards"] \field ->
-          request `shouldSatisfy` BS8.isInfixOf field
+        for_ ["description_md=Guide", "tags=campaign", "ignored=%7B%2201006%22%3A1%7D", "problem=too_few_cards"] \formField ->
+          request `shouldSatisfy` BS8.isInfixOf formField
 
   it "loads the remote guide tags ignored slots and problem for lossless save forwarding" do
     let raw = object
           [ "id" .= (123 :: Int), "investigator_code" .= ("01001" :: Text), "slots" .= object []
           , "description_md" .= ("Campaign guide" :: Text), "tags" .= ("solo campaign" :: Text)
           , "ignoreDeckLimitSlots" .= object ["01006" .= (2 :: Int)], "problem" .= ("too_many_cards" :: Text)]
-    remote <- either (fail . show) pure $ case fromJSON raw of Error err -> Left err; Success value -> Right (value :: ArkhamDBRemoteDeck)
-    remote.descriptionMd `shouldBe` "Campaign guide"
-    remote.tags `shouldBe` "solo campaign"
-    remote.ignoreDeckLimitSlots `shouldBe` Map.singleton "01006" 2
-    remote.problem `shouldBe` Just "too_many_cards"
+    loadedRemote <- either (fail . show) pure $ case fromJSON raw of Error err -> Left err; Success value -> Right (value :: ArkhamDBRemoteDeck)
+    loadedRemote.descriptionMd `shouldBe` "Campaign guide"
+    loadedRemote.tags `shouldBe` "solo campaign"
+    loadedRemote.ignoreDeckLimitSlots `shouldBe` Map.singleton "01006" 2
+    loadedRemote.problem `shouldBe` Just "too_many_cards"
 
   it "sanitizes a rejected HTTP write envelope and enforces the decoded write-body cap" do
     rejected <- chunkedClient "" "{\"success\":false,\"msg\":124,\"error\":\"private-access-token\"}"

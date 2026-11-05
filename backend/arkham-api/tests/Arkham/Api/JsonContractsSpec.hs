@@ -38,9 +38,7 @@ import Arkham.Attack.Types
   )
 import Arkham.Campaign (lookupCampaign)
 import Arkham.ChaosBagStepState (ChaosBagStep (..), ChaosTokenStrategy (..))
-import Arkham.ChaosToken.Types (ChaosTokenFace (Zero))
 import Arkham.Campaign.Types (Campaign)
-import Arkham.Card.Id (unsafeMakeCardId)
 import Arkham.Asset.Cards qualified as AssetCards
 import Arkham.EnemyLocation (lookupEnemyLocation)
 import Arkham.EnemyLocation.Cards qualified as EnemyLocationCards
@@ -132,9 +130,7 @@ import Arkham.Replay.Checkpoint (canonicalQuestionSha256)
 import Arkham.Replay.ImportAuthority (ReplayImportReceipt)
 import Arkham.Resolution (Resolution (Resolution))
 import Arkham.Scenario.Types (Field (ScenarioDiscard, ScenarioSetAsideCards), Scenario)
-import Arkham.SkillType (SkillType (SkillWillpower))
 import Arkham.Tarot (TarotCard (TarotCard), TarotCardArcana (TheFool0), TarotCardFacing (Upright))
-import Arkham.Text (Tooltip (Tooltip))
 import Arkham.Timing qualified as Timing
 import Arkham.Treachery.CardDefs.NightOfTheZealot qualified as WeaknessCards
 import Arkham.Treachery.CardDefs.NightOfTheZealot.StrikingFear qualified as TreacheryCards
@@ -2211,6 +2207,7 @@ spec = describe "Native client contract fixtures" do
                   kind == QuestionPresentation.DrawEncounterCard
               )
               choices
+          other -> error $ "Unexpected encounter-draw question presentation shape: " <> show other
       drawMutations :: [(Text, Draw.CardDraw Message)]
       drawMutations =
         [ ("source", exactDraw {Draw.cardDrawSource = InvestigatorSource iid})
@@ -3163,6 +3160,10 @@ spec = describe "Native client contract fixtures" do
                                QuestionPresentation.AnywhereScope
                          )
                      ]
+      other ->
+        expectationFailure
+          $ "Unexpected Gathering act-objective presentation shape: "
+          <> show other
 
   it "projects the exact Gathering movement-entry sequence with native semantics" do
     let
@@ -3222,6 +3223,10 @@ spec = describe "Native client contract fixtures" do
                      , QuestionPresentation.Move
                      , QuestionPresentation.Investigate
                      ]
+      other ->
+        expectationFailure
+          $ "Unexpected Gathering movement presentation shape: "
+          <> show other
 
     for_
       [ "question-gathering-attic-entry-forced.json"
@@ -3355,6 +3360,10 @@ spec = describe "Native client contract fixtures" do
                 ]
             choiceCount `shouldBe` 12
             sourceIndexes `shouldBe` [0 .. 11]
+          other ->
+            expectationFailure
+              $ "Unexpected source-less movement presentation shape: "
+              <> show other
 
         case drop 9 choices of
           AbilityLabel _ cellarAbility _ _ _
@@ -3390,6 +3399,10 @@ spec = describe "Native client contract fixtures" do
                     ]
                 choiceCount `shouldBe` 12
                 sourceIndexes `shouldBe` [0 .. 11]
+              other ->
+                expectationFailure
+                  $ "Unexpected mismatched movement presentation shape: "
+                  <> show other
           otherChoices ->
             expectationFailure
               $ "Expected both Gathering movement choices, got "
@@ -3586,6 +3599,7 @@ spec = describe "Native client contract fixtures" do
             let sourceIndexes = [sourceIndex | QuestionPresentation.ChoicePresentation sourceIndex _ _ _ _ _ _ <- presentations]
             length presentations `shouldBe` choiceCount
             sourceIndexes `shouldBe` [0 .. choiceCount - 1]
+          other -> expectationFailure $ "Unexpected representative question presentation shape: " <> show other
       abilityChoice = case fixtureGatheringActObjectiveQuestion of
         PlayerWindowChooseOne choices ->
           fromMaybe (error "fixture objective ability missing") $ find (\case AbilityLabel {} -> True; _ -> False) choices
@@ -3694,8 +3708,8 @@ spec = describe "Native client contract fixtures" do
           , Just (Aeson.String name) <- [AesonKeyMap.lookup "name" fields]
           ]
     fixtureNames `shouldBe` representativeNames
-    for_ (zip [0 :: Int ..] $ zip representativeNames representativeQuestions) \(index, (name, question)) -> do
-      let expectedPresentation = Aeson.toJSON $ QuestionPresentation.questionPresentation (300 + index) question
+    for_ (zip [0 :: Int ..] $ zip representativeNames representativeQuestions) \(fixtureIndex, (name, question)) -> do
+      let expectedPresentation = Aeson.toJSON $ QuestionPresentation.questionPresentation (300 + fixtureIndex) question
       case find (\case
         Aeson.Object fields -> AesonKeyMap.lookup "name" fields == Just (Aeson.String name)
         _ -> False) fixturePresentations of
