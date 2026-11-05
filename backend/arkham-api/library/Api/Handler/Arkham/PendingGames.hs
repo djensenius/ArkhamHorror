@@ -67,7 +67,9 @@ putApiV1ArkhamPendingGameR gameId = do
   -- check runs under the game lock and, where the join seats the player,
   -- reserves the membership row before the seat insert, so two concurrent
   -- first joins to different groups of one event cannot both pass it.
-  -- Lock order: game, then membership, then event.
+  -- Lock order follows 'canonicalEpicGameLockOrder': the game, then the event
+  -- (the KEY SHARE that the member insert's foreign key takes on the event row
+  -- counts as an event lock), then the member row.
   joined <- try $ runDB $ atomicallyWithGame gameId \original@ArkhamGame {..} -> do
     mEpicCtx <- lookupGameEvent gameId
     let
