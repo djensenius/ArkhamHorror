@@ -55,12 +55,12 @@ lockEpicEventRow eid = do
 
 {- | The canonical Epic lock order: games (ascending id, one at a time), then
 the event row ('lockEpicEventRow'; the KEY SHARE that a member or step insert
-takes on it counts as an event lock), then member rows. Single-game gameplay
+takes on it counts as an event lock, but a path that will also want
+@FOR UPDATE@ must take that before any such insert), then member rows. Single-game gameplay
 paths lock game then event, so delete cannot deadlock with them. Paths that
-lock several games must take them in ascending id order; the Main Street swap
-still locks by group ordinal and moves onto this helper in TASK-2.7. Returns
-the locked game ids and event, or 'Nothing' when the event is gone (a
-concurrent delete won).
+lock several games must take them in ascending id order, as event deletion and
+the Main Street swap do through this helper. Returns the locked game ids and
+event, or 'Nothing' when the event is gone (a concurrent delete won).
 -}
 canonicalEpicGameLockOrder
   :: MonadIO m
@@ -98,7 +98,13 @@ A player may occupy seats in only one group of an event. The row is written
 with @INSERT ... ON CONFLICT DO NOTHING@ on the members' unique key, so two
 concurrent seat takers in different groups cannot both create a row: the
 second waits for the first and then reads the committed row back. It does not
-lock the event row, so it adds no lock-order edge beyond game-then-event.
+lock the event row itself, but the insert's foreign key takes KEY SHARE on it.
+Precondition: the caller holds the game lock and has taken 'lockEpicEventRow'
+on the event first. Without it, two pending joins holding KEY SHARE deadlock
+when each upgrades to @FOR UPDATE@ to commit setup's shared deltas, and an
+unlocked caller's insert, waiting for KEY SHARE behind another caller's event
+lock, holds a uniqueness entry that the other caller's insert waits on. Both
+callers (pending join and claim seat) lock the event first.
 
 A membership row with no group ordinal is not this group, matching the pending
 join check. Nothing is thrown: the caller decides how to refuse, and rolls the
@@ -247,14 +253,15 @@ persist it, returning the new state. For barrier/timer BOOKKEEPING
 (groups-ready bitmask, timer-start) that is set directly rather than as an
 undoable additive delta — so it records no 'ArkhamEpicStep'. The update runs
 inside the lock, so concurrent callers see each other's writes (e.g. two groups
-marking ready at once can't lose a bit).
+marking ready at once can't lose a bit). 'Nothing' when the event row is gone
+(a concurrent delete won); nothing is written then.
 -}
 modifySharedStateLocked
   :: MonadIO m
   => ArkhamEpicEventId
   -> (SharedEventState -> SharedEventState)
-  -> ReaderT SqlBackend m SharedEventState
-modifySharedStateLocked eid f = fst <$> modifySharedStateLockedWith eid (\s -> (f s, ()))
+  -> ReaderT SqlBackend m (Maybe SharedEventState)
+modifySharedStateLocked eid f = fmap fst <$> modifySharedStateLockedWith eid (\s -> (f s, ()))
 
 {- | 'modifySharedStateLocked' that also returns an extra value computed from the
 locked pre-update state — e.g. the act-advance coordinator decides INSIDE the
@@ -266,7 +273,7 @@ modifySharedStateLockedWith
   :: MonadIO m
   => ArkhamEpicEventId
   -> (SharedEventState -> (SharedEventState, a))
-  -> ReaderT SqlBackend m (SharedEventState, a)
+  -> ReaderT SqlBackend m (Maybe (SharedEventState, a))
 modifySharedStateLockedWith eid f = do
   locked <- select do
     e <- from $ table @ArkhamEpicEvent
@@ -274,7 +281,7 @@ modifySharedStateLockedWith eid f = do
     locking forUpdate
     pure e
   case locked of
-    [] -> error "modifySharedStateLockedWith: epic event row vanished mid-transaction"
+    [] -> pure Nothing
     (Entity _ e : _) -> do
       now <- liftIO getCurrentTime
       let
@@ -286,7 +293,7 @@ modifySharedStateLockedWith eid f = do
         [ ArkhamEpicEventSharedState P.=. s1
         , ArkhamEpicEventUpdatedAt P.=. now
         ]
-      pure (s1, a)
+      pure $ Just (s1, a)
 
 {- | Revert deltas that were recorded for a particular game step (used by undo).
 Subtracts each delta's amount from the *current* value under lock; additive
