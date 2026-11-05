@@ -9850,6 +9850,7 @@ test-suite arkhamdb-postgres
       Postgres.Harness
       Postgres.HarnessSpec
       Postgres.PayloadSpec
+      Postgres.PendingJoinSpec
       Postgres.Production
       Postgres.Remote
       Postgres.ThirdEditionSpec
