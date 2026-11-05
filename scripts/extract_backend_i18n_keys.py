@@ -3555,9 +3555,10 @@ def payload_sha256(artifact: dict) -> str:
     ).hexdigest()
 
 
-# Every reason the extractor is allowed to give up for. A site it cannot place
-# in one of these classes is a gap in the model, not an acceptable unknown, and
-# fails the run.
+# The closed vocabulary of classes the extractor is allowed to give up for.
+# Reasons are descriptive text mapped onto these classes by `classify_dynamic`;
+# a site whose reason maps to no class is a gap in the model, not an acceptable
+# unknown, and fails the run.
 DYNAMIC_CLASSES = {
     "runtime-key": (
         "the key itself is computed at runtime (an enum, a partner name, a "
@@ -3598,7 +3599,8 @@ DYNAMIC_REASON_SUFFIXES = {
 
 
 def classify_dynamic(reason: str) -> str:
-    """Places an unresolved site in the closed vocabulary, or fails."""
+    """Maps an unresolved site's descriptive reason to its class in the closed
+    vocabulary (`DYNAMIC_CLASSES`), or fails."""
     classification = DYNAMIC_REASON_CLASSES.get(reason)
     if classification is None:
         for prefix, candidate in DYNAMIC_REASON_PREFIXES.items():

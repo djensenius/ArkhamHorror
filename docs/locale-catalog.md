@@ -211,9 +211,11 @@ Three fail-closed rules keep the registry honest:
   is no waiver: skipping a module rests on a lexical guess about what an
   unreadable file contains, which is the reasoning this registry replaces;
 * every site that cannot be resolved is committed in `dynamicSites`, grouped
-  by file#binding, emitter, reason and class with a `count`, with a reason
-  from a **closed vocabulary** (`runtime-key`, `runtime-scope`,
-  `caller-scope`, `partial-key`, `scope-underflow`); an unclassifiable reason
+  by file#binding, emitter, reason and class with a `count`. The `reason` is
+  descriptive text (it can name the alias or scope involved); the `class` is
+  the **closed vocabulary** (`runtime-key`, `runtime-scope`, `caller-scope`,
+  `partial-key`, `scope-underflow`), which `classify_dynamic` derives from the
+  reason by exact, prefix or suffix match. A reason that maps to no class
   fails the run, and the drift gate fails when that grouped inventory changes.
   A dynamic site that moves within the same binding is intentionally not
   detected;
