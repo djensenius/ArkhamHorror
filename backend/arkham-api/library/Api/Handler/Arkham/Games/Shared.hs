@@ -519,7 +519,8 @@ while still preventing one poison game from monopolising a worker.
 runMessagesTimeoutMicros :: Int
 runMessagesTimeoutMicros = 30 * 1000000
 
-{- | Thrown by updateGame when 'runMessages' exceeds 'runMessagesTimeoutMicros'.
+{- | Thrown by updateGame, the pending-game join and 'runMessagesInGroupCore'
+when 'runMessages' exceeds 'runMessagesTimeoutMicros'.
 The Yesod handler turns this into a 500; the important effect is that the
 exception propagates out of runDB, rolls back the transaction, and frees
 the worker. Search Honeycomb / logs for this to find poison games.
@@ -1330,8 +1331,11 @@ runMessagesInGroupCore p msgs gid = do
         queueRef <- liftIO $ newQueue msgs
         genRef <- liftIO $ newIORef (mkStdGen (gameSeed arkhamGameCurrentData))
         liftIO
-          $ runGameApp (GameApp gameRef queueRef genRef (pure . const ()) Nothing)
-          $ runMessages (gameIdToText gid) noRunObservers
+          $ maybe (throwIO $ RunMessagesTimeout gid runMessagesTimeoutMicros) pure
+          =<< timeout runMessagesTimeoutMicros
+            ( runGameApp (GameApp gameRef queueRef genRef (pure . const ()) Nothing)
+                $ runMessages (gameIdToText gid) noRunObservers
+            )
         updatedGame <- liftIO $ readIORef gameRef
         -- The queue left after the run: empty for a pure board sync (it drains to
         -- empty), or the continuation of a question the run parked (e.g. the

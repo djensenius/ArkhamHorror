@@ -108,6 +108,12 @@ putApiV1ArkhamPendingGameR gameId = do
         liftIO (timeout runMessagesTimeoutMicros action) >>= \case
           Just a -> pure a
           Nothing -> liftIO $ throwIO $ RunMessagesTimeout gameId runMessagesTimeoutMicros
+      -- Clear any step rows above the current step before the join inserts
+      -- its own, as updateGame does: a leftover row (old data, a debug
+      -- import, an edit made outside the app) would otherwise fail that
+      -- insert on UniqueStep. It must run before the replace bumps the game's
+      -- step, because the step-deletion trigger refuses rows at or below it.
+      clearStaleSteps = deleteWhere [ArkhamStepArkhamGameId ==. gameId, ArkhamStepStep >. arkhamGameStep]
       unchanged = do
         requireNoOtherGroup
         pure (original, Nothing, Nothing)
@@ -153,6 +159,7 @@ putApiV1ArkhamPendingGameR gameId = do
                       now
                       arkhamGameAllowSpectators
 
+                clearStaleSteps
                 replace gameId game'
                 insert_
                   $ ArkhamStep
@@ -227,6 +234,7 @@ putApiV1ArkhamPendingGameR gameId = do
                   now
                   arkhamGameAllowSpectators
 
+            clearStaleSteps
             replace gameId game'
             insert_
               $ ArkhamStep
