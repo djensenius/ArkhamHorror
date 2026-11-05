@@ -27,14 +27,12 @@ import Arkham.Placement (Placement (AtLocation))
 import Arkham.Scenario.Types (ScenarioAttrs (..))
 import Arkham.Target (Target (LocationTarget))
 import Arkham.Token qualified as Token
-import Control.Concurrent (threadDelay)
 import Data.Aeson (Value, encode, object, toJSON, (.=))
 import Data.Map.Strict qualified as Map
 import Data.UUID.V4 (nextRandom)
-import Database.Persist (Entity (..), SelectOpt (..), toPersistValue)
+import Database.Persist (Entity (..), SelectOpt (..))
 import Database.Persist qualified as P
-import Database.Persist.Sql (Single (..), SqlBackend, rawExecute, rawSql)
-import Database.Persist.Types (PersistValue (..))
+import Database.Persist.Sql (SqlBackend, rawExecute)
 import Entity.Arkham.Epic
 import Entity.Arkham.Game
 import Entity.Arkham.Step
@@ -45,7 +43,7 @@ import Postgres.Harness
 import Postgres.Production (authorizationFor, routeRequest)
 import Relude
 import Test.Hspec
-import UnliftIO.Async (link, wait, withAsync)
+import UnliftIO.Exception (finally)
 import Yesod.Core (toPathPiece)
 
 type SeedUser = SqlBackend -> Text -> IO UserId
@@ -103,37 +101,30 @@ spec harness app seedUser = describe "Epic event replicate" do
       -- the cascade does not fire and group 0 still names the deleted game.
       -- This is the state the handler sees when the game is deleted between
       -- its group read and its game read.
-      transaction connection do
-        rawExecute "SET LOCAL session_replication_role = replica" []
-        P.deleteWhere [ArkhamStepArkhamGameId P.==. f.target]
-        P.delete f.target
-      original <- snapshot connection f
-      original.groups `shouldBe` [(0, Just f.target), (1, Just f.other)]
-      map (\(g, _, _) -> g) original.games `shouldBe` [f.other]
-      requestReplicate app f.organizer f `shouldReturn` Missing
-      snapshot connection f `shouldReturn` original
-      transaction connection $ P.delete f.eventId
+      -- Deleting the event cascades to the orphan group, so no later test
+      -- meets it, even when an assertion here fails.
+      (`finally` transaction connection (P.delete f.eventId)) do
+        transaction connection do
+          rawExecute "SET LOCAL session_replication_role = replica" []
+          P.deleteWhere [ArkhamStepArkhamGameId P.==. f.target]
+          P.delete f.target
+        original <- snapshot connection f
+        original.groups `shouldBe` [(0, Just f.target), (1, Just f.other)]
+        map (\(g, _, _) -> g) original.games `shouldBe` [f.other]
+        requestReplicate app f.organizer f `shouldReturn` Missing
+        snapshot connection f `shouldReturn` original
 
+  -- Guards atomicallyWithGame's get404 fallback, not the handler's game read.
   it "answers 404 and changes nothing when the game is deleted while the request waits on it" $
     withConnection harness \holding -> withConnection harness \observer -> do
       f <- seedReplicateFixture observer seedUser "replicate-deleted"
       original <- snapshot observer f
-      held <- newBarrier
-      holderPid <- backendPid holding
-      withAsync
-        ( transaction holding do
-            lockReplicateGame f.target
-            liftIO $ pauseAt held
-            P.delete f.target
-        )
-        \holder -> do
-          link holder
-          awaitBarrier held
-          withAsync (requestReplicate app f.organizer f) \replicating -> do
-            awaitReplicateQueued observer holderPid
-            releaseBarrier held
-            within "game delete commit" $ wait holder
-            within "replicate" (wait replicating) `shouldReturn` Missing
+      -- The uncommitted delete holds the game's row lock. The request's plain
+      -- reads still see the committed game, so it passes the handler's game
+      -- read and waits in atomicallyWithGame's FOR UPDATE until the delete
+      -- commits, then finds no row.
+      behindHeldLock holding observer (P.delete f.target) (requestReplicate app f.organizer f)
+        `shouldReturn` Missing
       -- The delete cascaded to group 0 and the game's steps; nothing else moved.
       snapshot observer f
         `shouldReturn` original
@@ -212,30 +203,6 @@ snapshot connection f = transaction connection do
     sort . map ((\s -> (arkhamStepArkhamGameId s, arkhamStepStep s)) . entityVal)
       <$> P.selectList [ArkhamStepArkhamGameId P.<-. gameIds] []
   pure Snapshot {..}
-
-lockReplicateGame :: ArkhamGameId -> ReaderT SqlBackend IO ()
-lockReplicateGame gameId =
-  void
-    ( rawSql "SELECT 1::bigint FROM arkham_games WHERE id = ? FOR UPDATE" [toPersistValue gameId]
-        :: ReaderT SqlBackend IO [Single Int64]
-    )
-
--- The request is a pool session with no PID the test can name up front: wait
--- until some session is blocked on the holder.
-awaitReplicateQueued :: SqlBackend -> Int64 -> IO ()
-awaitReplicateQueued observer holder = within "replicate queued behind the game lock" loop
- where
-  loop = do
-    rows <-
-      transaction observer
-        $ rawSql
-          "SELECT count(*)::bigint FROM pg_stat_activity \
-          \WHERE datname = current_database() AND ?::integer = ANY(pg_blocking_pids(pid))"
-          [PersistInt64 holder]
-    case rows of
-      [Single n] | n >= (1 :: Int64) -> pure ()
-      [Single _] -> liftIO (threadDelay 10000) >> loop
-      _ -> fail "Expected one PostgreSQL lock observation"
 
 -- Spawn a Replicating Aberration at group 0's Main Street.
 requestReplicate :: App -> UserId -> Fixture -> IO Outcome
