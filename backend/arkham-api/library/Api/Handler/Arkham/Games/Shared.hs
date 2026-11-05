@@ -62,12 +62,13 @@ import Arkham.Game.Utils (gameOutcomeOf)
 import Arkham.GameEnv
 import Arkham.Id
 import Arkham.Investigator (lookupInvestigator)
+import Arkham.Investigator.Cards (allInvestigatorCards)
 import Arkham.Investigator.Types (Investigator, investigatorPlacement, investigatorPlayerId)
 import Arkham.Location.CardDefs.TheBlobThatAteEverythingELSE qualified as Locations
 import Arkham.Log.Entry
 import Arkham.Log.Narrator (emptyNarrator, flushNarrator)
 import Arkham.Message
-import Arkham.Phase (Phase)
+import Arkham.Phase (Phase (InvestigationPhase))
 import Arkham.Placement (
   Placement (AtLocation, AttachedToInvestigator, InPlayArea, InThreatArea, StillInHand),
  )
@@ -1640,7 +1641,9 @@ data MainStreetSwapError
   | -- | The group's game was deleted after the group was read.
     SwapGameMissing ArkhamGameId
   | -- | The group's scenario has not readied an investigator at Main Street,
-    -- or the event's 'MainStreetReady' counter for the group is spent.
+    -- the event's 'MainStreetReady' counter for the group is spent, or the
+    -- group's game is not playing its investigation phase (see
+    -- 'mainStreetSideResumable').
     SwapNotReady GroupOrdinal
   | -- | The group's game has no Main Street.
     SwapNoMainStreet GroupOrdinal
@@ -1649,8 +1652,8 @@ data MainStreetSwapError
   | -- | The readied investigator is no longer at the group's Main Street.
     SwapInvestigatorMoved GroupOrdinal
   | -- | The group's game already has, besides its own readied investigator,
-    -- the investigator the other group would send it (the same investigator
-    -- in both games): a game cannot hold two copies of one investigator.
+    -- the investigator the other group would send it, in any printing: a game
+    -- cannot hold two copies of one investigator.
     SwapInvestigatorConflict GroupOrdinal
   deriving stock (Eq, Show)
 
@@ -1689,6 +1692,12 @@ data MainStreetSwapSide = MainStreetSwapSide
   , mainStreetSideLocation :: Maybe LocationId
   -- ^ the game's Main Street
   , mainStreetSideInvestigators :: Map InvestigatorId Investigator
+  , mainStreetSideResumable :: Bool
+  -- ^ the game is active in its investigation phase, the only phase whose
+  -- empty queue the engine resumes by itself (it asks the turn investigator's
+  -- PlayerWindow, or chooses the next turn). The swap empties the queue and
+  -- drops the outgoing player's question, so a game anywhere else (e.g. at a
+  -- Mythos encounter draw) would be left unable to continue.
   }
 
 mainStreetSwapSide :: GroupOrdinal -> Game -> MainStreetSwapSide
@@ -1703,6 +1712,8 @@ mainStreetSwapSide ordinal game =
         (.id)
           <$> find ((== CardCode "89006") . toCardCode) (toList $ entitiesLocations $ gameEntities game)
     , mainStreetSideInvestigators = entitiesInvestigators $ gameEntities game
+    , mainStreetSideResumable =
+        gameGameState game == IsActive && gamePhase game == InvestigationPhase && gameRunWindows game
     }
  where
   scenarioReady :: Scenario -> Maybe InvestigatorId
@@ -1720,9 +1731,10 @@ data MainStreetSwapPlan = MainStreetSwapPlan
   deriving stock (Eq, Show)
 
 {- | Both groups must have readied an investigator who is still in their game
-and still at their Main Street. Neither game may already hold, besides its
-outgoing investigator, the investigator it would receive. Two groups that
-readied the same investigator swap their copies.
+and still at their Main Street, and both games must be playing their
+investigation phase. Neither game may already hold, besides its outgoing
+investigator, the investigator it would receive, in any printing. Two groups
+that readied the same investigator swap their copies.
 -}
 planMainStreetSwap
   :: MainStreetSwapSide -> MainStreetSwapSide -> Either MainStreetSwapError MainStreetSwapPlan
@@ -1731,7 +1743,11 @@ planMainStreetSwap firstSide secondSide = do
   (secondInvestigator, secondMainStreet) <- readySide secondSide
   let
     receives side outgoing incoming =
-      when (incoming.id /= outgoing.id && Map.member incoming.id (mainStreetSideInvestigators side))
+      when
+        ( any (sameInvestigatorCard incoming.id)
+            $ Map.keys
+            $ Map.delete outgoing.id (mainStreetSideInvestigators side)
+        )
         $ Left (SwapInvestigatorConflict (mainStreetSideOrdinal side))
   receives firstSide firstInvestigator secondInvestigator
   receives secondSide secondInvestigator firstInvestigator
@@ -1746,6 +1762,7 @@ planMainStreetSwap firstSide secondSide = do
   readySide side = do
     let ordinal = mainStreetSideOrdinal side
     iid <- maybeToRight (SwapNotReady ordinal) (mainStreetSideReady side)
+    unless (mainStreetSideResumable side) $ Left (SwapNotReady ordinal)
     mainStreet <- maybeToRight (SwapNoMainStreet ordinal) (mainStreetSideLocation side)
     investigator <-
       maybeToRight (SwapInvestigatorMissing ordinal)
@@ -1753,6 +1770,18 @@ planMainStreetSwap firstSide secondSide = do
     when (attr investigatorPlacement investigator /= AtLocation mainStreet)
       $ Left (SwapInvestigatorMoved ordinal)
     pure (investigator, mainStreet)
+
+{- | Whether two investigator ids are the same investigator: equal, or
+@other@'s card lists @iid@ among its printings (an alternate art counts).
+-}
+sameInvestigatorCard :: InvestigatorId -> InvestigatorId -> Bool
+sameInvestigatorCard iid other =
+  iid
+    == other
+    || maybe
+      False
+      ((toCardCode iid `elem`) . (.cardCodes))
+      (Map.lookup (toCardCode other) allInvestigatorCards)
 
 {- | Both groups' 'MainStreetReady' counters must still be raised on the event:
 the swap spends one from each.

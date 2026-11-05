@@ -613,9 +613,9 @@ postApiV1ArkhamEventSwapMainStreetR eid = do
 {- | The status and stable error code for a refused Main Street swap: 400 for a
 malformed request, 404 for an event, group or game that does not exist, 409 for
 groups not ready to swap (@main-street-not-ready@, including a readiness that
-an earlier swap spent), whose readiness no longer holds (@main-street-stale@),
-or whose game already holds the investigator it would receive
-(@main-street-conflict@).
+an earlier swap spent and a game not playing its investigation phase), whose
+readiness no longer holds (@main-street-stale@), or whose game already holds
+the investigator it would receive (@main-street-conflict@).
 -}
 mainStreetSwapErrorStatus :: MainStreetSwapError -> (Status.Status, Text)
 mainStreetSwapErrorStatus = \case

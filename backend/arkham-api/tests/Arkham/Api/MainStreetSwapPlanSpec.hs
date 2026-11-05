@@ -25,10 +25,12 @@ import Arkham.Epic.Types (
  )
 import Arkham.Game (Game, newScenario, setInitialScenarioMeta)
 import Arkham.Game qualified as Game
+import Arkham.Game.State (GameState (IsActive))
 import Arkham.Id (InvestigatorId, LocationId (..), PlayerId (..))
 import Arkham.Investigator (lookupInvestigator)
 import Arkham.Investigator.Types (Investigator, investigatorPlacement)
 import Arkham.Location (lookupLocation)
+import Arkham.Phase (Phase (..))
 import Arkham.Placement (Placement (AtLocation, Unplaced))
 import Arkham.Question (Question (ChooseOne))
 import Arkham.Prelude
@@ -47,8 +49,9 @@ mainStreetA = LocationId $ UUID.fromWords 0 0 1 1
 mainStreetB = LocationId $ UUID.fromWords 0 0 1 2
 elsewhere = LocationId $ UUID.fromWords 0 0 1 3
 
-roland, daisy :: InvestigatorId
+roland, rolandAlternate, daisy :: InvestigatorId
 roland = "01001"
+rolandAlternate = "01501"
 daisy = "01002"
 
 investigatorAt :: InvestigatorId -> Word32 -> Placement -> Investigator
@@ -65,15 +68,18 @@ readySide ordinal iid mainStreet =
     , mainStreetSideLocation = Just mainStreet
     , mainStreetSideInvestigators =
         Map.singleton iid (investigatorAt iid (fromIntegral ordinal) (AtLocation mainStreet))
+    , mainStreetSideResumable = True
     }
 
-{- | A group's game: its Main Street, and @iid@ (seated by @player@) readied
-there by the scenario.
+{- | A group's game, playing its investigation phase: its Main Street, and
+@iid@ (seated by @player@) readied there by the scenario.
 -}
 readyGame :: InvestigatorId -> Word32 -> LocationId -> Game
 readyGame iid player mainStreet =
   initial
-    { Game.gamePlayers = [PlayerId $ UUID.fromWords 0 0 2 player]
+    { Game.gameGameState = IsActive
+    , Game.gamePhase = InvestigationPhase
+    , Game.gamePlayers = [PlayerId $ UUID.fromWords 0 0 2 player]
     , Game.gamePlayerOrder = [iid]
     , Game.gameEntities =
         (Game.gameEntities initial)
@@ -177,6 +183,32 @@ spec = do
       planMainStreetSwap firstSide (movedTo Unplaced)
         `shouldBe` Left (SwapInvestigatorMoved (GroupOrdinal 1))
 
+    it "refuses a group whose game is not playing its investigation phase" do
+      planMainStreetSwap firstSide {mainStreetSideResumable = False} secondSide
+        `shouldBe` Left (SwapNotReady (GroupOrdinal 0))
+      planMainStreetSwap firstSide secondSide {mainStreetSideResumable = False}
+        `shouldBe` Left (SwapNotReady (GroupOrdinal 1))
+
+    it "refuses a group whose game holds another printing of the investigator it would receive" do
+      -- The first group sends Daisy but keeps a Roland (01501); it would receive Roland (01001).
+      let keepsAlternate =
+            (readySide 0 daisy mainStreetA)
+              { mainStreetSideInvestigators =
+                  Map.fromList
+                    [ (daisy, investigatorAt daisy 0 (AtLocation mainStreetA))
+                    , (rolandAlternate, investigatorAt rolandAlternate 2 (AtLocation elsewhere))
+                    ]
+              }
+      planMainStreetSwap keepsAlternate (readySide 1 roland mainStreetB)
+        `shouldBe` Left (SwapInvestigatorConflict (GroupOrdinal 0))
+      planMainStreetSwap (readySide 1 roland mainStreetB) keepsAlternate
+        `shouldBe` Left (SwapInvestigatorConflict (GroupOrdinal 0))
+
+    it "accepts another printing of the investigator a group sends away" do
+      -- Each game gives up its Roland and receives the other printing.
+      let plan = planMainStreetSwap (readySide 0 rolandAlternate mainStreetA) (readySide 1 roland mainStreetB)
+      (mainStreetFirstDestination <$> plan) `shouldBe` Right mainStreetB
+
     it "refuses a group whose game already holds the investigator it would receive" do
       let alsoHolds iid player side =
             side
@@ -193,6 +225,19 @@ spec = do
     it "accepts two groups that readied the same investigator" do
       (mainStreetFirstDestination <$> planMainStreetSwap firstSide (readySide 1 roland mainStreetB))
         `shouldBe` Right mainStreetB
+
+  describe "mainStreetSwapSide" do
+    it "resumes only an active game in its investigation phase" do
+      let
+        playing = readyGame roland 0 mainStreetA
+        resumable = mainStreetSideResumable . mainStreetSwapSide (GroupOrdinal 0)
+      resumable playing `shouldBe` True
+      -- Mythos (e.g. at an encounter draw), Enemy and Upkeep: an empty queue
+      -- does not continue the phase.
+      [resumable playing {Game.gamePhase = phase} | phase <- [MythosPhase, EnemyPhase, UpkeepPhase]]
+        `shouldBe` [False, False, False]
+      resumable playing {Game.gameRunWindows = False} `shouldBe` False
+      resumable (newScenario "85001" 1 2 Easy False) `shouldBe` False
 
   describe "swapInvestigatorState" do
     it "places each moved investigator at the Main Street of the game it moved into" do
