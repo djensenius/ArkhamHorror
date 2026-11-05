@@ -154,6 +154,37 @@ spec harness app seedUser = describe "Claim seat" do
       seatRows connection f.group0 `shouldReturn` []
       membership connection f player `shouldReturn` [(GroupPlayer, Nothing)]
 
+  it "serializes a pending join and a claim for one player's first membership in different groups on the event lock" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      organizer <- seedUser observer "claim-join-organizer"
+      player <- seedUser observer "claim-join-player"
+      f <- seedEvent observer "claim-join" organizer
+      held <- newBarrier
+      holderPid <- backendPid holding
+      -- Hold the event row FOR UPDATE, queue the join's event lock behind it,
+      -- then queue the claim behind both. Before claim seat locked the event,
+      -- the claim inserted its membership row and waited on that insert's
+      -- foreign-key KEY SHARE behind the join's FOR UPDATE, while the join's
+      -- own membership insert waited on the claim's uncommitted row: 40P01.
+      withAsync (transaction holding do
+        _ <- rawSql "SELECT 1::bigint FROM arkham_epic_events WHERE id = ? FOR UPDATE"
+          [toPersistValue f.eventId] :: ReaderT SqlBackend IO [Single Int64]
+        liftIO $ pauseAt held) \holder -> do
+          link holder
+          awaitBarrier held
+          withAsync (pendingJoin app player f.group0) \joining -> do
+            awaitBlockedSessions observer holderPid 1
+            withAsync (claim app player f.group1 "01001") \claiming -> do
+              awaitBlockedSessions observer holderPid 2
+              -- lock_timeout is 3s: release as soon as both are queued.
+              releaseBarrier held
+              within "lock holder commit" $ wait holder
+              within "join" (wait joining) `shouldReturn` Succeeded
+              within "claim" (wait claiming) `shouldReturn` Forbidden anotherGroup
+      membership observer f player `shouldReturn` [(GroupPlayer, Just 0)]
+      map fst <$> seatRows observer f.group0 `shouldReturn` [player]
+      seatRows observer f.group1 `shouldReturn` []
+
 -- A WithFriends game with two seats, each investigator carrying a placeholder
 -- player id that claim seat swaps for the new player's.
 seedGame :: SqlBackend -> Text -> IO ArkhamGameId
