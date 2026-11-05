@@ -199,6 +199,12 @@ does say, by failure:
 | I/O | `io error (does not exist)` |
 | Anything else | `exception (ErrorCall)` — the exception's type |
 
+A throw that would otherwise go nowhere — out of a forked restore, or out of a
+tick of the restore worker or the sweeper — is logged the same way, as
+`archive: restore of game <id> FAILED (restore failed: database): sql error (state 57014)`
+(or `restore worker tick` / `sweeper tick`), and the loop carries on. The thread
+being killed is not caught.
+
 The AWS error code and request id are there because an operator needs them
 to look a failure up; neither is a credential. Each is logged only if it is
 1–64 characters of `[A-Za-z0-9._-]`, and is otherwise replaced by
@@ -211,7 +217,13 @@ and its newer ones in the database, so archiving it would write a second object
 holding the tail of the history and then delete the one holding its beginning.
 
 A restore that dies with its replica is picked up by `restoreWorker` after ten
-minutes. A restore that *fails* goes to `failed` rather than back to `archived`:
+minutes. The restart claims the row by bumping `requested_at`, and that value is
+the attempt's token: a restore only records a failure while the row is still
+`restoring` *and* still carries its own `requested_at`. So if the original
+attempt was merely slow and fails while the restart is running, the row stays
+`restoring`, nobody is told, and the log says `late restore failure ignored ...
+a newer restore attempt owns the archive`; the restart's own outcome is what
+lands. A restore that *fails* goes to `failed` rather than back to `archived`:
 the object is still there, but something about it did not work, and retrying on a
 loop would just fail on a loop. Pressing the button again retries it.
 

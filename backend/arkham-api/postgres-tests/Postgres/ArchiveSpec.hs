@@ -18,7 +18,7 @@ module Postgres.ArchiveSpec (spec) where
 import Amazonka (Error (..))
 import Amazonka.Error (serviceError)
 import Api.Arkham.Archive
-import Api.Arkham.Helpers (ApiResponse (GameUnarchiveFailed), publishFromApp)
+import Api.Arkham.Helpers (ApiResponse (GameUnarchiveFailed, GameUnarchived), publishFromApp)
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (Solo))
 import Api.Handler.Arkham.Admin.Archives (postApiV1AdminArchiveGameR)
 import Api.Handler.Arkham.Archive (checkArchiveSeam, getApiV1ArkhamGameArchiveR, putApiV1ArkhamGameUnarchiveR)
@@ -173,6 +173,48 @@ spec harness app = describe "Game archive access and restore failures with produ
             "archive: late restore failure ignored for game " `T.isInfixOf` line
               && "(restore failed: storage): the archive is no longer restoring" `T.isInfixOf` line
 
+  {- The restore worker restarted a restore that looked abandoned, and then the
+  original attempt fails while the restart is still running. The restart owns
+  the row: the original's failure must not mark it 'Failed' or tell anyone,
+  and the restart's own outcome still lands (TASK-2.87). -}
+  it "ignores a stale attempt's failure while a restarted attempt owns the row" $
+    withRestartedRestore "archive-stale-failure" \f listener original restarted -> do
+      logged <- newIORef []
+      runRestore app (\line -> modifyIORef' logged (line :)) (\_ -> throwIO rawAwsError) (publishFromApp app f.gameId) original
+
+      stored <- maybe (fail "Expected the archive row") pure =<< db (lookupArchive f.gameId)
+      stored.state `shouldBe` Restoring
+      stored.errorMessage `shouldBe` Nothing
+      stored.requestedAt `shouldBe` restarted.requestedAt
+      drain listener `shouldReturn` []
+      lines' <- readIORef logged
+      length lines' `shouldBe` 2
+      for_ lines' (`shouldNotSatisfy` T.isInfixOf sentinel)
+      lines'
+        `shouldSatisfy` any \line ->
+          "archive: late restore failure ignored for game " `T.isInfixOf` line
+            && "(restore failed: storage): a newer restore attempt owns the archive" `T.isInfixOf` line
+
+      -- The restart then succeeds, as 'restoreGame' records it.
+      restoredAt <- currentTimeMicros
+      let
+        restore _ = do
+          db $ P.updateWhere
+            [ArkhamGameArchiveArkhamGameId P.==. f.gameId]
+            [ArkhamGameArchiveState P.=. Restored, ArkhamGameArchiveRestoredAt P.=. Just restoredAt]
+          pure $ Right 10
+      runRestore app (\_ -> pure ()) restore (publishFromApp app f.gameId) restarted
+      stateOf f.gameId `shouldReturn` Just Restored
+      map (decode @Value) <$> drain listener `shouldReturn` [Just $ toJSON GameUnarchived]
+
+  it "still records a restarted attempt's own failure" $
+    withRestartedRestore "archive-restart-failure" \f listener _ restarted -> do
+      runRestore app (\_ -> pure ()) (\_ -> throwIO rawAwsError) (publishFromApp app f.gameId) restarted
+      stored <- maybe (fail "Expected the archive row") pure =<< db (lookupArchive f.gameId)
+      stored.state `shouldBe` Failed
+      stored.errorMessage `shouldBe` Just "restore failed: storage"
+      map (decode @Value) <$> drain listener
+        `shouldReturn` [Just $ toJSON $ GameUnarchiveFailed fixtureMessage]
   {- The hand-archive fails before any S3 call: credentials come from fake
   environment keys (the first link of Amazonka's discovery chain, with the
   credential files and instance metadata pointed away), and the export's temp
@@ -199,6 +241,29 @@ spec harness app = describe "Game archive access and restore failures with produ
   db action = runSqlPool action app.appConnPool
   stateOf gid = fmap (.state) <$> db (lookupArchive gid)
   setState gid st = db $ P.updateWhere [ArkhamGameArchiveArkhamGameId P.==. gid] [ArkhamGameArchiveState P.=. st]
+
+  {- A restore claimed a day ago and then restarted by the worker's claim: the
+  original attempt, as 'claimForRestore' handed it out, and the restarted one,
+  as 'claimStaleRestores' did. The game's room is subscribed to. -}
+  withRestartedRestore
+    :: Text -> (Fixture -> Subscriber -> ArkhamGameArchive -> ArkhamGameArchive -> IO a) -> IO a
+  withRestartedRestore label action = withFixture label \f -> do
+    room <- newRoom "archive-spec"
+    MVar.modifyMVar_ app.appGameRooms (pure . Map.insert f.gameId room)
+    info <- anonymousSubscriber
+    (_, listener) <- subscribeToRoom info room
+    flip Exception.finally (MVar.modifyMVar_ app.appGameRooms (pure . Map.delete f.gameId)) do
+      now <- currentTimeMicros
+      original <-
+        maybe (fail "Expected to claim the restore") pure
+          =<< db (claimForRestore (addUTCTime (-86400) now) (Just f.seated) f.gameId)
+      restarted <-
+        maybe (fail "Expected the worker to claim the stale restore") pure
+          . find (\a -> a.arkhamGameId == f.gameId)
+          =<< db (claimStaleRestores now)
+      restarted.requestedAt `shouldBe` Just now
+      original.requestedAt `shouldNotBe` restarted.requestedAt
+      action f listener original restarted
 
   withFixture :: Text -> (Fixture -> IO a) -> IO a
   withFixture label action = withConnection harness \connection -> do
