@@ -1253,7 +1253,8 @@ refreshMainStreetEligibility gameId = do
     Just (Entity eid _, _) -> do
       groups <- runDB $ P.selectList [ArkhamEpicGroupArkhamEpicEventId P.==. eid] []
       let gameIds = mapMaybe (arkhamEpicGroupArkhamGameId . entityVal) groups
-      games <- runDB $ traverse P.getJust gameIds
+      -- A group game deleted since the group list was read is simply not at Main Street.
+      games <- runDB $ map entityVal . catMaybes <$> traverse P.getEntity gameIds
       let
         groupAtMainStreet rawGame =
           let
@@ -1385,106 +1386,87 @@ because the printed ability disengages them before publishing readiness.
 This writes both games in one transaction, advances both revisions, publishes
 both websocket rooms, and places an undo floor at the new revisions. A swap
 is therefore never half-visible and can never be crossed by ordinary undo.
+A refused request ('MainStreetSwapError') is decided before anything is
+written, so it changes neither game.
 -}
-swapMainStreetInvestigators :: ArkhamEpicEventId -> Int -> Int -> Handler ()
-swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
-  (firstGameId, secondGameId) <- runDB do
+swapMainStreetInvestigators
+  :: ArkhamEpicEventId -> Int -> Int -> Handler (Either MainStreetSwapError ())
+swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = runExceptT do
+  (firstGameId, secondGameId) <- ExceptT $ runDB do
     groups <-
       P.selectList
         [ ArkhamEpicGroupArkhamEpicEventId P.==. eventId
         , ArkhamEpicGroupOrdinal P.<-. [firstOrdinal, secondOrdinal]
         ]
         []
-    let byOrdinal =
-          Map.fromList
-            [ (arkhamEpicGroupOrdinal g, gid)
-            | Entity _ g <- groups
-            , gid <- toList (arkhamEpicGroupArkhamGameId g)
-            ]
-    (,)
-      <$> maybe
-        (error "First Main Street group has no game")
-        pure
-        (Map.lookup firstOrdinal byOrdinal)
-      <*> maybe
-        (error "Second Main Street group has no game")
-        pure
-        (Map.lookup secondOrdinal byOrdinal)
+    pure
+      $ resolveSwapGames
+        firstOrdinal
+        secondOrdinal
+        [(arkhamEpicGroupOrdinal g, arkhamEpicGroupArkhamGameId g) | Entity _ g <- groups]
 
-  runDB do
-    firstRaw <- P.getJust firstGameId
-    secondRaw <- P.getJust secondGameId
+  ExceptT $ runDB $ runExceptT do
+    let loadGame gameId =
+          maybeToRight (SwapGameMissing gameId) . fmap entityVal <$> P.getEntity gameId
+    firstRaw <- ExceptT $ loadGame firstGameId
+    secondRaw <- ExceptT $ loadGame secondGameId
     let
       firstGame = arkhamGameCurrentData firstRaw
       secondGame = arkhamGameCurrentData secondRaw
-      scenarioReady :: Scenario -> Maybe InvestigatorId
-      scenarioReady scenario = getMetaKeyDefault "mainStreetReady" Nothing (toAttrs scenario)
-      readyInvestigator :: Game -> Maybe InvestigatorId
-      readyInvestigator game = case gameMode game of
-        That scenario -> scenarioReady scenario
-        These _ scenario -> scenarioReady scenario
-        This _ -> Nothing
-      firstIid = fromMaybe (error "First group has not activated Main Street") $ readyInvestigator firstGame
-      secondIid = fromMaybe (error "Second group has not activated Main Street") $ readyInvestigator secondGame
-      mainStreetLocation game =
-        fromMaybe (error "Ready investigator is not at Main Street")
-          $ (.id)
-          <$> find ((== CardCode "89006") . toCardCode) (toList $ entitiesLocations $ gameEntities game)
-      firstDestination = mainStreetLocation secondGame
-      secondDestination = mainStreetLocation firstGame
+    plan <-
+      ExceptT
+        . pure
+        $ planMainStreetSwap
+          (mainStreetSwapSide (GroupOrdinal firstOrdinal) firstGame)
+          (mainStreetSwapSide (GroupOrdinal secondOrdinal) secondGame)
+    let
       (firstGame', secondGame', firstPid, secondPid) =
-        swapInvestigatorState firstIid firstDestination firstGame secondIid secondDestination secondGame
+        swapInvestigatorState plan firstGame secondGame
       firstStep = arkhamGameStep firstRaw + 1
       secondStep = arkhamGameStep secondRaw + 1
-    P.update firstGameId [ArkhamGameCurrentData P.=. firstGame', ArkhamGameStep P.=. firstStep]
-    P.update secondGameId [ArkhamGameCurrentData P.=. secondGame', ArkhamGameStep P.=. secondStep]
-    P.update (coerce firstPid) [ArkhamPlayerArkhamGameId P.=. secondGameId]
-    P.update (coerce secondPid) [ArkhamPlayerArkhamGameId P.=. firstGameId]
+    lift do
+      P.update firstGameId [ArkhamGameCurrentData P.=. firstGame', ArkhamGameStep P.=. firstStep]
+      P.update secondGameId [ArkhamGameCurrentData P.=. secondGame', ArkhamGameStep P.=. secondStep]
+      P.update (coerce firstPid) [ArkhamPlayerArkhamGameId P.=. secondGameId]
+      P.update (coerce secondPid) [ArkhamPlayerArkhamGameId P.=. firstGameId]
 
-  runMessagesInGroupWhen
-    (const True)
-    [SpendShared (MainStreetReady $ GroupOrdinal firstOrdinal) 1]
-    firstGameId
-  runMessagesInGroupWhen
-    (const True)
-    [SpendShared (MainStreetReady $ GroupOrdinal secondOrdinal) 1]
-    secondGameId
-  for_ [firstGameId, secondGameId] \gameId -> do
-    raw <- runDB $ P.get404 gameId
-    setGameUndoFloor gameId (arkhamGameStep raw)
-    publishToRoom gameId
-      $ GameUpdate
-      $ PublicGame gameId (arkhamGameName raw) [] (arkhamGameCurrentData raw)
-  broadcastEventChanged eventId
+  lift do
+    runMessagesInGroupWhen
+      (const True)
+      [SpendShared (MainStreetReady $ GroupOrdinal firstOrdinal) 1]
+      firstGameId
+    runMessagesInGroupWhen
+      (const True)
+      [SpendShared (MainStreetReady $ GroupOrdinal secondOrdinal) 1]
+      secondGameId
+    for_ [firstGameId, secondGameId] \gameId -> do
+      raw <- runDB $ P.get404 gameId
+      setGameUndoFloor gameId (arkhamGameStep raw)
+      publishToRoom gameId
+        $ GameUpdate
+        $ PublicGame gameId (arkhamGameName raw) [] (arkhamGameCurrentData raw)
+    broadcastEventChanged eventId
 
-swapInvestigatorState
-  :: InvestigatorId
-  -> LocationId
-  -> Game
-  -> InvestigatorId
-  -> LocationId
-  -> Game
-  -> (Game, Game, PlayerId, PlayerId)
-swapInvestigatorState firstIid firstDestination firstGame secondIid secondDestination secondGame
-  | attr investigatorPlacement firstInvestigator /= AtLocation secondDestination =
-      error "First ready investigator is no longer at Main Street"
-  | attr investigatorPlacement secondInvestigator /= AtLocation firstDestination =
-      error "Second ready investigator is no longer at Main Street"
-  | otherwise =
-      ( install secondIid secondMoved secondOwned secondPid (remove firstIid firstPid firstGame)
-      , install firstIid firstMoved firstOwned firstPid (remove secondIid secondPid secondGame)
-      , firstPid
-      , secondPid
-      )
+swapInvestigatorState :: MainStreetSwapPlan -> Game -> Game -> (Game, Game, PlayerId, PlayerId)
+swapInvestigatorState plan firstGame secondGame =
+  ( install secondIid secondMoved secondOwned secondPid (remove firstIid firstPid firstGame)
+  , install firstIid firstMoved firstOwned firstPid (remove secondIid secondPid secondGame)
+  , firstPid
+  , secondPid
+  )
  where
-  firstInvestigator =
-    fromMaybe (error "First Main Street investigator is not in its game")
-      $ Map.lookup firstIid (entitiesInvestigators $ gameEntities firstGame)
-  secondInvestigator =
-    fromMaybe (error "Second Main Street investigator is not in its game")
-      $ Map.lookup secondIid (entitiesInvestigators $ gameEntities secondGame)
+  firstInvestigator = mainStreetFirstInvestigator plan
+  secondInvestigator = mainStreetSecondInvestigator plan
+  firstIid = firstInvestigator.id
+  secondIid = secondInvestigator.id
+  firstDestination = mainStreetFirstDestination plan
+  secondDestination = mainStreetSecondDestination plan
   firstPid = attr investigatorPlayerId firstInvestigator
   secondPid = attr investigatorPlayerId secondInvestigator
+  -- Keeps the existing placement: each investigator is placed at the Main
+  -- Street of the game it leaves (firstMoved gets secondDestination, the first
+  -- game's Main Street), not the plan's destination in its new game.
+  -- TASK-2.103 tracks this known location-id mismatch.
   firstMoved = overAttrs (\a -> a {investigatorPlacement = AtLocation secondDestination}) firstInvestigator
   secondMoved = overAttrs (\a -> a {investigatorPlacement = AtLocation firstDestination}) secondInvestigator
   firstOwned = ownedEntities firstIid (gameEntities firstGame)
@@ -1561,6 +1543,115 @@ swapInvestigatorState firstIid firstDestination firstGame secondIid secondDestin
   replaceId removedA removedB inserted current
     | current == removedA || current == removedB = inserted
     | otherwise = current
+
+{- | Why a Main Street swap request was refused. Each is decided before either
+game is written, so a refused request changes nothing.
+-}
+data MainStreetSwapError
+  = -- | Both ordinals name the same group.
+    SwapSameGroup
+  | -- | An ordinal no group can have (ordinals are 0-based).
+    SwapBadOrdinal Int
+  | -- | The event has no group with this ordinal.
+    SwapGroupMissing GroupOrdinal
+  | -- | The group has no game.
+    SwapGroupHasNoGame GroupOrdinal
+  | -- | The group's game was deleted after the group was read.
+    SwapGameMissing ArkhamGameId
+  | -- | The group's scenario has not readied an investigator at Main Street.
+    SwapNotReady GroupOrdinal
+  | -- | The group's game has no Main Street.
+    SwapNoMainStreet GroupOrdinal
+  | -- | The readied investigator is no longer in the group's game.
+    SwapInvestigatorMissing GroupOrdinal
+  | -- | The readied investigator is no longer at the group's Main Street.
+    SwapInvestigatorMoved GroupOrdinal
+  deriving stock (Eq, Show)
+
+{- | The two groups' games, from the requested ordinals and the event's
+@(ordinal, game)@ group rows for them.
+-}
+resolveSwapGames
+  :: Int
+  -> Int
+  -> [(Int, Maybe ArkhamGameId)]
+  -> Either MainStreetSwapError (ArkhamGameId, ArkhamGameId)
+resolveSwapGames firstOrdinal secondOrdinal groups = do
+  when (firstOrdinal == secondOrdinal) $ Left SwapSameGroup
+  for_ [firstOrdinal, secondOrdinal] \ordinal ->
+    when (ordinal < 0) $ Left (SwapBadOrdinal ordinal)
+  (,) <$> gameOf firstOrdinal <*> gameOf secondOrdinal
+ where
+  byOrdinal = Map.fromList groups
+  gameOf ordinal = case Map.lookup ordinal byOrdinal of
+    Nothing -> Left $ SwapGroupMissing (GroupOrdinal ordinal)
+    Just Nothing -> Left $ SwapGroupHasNoGame (GroupOrdinal ordinal)
+    Just (Just gameId) -> Right gameId
+
+-- | What 'planMainStreetSwap' reads from one group's game.
+data MainStreetSwapSide = MainStreetSwapSide
+  { mainStreetSideOrdinal :: GroupOrdinal
+  , mainStreetSideReady :: Maybe InvestigatorId
+  -- ^ the investigator the scenario readied at Main Street
+  , mainStreetSideLocation :: Maybe LocationId
+  -- ^ the game's Main Street
+  , mainStreetSideInvestigators :: Map InvestigatorId Investigator
+  }
+
+mainStreetSwapSide :: GroupOrdinal -> Game -> MainStreetSwapSide
+mainStreetSwapSide ordinal game =
+  MainStreetSwapSide
+    { mainStreetSideOrdinal = ordinal
+    , mainStreetSideReady = case gameMode game of
+        That scenario -> scenarioReady scenario
+        These _ scenario -> scenarioReady scenario
+        This _ -> Nothing
+    , mainStreetSideLocation =
+        (.id)
+          <$> find ((== CardCode "89006") . toCardCode) (toList $ entitiesLocations $ gameEntities game)
+    , mainStreetSideInvestigators = entitiesInvestigators $ gameEntities game
+    }
+ where
+  scenarioReady :: Scenario -> Maybe InvestigatorId
+  scenarioReady scenario = getMetaKeyDefault "mainStreetReady" Nothing (toAttrs scenario)
+
+{- | A checked swap: each group's readied investigator, as read from its game,
+and the destination recorded for it (the other group's Main Street).
+-}
+data MainStreetSwapPlan = MainStreetSwapPlan
+  { mainStreetFirstInvestigator :: Investigator
+  , mainStreetFirstDestination :: LocationId
+  , mainStreetSecondInvestigator :: Investigator
+  , mainStreetSecondDestination :: LocationId
+  }
+  deriving stock (Eq, Show)
+
+{- | Both groups must have readied an investigator who is still in their game
+and still at their Main Street.
+-}
+planMainStreetSwap
+  :: MainStreetSwapSide -> MainStreetSwapSide -> Either MainStreetSwapError MainStreetSwapPlan
+planMainStreetSwap firstSide secondSide = do
+  (firstInvestigator, firstMainStreet) <- readySide firstSide
+  (secondInvestigator, secondMainStreet) <- readySide secondSide
+  pure
+    MainStreetSwapPlan
+      { mainStreetFirstInvestigator = firstInvestigator
+      , mainStreetFirstDestination = secondMainStreet
+      , mainStreetSecondInvestigator = secondInvestigator
+      , mainStreetSecondDestination = firstMainStreet
+      }
+ where
+  readySide side = do
+    let ordinal = mainStreetSideOrdinal side
+    iid <- maybeToRight (SwapNotReady ordinal) (mainStreetSideReady side)
+    mainStreet <- maybeToRight (SwapNoMainStreet ordinal) (mainStreetSideLocation side)
+    investigator <-
+      maybeToRight (SwapInvestigatorMissing ordinal)
+        $ Map.lookup iid (mainStreetSideInvestigators side)
+    when (attr investigatorPlacement investigator /= AtLocation mainStreet)
+      $ Left (SwapInvestigatorMoved ordinal)
+    pure (investigator, mainStreet)
 
 transferCardUses
   :: InvestigatorId
