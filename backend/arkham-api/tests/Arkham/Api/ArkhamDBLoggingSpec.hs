@@ -223,6 +223,42 @@ replacementCharPaths =
   , "/api/auth%25C0%25AFarkham-build/callback"
   , "/api/v1%25C0%25AFarkham-build/verify"
   ]
+    <> unsafeCharPaths
+
+-- A segment with any character outside RFC 3986 pchar (minus ';' and '%') is
+-- irregular: NUL, controls, a trailing space and look-alike slashes (U+FF0F,
+-- U+FF3C, U+2215, U+2044) decode to valid text that is no credential prefix,
+-- so only the allowlist keeps these out of the log.
+unsafeCharPaths :: [ByteString]
+unsafeCharPaths = concatMap unsafeCharProbes credentialPrefixes
+
+-- (parent, credential name, a route below it) for each credential prefix.
+credentialPrefixes :: [(ByteString, ByteString, ByteString)]
+credentialPrefixes =
+  [ ("/api/v1/arkham", "arkhamdb", "callback")
+  , ("/api/auth", "arkham-build", "callback")
+  , ("/api/v1", "arkham-build", "verify")
+  ]
+
+unsafeCharProbes :: (ByteString, ByteString, ByteString) -> [ByteString]
+unsafeCharProbes (parent, name, route) =
+  concat
+    [ [ parent <> "/" <> name <> c <> "/" <> route
+      , parent <> "/" <> name <> c
+      , parent <> "/" <> c <> name <> "/" <> route
+      ]
+    | c <- ["%00", "%09", "%0A", "%20"]
+    ]
+    <> concat
+      [ [ parent <> c <> name <> "/" <> route
+        , parent <> "/" <> name <> c <> route
+        ]
+      | c <- lookalikeSlashes
+      ]
+
+-- U+FF0F, U+FF3C, U+2215 and U+2044.
+lookalikeSlashes :: [ByteString]
+lookalikeSlashes = ["%EF%BC%8F", "%EF%BC%BC", "%E2%88%95", "%E2%81%84"]
 
 -- Empty segments must not suppress logging of ordinary routes.
 ordinaryPaths :: [ByteString]
@@ -264,6 +300,28 @@ ordinaryPaths =
   , "/api/v1/arkham/arkhamdb-other%EF%BF%BD"
   , "/api/v1/arkham/card/%C3%A9"
   ]
+    <> unsafeCharOrdinaryPaths
+
+-- Unsafe characters next to a name that is not exactly a credential route
+-- name, or on a route that names none, do not suppress logging. Both setPath
+-- and Warp keep these in canonical form, so they log verbatim either way.
+unsafeCharOrdinaryPaths :: [ByteString]
+unsafeCharOrdinaryPaths =
+  [ "/api/v1/arkham/arkhamdb-other%00"
+  , "/api/v1/arkham/arkhamdb-other%09/x"
+  , "/api/v1/arkham/arkhamdb2%0A"
+  , "/api/v1/arkham/arkhamdb2%20"
+  , "/api/v1/arkham/arkhamdb-other%EF%BC%8Fx"
+  , "/api/v1/arkham/arkhamdb2%E2%88%95x"
+  , "/api/auth/arkham-build-other%00/callback"
+  , "/api/v1/arkham-builder%EF%BC%BCverify"
+  , "/api/v1/arkham/decks%09"
+  , "/api/v1/arkham/decks%00"
+  , "/api/v1/arkham/card/%C3%A9%20x"
+  , "/api/v1/arkham/shared-card-sets/%EF%BC%8F"
+  , "/api/v1/arkham/shared-card-sets/%E2%81%84"
+  , "/api/v1/arkham/shared-card-sets/my%20set"
+  ]
 
 -- Raw paths exactly as a client sent them, which Warp keeps in rawPathInfo
 -- (see captureRawLog), so an overlong "%C0%AF" is not re-encoded.
@@ -285,12 +343,22 @@ rawProtectedPaths =
   , "/api/v1%F0%80%80%AFarkham-build/verify"
   , "/api/v1%25C0%25AFarkham-build/verify"
   ]
+    <> unsafeCharPaths
+    -- Lowercase hex and Warp-shaped requests reach the same guard.
+    <> [ "/api/v1/arkham/arkhamdb%0a/callback"
+       , "/api/v1/arkham%ef%bc%8farkhamdb/callback"
+       , "/api/auth/arkham-build%0d/callback"
+       , "/api/v1%e2%88%95arkham-build/verify"
+       ]
 
 rawOrdinaryPaths :: [ByteString]
 rawOrdinaryPaths =
   [ "/api/v1/arkham/decks%C0%AF"
   , "/api/v1/arkham/arkhamdb-other%C0%AF"
+  , "/api/v1/arkham/card/%C3%A9"
+  , "/api/v1/arkham/arkhamdb-other%0a"
   ]
+    <> unsafeCharOrdinaryPaths
 
 -- WaiTest.setPath re-encodes the decoded segments into rawPathInfo, which the
 -- logger prints, so a literal ';' in a probe path is logged as "%3B". This
