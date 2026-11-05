@@ -1541,8 +1541,8 @@ swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
 
 swapInvestigatorState :: MainStreetSwapPlan -> Game -> Game -> (Game, Game, PlayerId, PlayerId)
 swapInvestigatorState plan firstGame secondGame =
-  ( install secondIid secondMoved secondOwned secondPid (remove firstIid firstPid firstGame)
-  , install firstIid firstMoved firstOwned firstPid (remove secondIid secondPid secondGame)
+  ( install secondIid secondMoved secondOwned secondPid secondGame (remove firstIid firstPid firstGame)
+  , install firstIid firstMoved firstOwned firstPid firstGame (remove secondIid secondPid secondGame)
   , firstPid
   , secondPid
   )
@@ -1578,51 +1578,27 @@ swapInvestigatorState plan firstGame secondGame =
       , gameCardUses = Map.map (filter (/= iid)) (gameCardUses game)
       }
 
-  install iid investigator owned pid game =
+  -- @source@ is the game the investigator leaves. It is chosen by side, not by
+  -- id: both groups may have readied the same investigator (each its own copy).
+  install iid investigator owned pid source game =
     game
       { gameEntities = addOwned investigator owned (gameEntities game)
       , gamePlayers = gamePlayers game <> [pid]
       , gamePlayerOrder = gamePlayerOrder game <> [iid]
-      , gameInHandEntities =
-          copyMapEntry
-            iid
-            (if iid == firstIid then gameInHandEntities firstGame else gameInHandEntities secondGame)
-            (gameInHandEntities game)
+      , gameInHandEntities = copyMapEntry iid (gameInHandEntities source) (gameInHandEntities game)
       , gameInDiscardEntities =
-          copyMapEntry
-            iid
-            (if iid == firstIid then gameInDiscardEntities firstGame else gameInDiscardEntities secondGame)
-            (gameInDiscardEntities game)
-      , gamePhaseHistory =
-          copyMapEntry
-            iid
-            (if iid == firstIid then gamePhaseHistory firstGame else gamePhaseHistory secondGame)
-            (gamePhaseHistory game)
-      , gameTurnHistory =
-          copyMapEntry
-            iid
-            (if iid == firstIid then gameTurnHistory firstGame else gameTurnHistory secondGame)
-            (gameTurnHistory game)
-      , gameRoundHistory =
-          copyMapEntry
-            iid
-            (if iid == firstIid then gameRoundHistory firstGame else gameRoundHistory secondGame)
-            (gameRoundHistory game)
+          copyMapEntry iid (gameInDiscardEntities source) (gameInDiscardEntities game)
+      , gamePhaseHistory = copyMapEntry iid (gamePhaseHistory source) (gamePhaseHistory game)
+      , gameTurnHistory = copyMapEntry iid (gameTurnHistory source) (gameTurnHistory game)
+      , gameRoundHistory = copyMapEntry iid (gameRoundHistory source) (gameRoundHistory game)
       , gameQuestion =
           copyMapEntry
             pid
-            (if pid == firstPid then gameQuestion firstGame else gameQuestion secondGame)
+            (gameQuestion source)
             (gameQuestion game)
       , gameModifiers =
-          copyMapEntry
-            (InvestigatorTarget iid)
-            (if iid == firstIid then gameModifiers firstGame else gameModifiers secondGame)
-            (gameModifiers game)
-      , gameCardUses =
-          transferCardUses
-            iid
-            (if iid == firstIid then gameCardUses firstGame else gameCardUses secondGame)
-            (gameCardUses game)
+          copyMapEntry (InvestigatorTarget iid) (gameModifiers source) (gameModifiers game)
+      , gameCardUses = transferCardUses iid (gameCardUses source) (gameCardUses game)
       , gameActiveInvestigatorId = replaceId firstIid secondIid iid (gameActiveInvestigatorId game)
       , gameTurnPlayerInvestigatorId =
           replaceId firstIid secondIid iid <$> gameTurnPlayerInvestigatorId game
@@ -1660,6 +1636,10 @@ data MainStreetSwapError
     SwapInvestigatorMissing GroupOrdinal
   | -- | The readied investigator is no longer at the group's Main Street.
     SwapInvestigatorMoved GroupOrdinal
+  | -- | The group's game already has, besides its own readied investigator,
+    -- the investigator the other group would send it (the same investigator
+    -- in both games): a game cannot hold two copies of one investigator.
+    SwapInvestigatorConflict GroupOrdinal
   deriving stock (Eq, Show)
 
 {- | A request names two distinct, non-negative group ordinals. Checked before
@@ -1728,13 +1708,21 @@ data MainStreetSwapPlan = MainStreetSwapPlan
   deriving stock (Eq, Show)
 
 {- | Both groups must have readied an investigator who is still in their game
-and still at their Main Street.
+and still at their Main Street. Neither game may already hold, besides its
+outgoing investigator, the investigator it would receive. Two groups that
+readied the same investigator swap their copies.
 -}
 planMainStreetSwap
   :: MainStreetSwapSide -> MainStreetSwapSide -> Either MainStreetSwapError MainStreetSwapPlan
 planMainStreetSwap firstSide secondSide = do
   (firstInvestigator, firstMainStreet) <- readySide firstSide
   (secondInvestigator, secondMainStreet) <- readySide secondSide
+  let
+    receives side outgoing incoming =
+      when (incoming.id /= outgoing.id && Map.member incoming.id (mainStreetSideInvestigators side))
+        $ Left (SwapInvestigatorConflict (mainStreetSideOrdinal side))
+  receives firstSide firstInvestigator secondInvestigator
+  receives secondSide secondInvestigator firstInvestigator
   pure
     MainStreetSwapPlan
       { mainStreetFirstInvestigator = firstInvestigator

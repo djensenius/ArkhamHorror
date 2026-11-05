@@ -90,9 +90,10 @@ data Rows = Rows
   }
   deriving stock (Eq, Show)
 
-notReady, stale :: Outcome
+notReady, stale, conflict :: Outcome
 notReady = Refused 409 (Just "main-street-not-ready")
 stale = Refused 409 (Just "main-street-stale")
+conflict = Refused 409 (Just "main-street-conflict")
 
 spec :: Harness -> App -> SeedUser -> Spec
 spec harness app seedUser = describe "Main Street swap" do
@@ -137,6 +138,23 @@ spec harness app seedUser = describe "Main Street swap" do
       original <- rows connection f
       requestSwap app f.organizer f.eventId 0 1 `shouldReturn` stale
       rows connection f `shouldReturn` original
+
+  it "refuses a game that already holds the incoming investigator with 409 and changes no row" $
+    withConnection harness \connection -> do
+      f <- seedFixture connection seedUser "swap-conflict"
+      -- Group 0's game also seats a Daisy (group 1's readied investigator)
+      -- away from Main Street.
+      addBystander connection f.side0 f.side1.investigator
+      original <- rows connection f
+      requestSwap app f.organizer f.eventId 0 1 `shouldReturn` conflict
+      requestSwap app f.organizer f.eventId 1 0 `shouldReturn` conflict
+      rows connection f `shouldReturn` original
+
+  it "swaps two groups that readied the same investigator" $
+    withConnection harness \connection -> do
+      f <- seedFixtureWith connection seedUser "swap-same-investigator" "01001" "01001"
+      requestSwap app f.organizer f.eventId 0 1 `shouldReturn` Succeeded
+      assertSwapped connection f
 
   it "refuses invalid and unauthorized requests and changes no row" $
     withConnection harness \connection -> do
@@ -351,13 +369,18 @@ seedSide connection label user investigator = do
     pure Side {..}
 
 seedFixture :: SqlBackend -> SeedUser -> Text -> IO Fixture
-seedFixture connection seedUser label = do
+seedFixture connection seedUser label = seedFixtureWith connection seedUser label "01001" "01002"
+
+-- Two groups that readied @investigator0@ and @investigator1@.
+seedFixtureWith
+  :: SqlBackend -> SeedUser -> Text -> InvestigatorId -> InvestigatorId -> IO Fixture
+seedFixtureWith connection seedUser label investigator0 investigator1 = do
   now <- currentTimeMicros
   organizer <- seedUser connection (label <> "-organizer")
   alice <- seedUser connection (label <> "-alice")
   bob <- seedUser connection (label <> "-bob")
-  side0 <- seedSide connection (label <> "-group-0") alice "01001"
-  side1 <- seedSide connection (label <> "-group-1") bob "01002"
+  side0 <- seedSide connection (label <> "-group-0") alice investigator0
+  side1 <- seedSide connection (label <> "-group-1") bob investigator1
   let shared =
         setSharedCounter (MainStreetReady (GroupOrdinal 0)) 1
           $ setSharedCounter (MainStreetReady (GroupOrdinal 1)) 1
@@ -372,6 +395,24 @@ seedFixture connection seedUser label = do
     for_ [(0 :: Int, side0), (1, side1)] \(ordinal, side) ->
       P.insert_ $ ArkhamEpicGroup eventId ordinal (Just side.gameId) ("Group " <> show ordinal) 1
     pure Fixture {..}
+
+-- The side's game also seats @investigator@, away from Main Street.
+addBystander :: SqlBackend -> Side -> InvestigatorId -> IO ()
+addBystander connection side investigator = do
+  game <- gameData connection side.gameId
+  playerId <- PlayerId <$> nextRandom
+  let joined =
+        game
+          { Game.gamePlayers = Game.gamePlayers game <> [playerId]
+          , Game.gamePlayerOrder = Game.gamePlayerOrder game <> [investigator]
+          , Game.gameEntities =
+              (Game.gameEntities game)
+                { entitiesInvestigators =
+                    Map.insert investigator (lookupInvestigator investigator playerId)
+                      $ entitiesInvestigators (Game.gameEntities game)
+                }
+          }
+  transaction connection $ P.update side.gameId [ArkhamGameCurrentData P.=. joined]
 
 -- The investigator walked away from Main Street after readying there.
 relocate :: SqlBackend -> Side -> Placement -> IO ()

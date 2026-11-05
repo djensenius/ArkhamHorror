@@ -177,12 +177,47 @@ spec = do
       planMainStreetSwap firstSide (movedTo Unplaced)
         `shouldBe` Left (SwapInvestigatorMoved (GroupOrdinal 1))
 
+    it "refuses a group whose game already holds the investigator it would receive" do
+      let alsoHolds iid player side =
+            side
+              { mainStreetSideInvestigators =
+                  Map.insert iid (investigatorAt iid player (AtLocation elsewhere))
+                    $ mainStreetSideInvestigators side
+              }
+      -- The first group's game also seats a Daisy, who stayed behind.
+      planMainStreetSwap (alsoHolds daisy 2 firstSide) secondSide
+        `shouldBe` Left (SwapInvestigatorConflict (GroupOrdinal 0))
+      planMainStreetSwap firstSide (alsoHolds roland 3 secondSide)
+        `shouldBe` Left (SwapInvestigatorConflict (GroupOrdinal 1))
+
+    it "accepts two groups that readied the same investigator" do
+      (mainStreetFirstDestination <$> planMainStreetSwap firstSide (readySide 1 roland mainStreetB))
+        `shouldBe` Right mainStreetB
+
   describe "swapInvestigatorState" do
     it "places each moved investigator at the Main Street of the game it moved into" do
       let swapped = swapGames (readyGame roland 0 mainStreetA) (readyGame daisy 1 mainStreetB)
       -- Daisy moved into the first game, Roland into the second.
       (placementIn daisy . fst <$> swapped) `shouldBe` Right (Just (AtLocation mainStreetA))
       (placementIn roland . snd <$> swapped) `shouldBe` Right (Just (AtLocation mainStreetB))
+
+    it "swaps two copies of the same investigator, each with its own state" do
+      let
+        -- Each group's Roland has used a different card.
+        withUses code game = game {Game.gameCardUses = Map.singleton code [roland]}
+        first = withUses "01020" $ readyGame roland 0 mainStreetA
+        second = withUses "01030" $ readyGame roland 1 mainStreetB
+        swapped = swapGames first second
+        seats = Game.gamePlayers
+        uses = Map.filter (not . null) . Game.gameCardUses
+      -- Each game now seats the other group's player, whose Roland brought its
+      -- own card uses and stands at this game's Main Street.
+      (bimap seats seats <$> swapped) `shouldBe` Right (seats second, seats first)
+      (bimap uses uses <$> swapped)
+        `shouldBe` Right (Map.singleton "01030" [roland], Map.singleton "01020" [roland])
+      (bimap (placementIn roland) (placementIn roland) <$> swapped)
+        `shouldBe` Right (Just (AtLocation mainStreetA), Just (AtLocation mainStreetB))
+      (bimap Game.gamePlayerOrder Game.gamePlayerOrder <$> swapped) `shouldBe` Right ([roland], [roland])
 
   describe "requireMainStreetReady" do
     let ready ordinals =
@@ -223,6 +258,7 @@ spec = do
         , SwapNoMainStreet (GroupOrdinal 0)
         , SwapInvestigatorMissing (GroupOrdinal 0)
         , SwapInvestigatorMoved (GroupOrdinal 1)
+        , SwapInvestigatorConflict (GroupOrdinal 0)
         ]
         `shouldBe` [ (Status.status400, "main-street-same-group")
                    , (Status.status400, "main-street-bad-group")
@@ -234,4 +270,5 @@ spec = do
                    , (Status.status409, "main-street-stale")
                    , (Status.status409, "main-street-stale")
                    , (Status.status409, "main-street-stale")
+                   , (Status.status409, "main-street-conflict")
                    ]
