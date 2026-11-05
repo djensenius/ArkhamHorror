@@ -9,27 +9,30 @@ module Postgres.PendingJoinSpec (spec) where
 
 import Api.Arkham.Helpers (ApiResponse (EventChanged), joinEventRoom)
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (WithFriends))
+import Api.Handler.Arkham.Events (deleteApiV1ArkhamEventR)
 import Api.Handler.Arkham.PendingGames (putApiV1ArkhamPendingGameR)
 import Arkham.Campaign (lookupCampaign)
 import Arkham.Campaign.Types (campaignStep)
 import Arkham.CampaignStep (CampaignStep (ContinueCampaignStep, ScenarioStep), Continuation (..))
 import Arkham.Classes.Entity (overAttrs)
 import Arkham.Difficulty (Difficulty (Easy))
-import Arkham.Epic.Types (EpicRole (GroupPlayer), emptySharedEventState)
+import Arkham.Epic.Types (EpicRole (GroupPlayer, Organizer), SharedKey (Countermeasures), emptySharedEventState, sharedCounter)
 import Arkham.Game qualified as Game
 import Arkham.Game.State (GameState (IsActive))
-import Control.Concurrent (threadDelay)
+import Arkham.Message (Message (RaiseShared))
 import Data.Aeson (encode)
+import Data.Aeson.Diff (Patch (..))
 import Arkham.Prelude (These (This))
 import Database.Persist (Entity (..), toPersistValue)
 import Database.Persist qualified as P
 import Database.Persist.Sql (Single (..), SqlBackend, rawSql)
-import Database.Persist.Types (PersistValue (..))
 import Entity.Arkham.Epic
 import Entity.Arkham.Game
 import Entity.Arkham.Player
+import Entity.Arkham.Step
 import Entity.User (UserId)
 import Foundation (App, Handler, Subscriber (..), unsafeHandler, userIdToToken)
+import Network.HTTP.Types (Method)
 import Network.Wai (defaultRequest, requestHeaders, requestMethod)
 import Postgres.Harness
 import Postgres.Production (withRequest)
@@ -43,8 +46,9 @@ import Yesod.Core.Types (ErrorResponse (..), HandlerContents (..))
 type SeedUser = SqlBackend -> Text -> IO UserId
 
 -- What the route answered. A permission failure is the HCError Yesod renders
--- as 403; anything else, a 500 included, fails the test.
-data Outcome = Succeeded | Forbidden Text
+-- as 403, and Missing the one it renders as 404; anything else, a 500
+-- included, fails the test.
+data Outcome = Succeeded | Forbidden Text | Missing
   deriving stock (Eq, Ord, Show)
 
 data EpicFixture = EpicFixture
@@ -156,6 +160,121 @@ spec harness app seedUser = describe "Pending game join" do
       membership connection f player `shouldReturn` [(GroupPlayer, Just 0)]
       announcements `shouldReturn` 1
 
+  it "commits two concurrent first joins to different groups whose setup changes the shared state" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      organizer <- seedUser observer "join-setup-organizer"
+      player0 <- seedUser observer "join-setup-player-0"
+      player1 <- seedUser observer "join-setup-player-1"
+      game0 <- seedSetupGame observer "join-setup-group-0"
+      game1 <- seedSetupGame observer "join-setup-group-1"
+      f <- seedEventWith observer "join-setup" organizer game0 game1
+      initial <- countermeasures observer f
+      -- Share the event row, as a member insert's KEY SHARE does, so both
+      -- joins have started when they go on. Before the event was locked ahead
+      -- of the member insert, each join held KEY SHARE and then deadlocked
+      -- waiting for FOR UPDATE to commit its setup's shared delta.
+      -- Once released, the second join waits on the event lock for the whole
+      -- of the first join's setup, so this relies on the launcher's
+      -- lock_timeout (3s) outlasting that setup. Here it is tiny: setup
+      -- pauses at ChooseDeck.
+      outcomes <-
+        joinsBehind holding observer
+          (eventRowLock "FOR SHARE" f)
+          (pendingJoin app player0 game0)
+          (pendingJoin app player1 game1)
+      outcomes `shouldBe` (Succeeded, Succeeded)
+      seatRows observer game0 `shouldReturn` [player0]
+      seatRows observer game1 `shouldReturn` [player1]
+      membership observer f player0 `shouldReturn` [(GroupPlayer, Just 0)]
+      membership observer f player1 `shouldReturn` [(GroupPlayer, Just 1)]
+      countermeasures observer f `shouldReturn` initial + 2
+      epicStepCount observer f `shouldReturn` 2
+      eventStep observer f `shouldReturn` 2
+      gameStep observer game0 `shouldReturn` 2
+      gameStep observer game1 `shouldReturn` 2
+
+  it "answers 404, not 500, when a delete outside the canonical lock order removes the event under a waiting join" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      organizer <- seedUser observer "join-gone-organizer"
+      player <- seedUser observer "join-gone-player"
+      f <- seedEvent observer "join-gone" organizer
+      joinAfterRawEventDelete holding observer f (pendingJoin app player f.group0)
+        `shouldReturn` Missing
+      seatRows observer f.group0 `shouldReturn` []
+      gameStep observer f.group0 `shouldReturn` 1
+
+  it "answers 404, not 500, when a delete outside the canonical lock order removes the event under a waiting continuation join" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      organizer <- seedUser observer "join-gone-continuation-organizer"
+      player <- seedUser observer "join-gone-continuation-player"
+      continuing <- seedContinuationGame observer "join-gone-continuation-group-0"
+      lobby <- seedGame observer "join-gone-continuation-group-1"
+      f <- seedEventWith observer "join-gone-continuation" organizer continuing lobby
+      original <- transaction observer $ P.getJust continuing
+      joinAfterRawEventDelete holding observer f (pendingJoin app player continuing)
+        `shouldReturn` Missing
+      seatRows observer continuing `shouldReturn` []
+      afterwards <- transaction observer $ P.getJust continuing
+      arkhamGameStep afterwards `shouldBe` arkhamGameStep original
+      encode (arkhamGameCurrentData afterwards) `shouldBe` encode (arkhamGameCurrentData original)
+
+  it "clears stale later step rows before a pending join inserts its step" $
+    withConnection harness \connection -> do
+      player <- seedUser connection "join-stale-pending-player"
+      gameId <- seedGame connection "join-stale-pending"
+      seedStaleSteps connection gameId
+      pendingJoin app player gameId `shouldReturn` Succeeded
+      seatRows connection gameId `shouldReturn` [player]
+      gameStep connection gameId `shouldReturn` 2
+      -- Only the join's own step is left: the stale step 2 was replaced and
+      -- the stale step 3 is gone.
+      stepRows connection gameId `shouldReturn` [(2, False)]
+
+  it "clears stale later step rows before a continuation join inserts its step" $
+    withConnection harness \connection -> do
+      player <- seedUser connection "join-stale-continuation-player"
+      gameId <- seedContinuationGame connection "join-stale-continuation"
+      seedStaleSteps connection gameId
+      pendingJoin app player gameId `shouldReturn` Succeeded
+      seatRows connection gameId `shouldReturn` [player]
+      gameStep connection gameId `shouldReturn` 2
+      stepRows connection gameId `shouldReturn` [(2, False)]
+
+  it "answers 404, not 500, to a join queued behind an event delete on the lowest-id group game" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      (f, organizer, player) <- seedDeleteRace seedUser observer "join-delete-first"
+      let target = min f.group0 f.group1
+      outcomes <-
+        inOrderBehindGameLock holding observer target
+          (deleteEvent app organizer f.eventId)
+          (pendingJoin app player target)
+      outcomes `shouldBe` (Succeeded, Missing)
+      remaining observer f player `shouldReturn` (0, 0, 0, 0)
+
+  it "lets an event delete queued behind a join on the lowest-id group game remove the new seat with the event" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      (f, organizer, player) <- seedDeleteRace seedUser observer "join-delete-second"
+      let target = min f.group0 f.group1
+      outcomes <-
+        inOrderBehindGameLock holding observer target
+          (pendingJoin app player target)
+          (deleteEvent app organizer f.eventId)
+      -- The join committed its seat and membership first: had the delete run
+      -- first, the join would have answered Missing.
+      -- The broadcast is not asserted: the join's post-commit notification and
+      -- the delete's room teardown are unordered.
+      outcomes `shouldBe` (Succeeded, Succeeded)
+      remaining observer f player `shouldReturn` (0, 0, 0, 0)
+
+-- The event delete handler locks the group games first
+-- ('canonicalEpicGameLockOrder'), so a join never sees its event vanish. This
+-- holder deletes the event row directly instead, bypassing that order, to
+-- model a raw-SQL or future delete path: the join, already past its event
+-- lookup, waits on the event lock and finds the row gone once the delete
+-- commits.
+joinAfterRawEventDelete :: SqlBackend -> SqlBackend -> EpicFixture -> IO Outcome -> IO Outcome
+joinAfterRawEventDelete holding observer f = behindHeldLock holding observer (P.delete f.eventId)
+
 -- A WithFriends campaign lobby with two seats, so a first join leaves it
 -- pending and runs no setup.
 seedGame :: SqlBackend -> Text -> IO ArkhamGameId
@@ -176,6 +295,42 @@ seedContinuationGame connection label = do
         }
   transaction connection $ P.insert $ ArkhamGame label game 1 WithFriends now now False
 
+-- A one-seat WithFriends lobby whose persisted queue raises the shared
+-- countermeasures, so its first join runs setup that commits a shared delta.
+seedSetupGame :: SqlBackend -> Text -> IO ArkhamGameId
+seedSetupGame connection label = do
+  now <- currentTimeMicros
+  let game = Game.newCampaign "01" Nothing 1 1 Easy False
+  transaction connection do
+    gameId <- P.insert $ ArkhamGame label game 1 WithFriends now now False
+    P.insert_ $ ArkhamStep gameId (Choice (Patch []) [RaiseShared Countermeasures 1]) 1 (ActionDiff [])
+    pure gameId
+
+-- Step rows above the game's step (1), as only old data, a debug import or an
+-- edit made outside the app leave: the join's own step 2 collides with one.
+seedStaleSteps :: SqlBackend -> ArkhamGameId -> IO ()
+seedStaleSteps connection gameId = transaction connection $
+  for_ [2, 3] \step -> P.insert_ $ ArkhamStep gameId (Choice (Patch []) staleQueue) step (ActionDiff [])
+
+staleQueue :: [Message]
+staleQueue = [RaiseShared Countermeasures 7]
+
+-- Each step row of the game, in order, and whether it still carries the
+-- stale queue.
+stepRows :: SqlBackend -> ArkhamGameId -> IO [(Int, Bool)]
+stepRows connection gameId = transaction connection do
+  steps <- P.selectList [ArkhamStepArkhamGameId P.==. gameId] [P.Asc ArkhamStepStep]
+  pure $ map ((\s -> (arkhamStepStep s, encode (choiceMessages $ arkhamStepChoice s) == encode staleQueue)) . entityVal) steps
+
+-- An event the organizer may delete, and a player with no membership yet.
+seedDeleteRace :: SeedUser -> SqlBackend -> Text -> IO (EpicFixture, UserId, UserId)
+seedDeleteRace seedUser connection label = do
+  organizer <- seedUser connection (label <> "-organizer")
+  player <- seedUser connection (label <> "-player")
+  f <- seedEvent connection label organizer
+  transaction connection $ P.insert_ $ ArkhamEpicMember f.eventId organizer Organizer Nothing
+  pure (f, organizer, player)
+
 seedEvent :: SqlBackend -> Text -> UserId -> IO EpicFixture
 seedEvent connection label organizer = do
   group0 <- seedGame connection (label <> "-group-0")
@@ -194,13 +349,19 @@ seedEventWith connection label organizer group0 group1 = do
 -- Run two joins while another session holds the games FOR UPDATE, and
 -- release the games only once both joins are queued behind that lock.
 joinsBehindLock :: SqlBackend -> SqlBackend -> [ArkhamGameId] -> IO Outcome -> IO Outcome -> IO (Outcome, Outcome)
-joinsBehindLock holding observer gameIds joinA joinB = do
+joinsBehindLock holding observer gameIds =
+  joinsBehind holding observer $ for_ gameIds \gameId ->
+    void (rawSql "SELECT 1::bigint FROM arkham_games WHERE id = ? FOR UPDATE"
+      [toPersistValue gameId] :: ReaderT SqlBackend IO [Single Int64])
+
+-- Run two joins while another session holds the locks the given statements
+-- take, and release them only once both joins are queued behind them.
+joinsBehind :: SqlBackend -> SqlBackend -> ReaderT SqlBackend IO () -> IO Outcome -> IO Outcome -> IO (Outcome, Outcome)
+joinsBehind holding observer hold joinA joinB = do
   held <- newBarrier
   holderPid <- backendPid holding
   withAsync (transaction holding do
-    for_ gameIds \gameId ->
-      rawSql "SELECT 1::bigint FROM arkham_games WHERE id = ? FOR UPDATE"
-        [toPersistValue gameId] :: ReaderT SqlBackend IO [Single Int64]
+    hold
     liftIO $ pauseAt held) \holder -> do
       link holder
       awaitBarrier held
@@ -210,6 +371,57 @@ joinsBehindLock holding observer gameIds joinA joinB = do
         releaseBarrier held
         within "lock holder commit" $ wait holder
         (,) <$> within "first join" (wait first) <*> within "second join" (wait second)
+
+-- Hold the game row, queue @first@ and then @second@ behind it, in that order,
+-- and release it once both wait. PostgreSQL grants a row to its waiters in
+-- queue order, so @first@ takes the game and commits before @second@ gets it.
+inOrderBehindGameLock :: SqlBackend -> SqlBackend -> ArkhamGameId -> IO a -> IO b -> IO (a, b)
+inOrderBehindGameLock holding observer gameId first second = do
+  held <- newBarrier
+  holderPid <- backendPid holding
+  withAsync (transaction holding do
+    void (rawSql "SELECT 1::bigint FROM arkham_games WHERE id = ? FOR UPDATE"
+      [toPersistValue gameId] :: ReaderT SqlBackend IO [Single Int64])
+    liftIO $ pauseAt held) \holder -> do
+      link holder
+      awaitBarrier held
+      withAsync first \a -> do
+        awaitBlockedSessions observer holderPid 1
+        withAsync second \b -> do
+          awaitBlockedSessions observer holderPid 2
+          -- lock_timeout is 3s: release as soon as both are queued.
+          releaseBarrier held
+          within "lock holder commit" $ wait holder
+          (,) <$> within "first queued" (wait a) <*> within "second queued" (wait b)
+
+-- What is left of the event: its row, its group games, and the player's seats
+-- and memberships.
+remaining :: SqlBackend -> EpicFixture -> UserId -> IO (Int, Int, Int, Int)
+remaining connection f uid = transaction connection do
+  events <- P.count [ArkhamEpicEventId P.==. f.eventId]
+  games <- P.count [ArkhamGameId P.<-. [f.group0, f.group1]]
+  seats <- P.count [ArkhamPlayerUserId P.==. uid]
+  members <- P.count [ArkhamEpicMemberUserId P.==. uid]
+  pure (events, games, seats, members)
+
+eventRowLock :: Text -> EpicFixture -> ReaderT SqlBackend IO ()
+eventRowLock mode f =
+  void (rawSql ("SELECT 1::bigint FROM arkham_epic_events WHERE id = ? " <> mode)
+    [toPersistValue f.eventId] :: ReaderT SqlBackend IO [Single Int64])
+
+countermeasures :: SqlBackend -> EpicFixture -> IO Int
+countermeasures connection f = transaction connection do
+  event <- P.getJust f.eventId
+  pure $ sharedCounter Countermeasures (arkhamEpicEventSharedState event)
+
+eventStep :: SqlBackend -> EpicFixture -> IO Int
+eventStep connection f = transaction connection do
+  event <- P.getJust f.eventId
+  pure $ arkhamEpicEventStep event
+
+epicStepCount :: SqlBackend -> EpicFixture -> IO Int
+epicStepCount connection f = transaction connection $
+  P.count [ArkhamEpicStepArkhamEpicEventId P.==. f.eventId]
 
 seatRows :: SqlBackend -> ArkhamGameId -> IO [UserId]
 seatRows connection gameId = transaction connection do
@@ -238,35 +450,21 @@ watchEvent app f = do
       let n' = n + length (filter (== encode EventChanged) queued) in (n', n')
 
 pendingJoin :: App -> UserId -> ArkhamGameId -> IO Outcome
-pendingJoin app uid gameId = route app uid $ void (putApiV1ArkhamPendingGameR gameId)
+pendingJoin app uid gameId = route app uid "PUT" $ void (putApiV1ArkhamPendingGameR gameId)
+
+deleteEvent :: App -> UserId -> ArkhamEpicEventId -> IO Outcome
+deleteEvent app uid eid = route app uid "DELETE" (deleteApiV1ArkhamEventR eid)
 
 -- The HCError is caught only after runDB has rolled back.
-route :: App -> UserId -> Handler () -> IO Outcome
-route app uid action = do
+route :: App -> UserId -> Method -> Handler () -> IO Outcome
+route app uid method action = do
   token <- unsafeHandler app $ userIdToToken uid
   let request = defaultRequest
-        { requestMethod = "PUT"
+        { requestMethod = method
         , requestHeaders = [("Authorization", "Token " <> encodeUtf8 token)]
         }
   unsafeHandler app $
     (Succeeded <$ withRequest request action) `Exception.catch` \case
       HCError (PermissionDenied message) -> pure $ Forbidden message
+      HCError NotFound -> pure Missing
       other -> Exception.throwIO other
-
--- Pool sessions have no PID the test can name up front, so wait until the
--- expected number of sessions are blocked, directly or behind each other, on
--- the holder's lock.
-awaitBlockedSessions :: SqlBackend -> Int64 -> Int64 -> IO ()
-awaitBlockedSessions observer holder expected = within "joins queued behind the game lock" loop
- where
-  loop = do
-    rows <- transaction observer $
-      rawSql
-        "SELECT count(*)::bigint FROM pg_stat_activity \
-        \WHERE datname = current_database() AND pid <> ?::integer \
-        \AND cardinality(pg_blocking_pids(pid)) > 0"
-        [PersistInt64 holder]
-    case rows of
-      [Single n] | n >= expected -> pure ()
-      [Single _] -> threadDelay 10000 >> loop
-      _ -> fail "Expected one PostgreSQL lock observation"

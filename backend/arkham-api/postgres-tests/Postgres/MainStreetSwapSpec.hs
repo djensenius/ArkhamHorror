@@ -39,14 +39,12 @@ import Arkham.Placement (Placement (AtLocation, Unplaced))
 import Arkham.Question (Question (ChooseOne, PlayerWindowChooseOne))
 import Arkham.SkillTest.Base (SkillTestDifficulty (..), initSkillTest)
 import Arkham.SkillType (SkillType (SkillIntellect))
-import Control.Concurrent (threadDelay)
 import Data.Aeson (Value, decode, encode, object, toJSON, (.=))
 import Data.Map.Strict qualified as Map
 import Data.UUID.V4 (nextRandom)
 import Database.Persist (Entity (..), SelectOpt (..), toPersistValue)
 import Database.Persist qualified as P
 import Database.Persist.Sql (Single (..), SqlBackend, rawSql)
-import Database.Persist.Types (PersistValue (..))
 import Entity.Arkham.Epic
 import Entity.Arkham.Game
 import Entity.Arkham.Player
@@ -600,21 +598,3 @@ route app uid method path body = do
       | code `elem` [400, 409] ->
           Refused code $ Map.lookup ("error" :: Text) =<< decode @(Map Text Text) response
       | otherwise -> Failed code (decodeUtf8 response)
-
--- Pool sessions have no PID the test can name up front, so wait until the
--- expected number of sessions are blocked, directly or behind each other, on
--- the holder's lock.
-awaitBlockedSessions :: SqlBackend -> Int64 -> Int64 -> IO ()
-awaitBlockedSessions observer holder expected = within "requests queued behind the held lock" loop
- where
-  loop = do
-    rows' <- transaction observer $
-      rawSql
-        "SELECT count(*)::bigint FROM pg_stat_activity \
-        \WHERE datname = current_database() AND pid <> ?::integer \
-        \AND cardinality(pg_blocking_pids(pid)) > 0"
-        [PersistInt64 holder]
-    case rows' of
-      [Single n] | n >= expected -> pure ()
-      [Single _] -> threadDelay 10000 >> loop
-      _ -> fail "Expected one PostgreSQL lock observation"
