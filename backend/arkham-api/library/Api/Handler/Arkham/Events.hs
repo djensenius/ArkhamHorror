@@ -23,6 +23,8 @@ module Api.Handler.Arkham.Events (
   postApiV1ArkhamEventSwapMainStreetR,
   deduplicateEventMemberships,
   withEventMember,
+  EventDeletionOutcome (..),
+  decideEventDeletion,
   PendingGroupGame (..),
   buildGroupGame,
   preparePendingGroupGames,
@@ -31,7 +33,11 @@ module Api.Handler.Arkham.Events (
   gameScenarioMetaDefault,
 ) where
 
-import Api.Arkham.Epic (applyEpicDeltasLocked, modifySharedStateLocked)
+import Api.Arkham.Epic (
+  applyEpicDeltasLocked,
+  canonicalEpicGameLockOrder,
+  modifySharedStateLocked,
+ )
 import Api.Arkham.Helpers
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (WithFriends))
 import Api.Handler.Arkham.Games.Shared (
@@ -268,14 +274,50 @@ Organizer row directly rather than trusting the first membership found.
 -}
 requireOrganizer :: UserId -> ArkhamEpicEventId -> Handler ()
 requireOrganizer userId eid = do
-  isOrganizer <-
-    runDB
-      $ P.exists
-        [ ArkhamEpicMemberArkhamEpicEventId P.==. eid
-        , ArkhamEpicMemberUserId P.==. userId
-        , ArkhamEpicMemberRole P.==. Organizer
-        ]
-  unless isOrganizer $ permissionDenied "Only the event organizer may perform this action"
+  isOrganizer <- isEventOrganizer userId eid
+  unless isOrganizer organizerOnly
+
+isEventOrganizer :: UserId -> ArkhamEpicEventId -> Handler Bool
+isEventOrganizer userId eid =
+  runDB
+    $ P.exists
+      [ ArkhamEpicMemberArkhamEpicEventId P.==. eid
+      , ArkhamEpicMemberUserId P.==. userId
+      , ArkhamEpicMemberRole P.==. Organizer
+      ]
+
+organizerOnly :: Handler a
+organizerOnly = permissionDenied "Only the event organizer may perform this action"
+
+-- | How an event deletion request resolved; 'EventDeleted' carries the deletion's result.
+data EventDeletionOutcome a = EventMissing | EventForbidden | EventDeleted a
+  deriving stock (Eq, Show)
+
+{- | Decide an event deletion. A missing event is 'EventMissing' (404) before any
+organizer check, so the status discloses nothing about who organizes it. A
+non-organizer re-probes and prefers 'EventMissing' when a concurrent delete won;
+that path never locks the event. The locked delete returns 'Nothing' when the
+event vanished before its lock was taken. Polymorphic so tests can run it in
+plain 'IO'.
+-}
+decideEventDeletion
+  :: Monad m
+  => m Bool
+  -- ^ unlocked existence probe
+  -> m Bool
+  -- ^ whether the caller organizes the event
+  -> m (Maybe a)
+  -- ^ delete under the canonical lock order
+  -> m (EventDeletionOutcome a)
+decideEventDeletion probe isOrganizer deleteLocked = do
+  present <- probe
+  if not present
+    then pure EventMissing
+    else do
+      organizer <- isOrganizer
+      if organizer
+        then maybe EventMissing EventDeleted <$> deleteLocked
+        else bool EventMissing EventForbidden <$> probe
 
 -- Handlers --------------------------------------------------------------------
 
@@ -369,22 +411,30 @@ getApiV1ArkhamEventR eid = do
 
 {- | Delete an event and all of its group games (organizer only). Deleting each
 group's 'ArkhamGame' cascades its players/steps/logs and the epic-group row;
-deleting the event cascades members and shared-state steps.
+deleting the event cascades members and shared-state steps. A missing event is
+404; an existing event the caller does not organize is 403. The aggregate is
+deleted under 'canonicalEpicGameLockOrder' before any room is cleaned up.
 -}
 deleteApiV1ArkhamEventR :: ArkhamEpicEventId -> Handler ()
 deleteApiV1ArkhamEventR eid = do
   userId <- getRequestUserId
-  requireOrganizer userId eid
-  gameValues <- runDB $ select do
-    grp <- from $ table @ArkhamEpicGroup
-    where_ $ grp.arkhamEpicEventId ==. val eid
-    pure grp.arkhamGameId
-  let gameIds = [gid | Value (Just gid) <- gameValues]
-  runDB do
-    for_ gameIds P.delete
-    P.delete eid
-  for_ gameIds deleteRoom
-  deleteEventRoom eid
+  outcome <-
+    decideEventDeletion
+      (runDB $ P.exists [ArkhamEpicEventId P.==. eid])
+      (isEventOrganizer userId eid)
+      (runDB deleteLocked)
+  case outcome of
+    EventMissing -> notFound
+    EventForbidden -> organizerOnly
+    EventDeleted gameIds -> do
+      for_ gameIds deleteRoom
+      deleteEventRoom eid
+ where
+  deleteLocked =
+    canonicalEpicGameLockOrder eid >>= traverse \(gameIds, _) -> do
+      for_ gameIds P.delete
+      P.delete eid
+      pure gameIds
 
 {- | Organizer correction for the one user-adjustable Blob pool. Internal keys
 (health, act gates/generations, timer state) are never writable through the
