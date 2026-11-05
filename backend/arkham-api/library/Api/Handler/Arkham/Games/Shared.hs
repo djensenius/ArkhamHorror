@@ -9,6 +9,7 @@ import Api.Arkham.ArkhamDBWriteBack (queueCampaignWriteBack, dispatchCampaignWri
 
 import Api.Arkham.Epic (
   applyEpicDeltasLocked,
+  canonicalEpicGameLockOrder,
   lookupGameEvent,
   mkEpicEnv,
   modifySharedStateLockedWith,
@@ -28,7 +29,9 @@ import Arkham.Classes.HasQueue
 import Arkham.Effect.Types (effectTarget)
 import Arkham.Entities (Entities (..), entitiesActs)
 import Arkham.Epic.Types (
+  EpicRole (GroupPlayer),
   GroupOrdinal (..),
+  SharedDelta (..),
   SharedEventState,
   SharedKey (
     ActAdvanceGen,
@@ -69,7 +72,7 @@ import Arkham.Placement (
   Placement (AtLocation, AttachedToInvestigator, InPlayArea, InThreatArea, StillInHand),
  )
 import Arkham.Queue
-import Arkham.Scenario.Types (Scenario, getMetaKeyDefault)
+import Arkham.Scenario.Types (Scenario, ScenarioAttrs (scenarioMeta), getMetaKeyDefault)
 import Arkham.ScenarioLogKey (ScenarioCountKey (EpicShared))
 import Arkham.Target (Target (InvestigatorTarget))
 import Arkham.Treachery.Types (treacheryPlacement)
@@ -89,6 +92,8 @@ import Data.These
 import Data.Time.Clock
 import Data.Traversable (for)
 import Data.UUID (nil)
+import Data.UUID qualified as UUID
+import Data.UUID.V4 (nextRandom)
 import Database.Esqueleto.Experimental hiding (update, (=.))
 import Database.Redis (Connection, RedisChannel, publish, runRedis)
 import Entity.Answer
@@ -96,6 +101,7 @@ import Entity.Arkham.GameRaw
 import GHC.Clock (getMonotonicTimeNSec)
 
 import Data.Aeson qualified as Aeson
+import Data.Aeson.KeyMap qualified as KeyMap
 import Entity.Arkham.LogEntry
 import Entity.Arkham.Step
 import Import hiding (delete, exists, on, (==.), (>=.))
@@ -424,6 +430,8 @@ data SubscriberStopped
     SlowSubscriber
   | -- | The room was deleted out from under it.
     RoomWasClosed
+  | -- | Its feed refused a message (see 'runSubscriberSenderWhile').
+    NoLongerAdmitted
   deriving stock Show
   deriving anyclass Exception
 
@@ -434,7 +442,15 @@ A closed subscriber drains what is already queued before it stops, so the
 the client receives rather than a casualty of the teardown.
 -}
 runSubscriberSender :: Subscriber -> WebSocketsT Handler ()
-runSubscriberSender Subscriber {subQueue, subOverflow, subClosed} =
+runSubscriberSender = runSubscriberSenderWhile (const (pure True))
+
+{- | 'runSubscriberSender', asking @admit@ about each message before it is sent.
+The first message refused is not sent, and the socket ends there, as an
+evicted one does.
+-}
+runSubscriberSenderWhile
+  :: (BSL.ByteString -> Handler Bool) -> Subscriber -> WebSocketsT Handler ()
+runSubscriberSenderWhile admit Subscriber {subQueue, subOverflow, subClosed} =
   forever
     ( do
         msg <- atomically do
@@ -445,6 +461,8 @@ runSubscriberSender Subscriber {subQueue, subOverflow, subClosed} =
             Nothing -> do
               closed <- readTVar subClosed
               if closed then throwSTM RoomWasClosed else retry
+        admitted <- lift (admit msg)
+        unless admitted $ throwIO NoLongerAdmitted
         sendTextData msg
     )
     `catch` (\(_ :: SubscriberStopped) -> pure ())
@@ -467,13 +485,21 @@ happen under the rooms lock, so it can't be decided out here.
 -}
 streamRoom
   :: Handler (Room, Int, Subscriber) -> Handler () -> WebSocketsT Handler ()
-streamRoom joinRoom onLeave = catchingConnectionException $ withKeepAlive do
+streamRoom = streamRoomWhile (const (pure True))
+
+-- | 'streamRoom', sending only what @admit@ allows ('runSubscriberSenderWhile').
+streamRoomWhile
+  :: (BSL.ByteString -> Handler Bool)
+  -> Handler (Room, Int, Subscriber)
+  -> Handler ()
+  -> WebSocketsT Handler ()
+streamRoomWhile admit joinRoom onLeave = catchingConnectionException $ withKeepAlive do
   let cleanup room subId = do
         unsubscribeFromRoom room subId
         lift onLeave
   bracket (lift joinRoom) (\(room, subId, _) -> cleanup room subId) \(_room, _subId, sub) ->
     race_
-      (runSubscriberSender sub)
+      (runSubscriberSenderWhile admit sub)
       (runConduit $ sourceWS .| mapM_C (\(_ :: ByteString) -> pure ()))
 
 {- | A broadcast callback. Used to fan out log lines and game-state updates
@@ -1272,12 +1298,13 @@ refreshMainStreetEligibility gameId = do
               )
               (entitiesInvestigators $ gameEntities game)
         eligible = length (filter groupAtMainStreet games) >= 2
-      (shared, changed) <- runDB $ modifySharedStateLockedWith eid \s ->
+      -- A concurrently deleted event has nothing to refresh.
+      mRefreshed <- runDB $ modifySharedStateLockedWith eid \s ->
         let value = if eligible then 1 else 0
          in if sharedCounter MainStreetEligible s == value
               then (s, False)
               else (setSharedCounter MainStreetEligible value s, True)
-      pure $ (eid, shared) <$ guard changed
+      pure $ mRefreshed >>= \(shared, changed) -> (eid, shared) <$ guard changed
 
 {- | The ScenarioCountSet messages that mirror the authoritative shared counters
 into a group's scenario state (as EpicShared counts), keyed by sharedKeyText,
@@ -1383,31 +1410,48 @@ threat-area treachery, controlled event, per-investigator entity cache,
 history, question, and player authorization row. Enemy cards stay behind
 because the printed ability disengages them before publishing readiness.
 
-This writes both games in one transaction, advances both revisions, publishes
-both websocket rooms, and places an undo floor at the new revisions. A swap
-is therefore never half-visible and can never be crossed by ordinary undo.
-A refused request ('MainStreetSwapError') is decided before anything is
-written, so it changes neither game.
+One transaction does the whole swap under 'canonicalEpicGameLockOrder' (the
+event's games in ascending id order, then the event row), so it serializes
+with another swap, with play in either group and with event deletion. Under
+those locks it re-plans the swap, checks and spends both groups'
+'MainStreetReady' counters (each spend recorded against its game's swap step),
+clears the scenarios' readiness, writes both games with a step row each, moves
+the seats and the players' event memberships, and places an undo floor at each
+new step, so ordinary undo can never cross the swap. A refused request
+('MainStreetSwapError') writes nothing. Only the committed games and shared
+state are published, after the commit.
 -}
 swapMainStreetInvestigators
   :: ArkhamEpicEventId -> Int -> Int -> Handler (Either MainStreetSwapError ())
-swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = runExceptT do
-  (firstGameId, secondGameId) <- ExceptT $ runDB do
+-- A request that names no two distinct groups is refused before any lock.
+swapMainStreetInvestigators _ firstOrdinal secondOrdinal
+  | Left invalid <- validateSwapOrdinals firstOrdinal secondOrdinal = pure (Left invalid)
+swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
+  now <- liftIO getCurrentTime
+  firstSpend <- mainStreetSpend firstOrdinal
+  secondSpend <- mainStreetSpend secondOrdinal
+  committed <- runDB $ runExceptT do
+    (lockedGameIds, Entity _ event) <-
+      ExceptT $ maybeToRight SwapEventMissing <$> canonicalEpicGameLockOrder eventId
     groups <-
-      P.selectList
-        [ ArkhamEpicGroupArkhamEpicEventId P.==. eventId
-        , ArkhamEpicGroupOrdinal P.<-. [firstOrdinal, secondOrdinal]
-        ]
-        []
-    pure
-      $ resolveSwapGames
-        firstOrdinal
-        secondOrdinal
-        [(arkhamEpicGroupOrdinal g, arkhamEpicGroupArkhamGameId g) | Entity _ g <- groups]
-
-  ExceptT $ runDB $ runExceptT do
-    let loadGame gameId =
-          maybeToRight (SwapGameMissing gameId) . fmap entityVal <$> P.getEntity gameId
+      lift
+        $ P.selectList
+          [ ArkhamEpicGroupArkhamEpicEventId P.==. eventId
+          , ArkhamEpicGroupOrdinal P.<-. [firstOrdinal, secondOrdinal]
+          ]
+          []
+    (firstGameId, secondGameId) <-
+      ExceptT
+        . pure
+        $ resolveSwapGames
+          firstOrdinal
+          secondOrdinal
+          [(arkhamEpicGroupOrdinal g, arkhamEpicGroupArkhamGameId g) | Entity _ g <- groups]
+    -- Groups are created with their event, so their games were locked above.
+    let loadGame gameId
+          | gameId `notElem` lockedGameIds = pure $ Left (SwapGameMissing gameId)
+          | otherwise =
+              maybeToRight (SwapGameMissing gameId) . fmap entityVal <$> P.getEntity gameId
     firstRaw <- ExceptT $ loadGame firstGameId
     secondRaw <- ExceptT $ loadGame secondGameId
     let
@@ -1419,33 +1463,101 @@ swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = runExceptT do
         $ planMainStreetSwap
           (mainStreetSwapSide (GroupOrdinal firstOrdinal) firstGame)
           (mainStreetSwapSide (GroupOrdinal secondOrdinal) secondGame)
+    ExceptT
+      . pure
+      $ requireMainStreetReady
+        (arkhamEpicEventSharedState event)
+        (GroupOrdinal firstOrdinal)
+        (GroupOrdinal secondOrdinal)
     let
       (firstGame', secondGame', firstPid, secondPid) =
         swapInvestigatorState plan firstGame secondGame
-      firstStep = arkhamGameStep firstRaw + 1
-      secondStep = arkhamGameStep secondRaw + 1
     lift do
-      P.update firstGameId [ArkhamGameCurrentData P.=. firstGame', ArkhamGameStep P.=. firstStep]
-      P.update secondGameId [ArkhamGameCurrentData P.=. secondGame', ArkhamGameStep P.=. secondStep]
-      P.update (coerce firstPid) [ArkhamPlayerArkhamGameId P.=. secondGameId]
-      P.update (coerce secondPid) [ArkhamPlayerArkhamGameId P.=. firstGameId]
+      firstSwapped <- writeSwapStep now firstGameId firstRaw (clearMainStreetReady firstGame')
+      secondSwapped <- writeSwapStep now secondGameId secondRaw (clearMainStreetReady secondGame')
+      void
+        $ applyEpicDeltasLocked
+          eventId
+          (Just firstGameId)
+          (Just $ arkhamGameStep firstSwapped)
+          [firstSpend]
+      shared <-
+        applyEpicDeltasLocked
+          eventId
+          (Just secondGameId)
+          (Just $ arkhamGameStep secondSwapped)
+          [secondSpend]
+      firstUser <- moveSeat firstPid secondGameId
+      secondUser <- moveSeat secondPid firstGameId
+      for_ firstUser \userId -> moveMembership userId firstGameId firstOrdinal secondOrdinal
+      for_ secondUser \userId -> moveMembership userId secondGameId secondOrdinal firstOrdinal
+      let swapped = [(firstGameId, firstSwapped), (secondGameId, secondSwapped)]
+      for_ swapped \(gameId, raw) ->
+        P.upsertBy
+          (UniqueGameUndoFloor gameId)
+          (ArkhamGameUndoFloor gameId (arkhamGameStep raw))
+          [ArkhamGameUndoFloorFloorStep P.=. arkhamGameStep raw]
+      pure (swapped, shared)
 
-  lift do
-    runMessagesInGroupWhen
-      (const True)
-      [SpendShared (MainStreetReady $ GroupOrdinal firstOrdinal) 1]
-      firstGameId
-    runMessagesInGroupWhen
-      (const True)
-      [SpendShared (MainStreetReady $ GroupOrdinal secondOrdinal) 1]
-      secondGameId
-    for_ [firstGameId, secondGameId] \gameId -> do
-      raw <- runDB $ P.get404 gameId
-      setGameUndoFloor gameId (arkhamGameStep raw)
+  for_ committed \(swapped, shared) -> do
+    for_ swapped \(gameId, raw) ->
       publishToRoom gameId
         $ GameUpdate
         $ PublicGame gameId (arkhamGameName raw) [] (arkhamGameCurrentData raw)
+    broadcastSharedToEvent eventId shared
     broadcastEventChanged eventId
+  pure $ void committed
+ where
+  mainStreetSpend ordinal = do
+    deltaId <- UUID.toText <$> liftIO nextRandom
+    pure
+      SharedDelta
+        { sharedDeltaId = deltaId
+        , sharedDeltaKey = MainStreetReady (GroupOrdinal ordinal)
+        , sharedDeltaAmount = -1
+        }
+
+  -- The game at its next step, with a step row whose queue is empty. The swap
+  -- used to bump the step with no row, so the next run read an empty queue;
+  -- the pending one may name the investigator who just left the game.
+  -- Its empty down-patch is never undone: the swap's undo floor walls it off.
+  writeSwapStep now gameId raw game' = do
+    let
+      swapped =
+        raw
+          { arkhamGameCurrentData = game'
+          , arkhamGameStep = arkhamGameStep raw + 1
+          , arkhamGameUpdatedAt = now
+          }
+    replace gameId swapped
+    insert_
+      $ ArkhamStep
+        gameId
+        (Choice mempty [])
+        (arkhamGameStep swapped)
+        (ActionDiff $ view actionDiffL game')
+    pure swapped
+
+  -- The seat's player row follows its investigator. Returns the seat's user.
+  moveSeat pid gameId = do
+    mPlayer <- P.getEntity (coerce pid :: ArkhamPlayerId)
+    for mPlayer \(Entity playerId player) -> do
+      P.update playerId [ArkhamPlayerArkhamGameId P.=. gameId]
+      pure $ arkhamPlayerUserId player
+
+  -- A player with no seat left in the group they left now belongs to the
+  -- group they joined.
+  moveMembership userId fromGameId fromOrdinal toOrdinal = do
+    remaining <-
+      P.count [ArkhamPlayerUserId P.==. userId, ArkhamPlayerArkhamGameId P.==. fromGameId]
+    when (remaining == 0)
+      $ P.updateWhere
+        [ ArkhamEpicMemberArkhamEpicEventId P.==. eventId
+        , ArkhamEpicMemberUserId P.==. userId
+        , ArkhamEpicMemberRole P.==. GroupPlayer
+        , ArkhamEpicMemberGroupOrdinal P.==. Just fromOrdinal
+        ]
+        [ArkhamEpicMemberGroupOrdinal P.=. Just toOrdinal]
 
 swapInvestigatorState :: MainStreetSwapPlan -> Game -> Game -> (Game, Game, PlayerId, PlayerId)
 swapInvestigatorState plan firstGame secondGame =
@@ -1552,13 +1664,16 @@ data MainStreetSwapError
     SwapSameGroup
   | -- | An ordinal no group can have (ordinals are 0-based).
     SwapBadOrdinal Int
+  | -- | The event was deleted before the swap locked it.
+    SwapEventMissing
   | -- | The event has no group with this ordinal.
     SwapGroupMissing GroupOrdinal
   | -- | The group has no game.
     SwapGroupHasNoGame GroupOrdinal
   | -- | The group's game was deleted after the group was read.
     SwapGameMissing ArkhamGameId
-  | -- | The group's scenario has not readied an investigator at Main Street.
+  | -- | The group's scenario has not readied an investigator at Main Street,
+    -- or the event's 'MainStreetReady' counter for the group is spent.
     SwapNotReady GroupOrdinal
   | -- | The group's game has no Main Street.
     SwapNoMainStreet GroupOrdinal
@@ -1567,6 +1682,15 @@ data MainStreetSwapError
   | -- | The readied investigator is no longer at the group's Main Street.
     SwapInvestigatorMoved GroupOrdinal
   deriving stock (Eq, Show)
+
+{- | A request names two distinct, non-negative group ordinals. Checked before
+the swap takes any lock, and again by 'resolveSwapGames'.
+-}
+validateSwapOrdinals :: Int -> Int -> Either MainStreetSwapError ()
+validateSwapOrdinals firstOrdinal secondOrdinal = do
+  when (firstOrdinal == secondOrdinal) $ Left SwapSameGroup
+  for_ [firstOrdinal, secondOrdinal] \ordinal ->
+    when (ordinal < 0) $ Left (SwapBadOrdinal ordinal)
 
 {- | The two groups' games, from the requested ordinals and the event's
 @(ordinal, game)@ group rows for them.
@@ -1577,9 +1701,7 @@ resolveSwapGames
   -> [(Int, Maybe ArkhamGameId)]
   -> Either MainStreetSwapError (ArkhamGameId, ArkhamGameId)
 resolveSwapGames firstOrdinal secondOrdinal groups = do
-  when (firstOrdinal == secondOrdinal) $ Left SwapSameGroup
-  for_ [firstOrdinal, secondOrdinal] \ordinal ->
-    when (ordinal < 0) $ Left (SwapBadOrdinal ordinal)
+  validateSwapOrdinals firstOrdinal secondOrdinal
   (,) <$> gameOf firstOrdinal <*> gameOf secondOrdinal
  where
   byOrdinal = Map.fromList groups
@@ -1652,6 +1774,25 @@ planMainStreetSwap firstSide secondSide = do
     when (attr investigatorPlacement investigator /= AtLocation mainStreet)
       $ Left (SwapInvestigatorMoved ordinal)
     pure (investigator, mainStreet)
+
+{- | Both groups' 'MainStreetReady' counters must still be raised on the event:
+the swap spends one from each.
+-}
+requireMainStreetReady
+  :: SharedEventState -> GroupOrdinal -> GroupOrdinal -> Either MainStreetSwapError ()
+requireMainStreetReady shared firstOrdinal secondOrdinal =
+  for_ [firstOrdinal, secondOrdinal] \ordinal ->
+    when (sharedCounter (MainStreetReady ordinal) shared < 1) $ Left (SwapNotReady ordinal)
+
+{- | Forget the investigator a group's scenario readied at Main Street. The
+swap has used that readiness, so a repeated request finds the group not ready.
+-}
+clearMainStreetReady :: Game -> Game
+clearMainStreetReady game = game {gameMode = overAttrs clear <$> gameMode game}
+ where
+  clear attrs = case scenarioMeta attrs of
+    Aeson.Object meta -> attrs {scenarioMeta = Aeson.Object $ KeyMap.delete "mainStreetReady" meta}
+    _ -> attrs
 
 transferCardUses
   :: InvestigatorId
@@ -1804,7 +1945,7 @@ injected into any group; the seam moves shared counters only.
 -}
 settleOrganizerAdvance :: ArkhamEpicEventId -> Int -> Map Int Int -> Handler ()
 settleOrganizerAdvance eid stage spendByOrdinal = do
-  (newState, applied) <- runDB $ modifySharedStateLockedWith eid \st ->
+  mSettled <- runDB $ modifySharedStateLockedWith eid \st ->
     if sharedCounter (AwaitingOrganizer stage) st /= 1
       then (st, False)
       else
@@ -1821,6 +1962,8 @@ settleOrganizerAdvance eid stage spendByOrdinal = do
               $ withSpends
          in
           (st', True)
+  -- The event was deleted after the organizer's request was checked.
+  (newState, applied) <- maybe notFound pure mSettled
   when applied do
     -- (1) mirror into every group's replica BEFORE lifting the overlay
     groups <- getEventGroupGroups eid
