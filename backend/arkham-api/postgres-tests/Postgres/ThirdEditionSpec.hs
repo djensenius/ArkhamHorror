@@ -10,7 +10,8 @@ Arkham bug endpoint's hardened upload.
 
 Only two things are supplied rather than real. The S3 transport is a stub
 built from the production upload seams, or the production transport with a
-credential discovery that fails, so nothing reaches AWS or this machine's
+credential discovery that fails or hands back an environment that throws once
+used, so nothing reaches AWS or this machine's
 credentials. The admin lookup is a constant: User's entity reads an
 @admin@ column that Sqitch does not create, so the real lookup cannot run here
 (see 'Main.seedUser').
@@ -142,6 +143,18 @@ spec harness app = describe "Third-edition export and file-bug with production S
         response `shouldBe` Left (status502, Just $ object ["message" .= ("Failed to upload bug report" :: Text)])
         logged `shouldSatisfy` T.isInfixOf ("bug report upload: AWS credential discovery failed for third-edition table " <> UUID.toText f.table)
       readIORef puts `shouldReturn` 0
+
+  it "answers any non-Amazonka exception from the S3 send path with the sanitized 502 and never logs its text" $
+    withFixture "3e-bug-send-throws" \f -> do
+      let sendSecret = "raw-aws-send-exception: AWS_SECRET_ACCESS_KEY=not-a-real-key" :: Text
+          -- discovery succeeds, but the Env it returns only throws once send forces it
+          lateEnv = Exception.impureThrow $ userError $ toString sendSecret
+      (response, logged) <- withCapturedLog \foundation ->
+        fileBugOn foundation notAdmin (awsBugUploadWith $ pure lateEnv) f.seated f.table
+      T.isInfixOf sendSecret (show response) `shouldBe` False
+      T.isInfixOf sendSecret logged `shouldBe` False
+      response `shouldBe` Left (status502, Just $ object ["message" .= ("Failed to upload bug report" :: Text)])
+      logged `shouldSatisfy` T.isInfixOf ("bug report upload: S3 upload failed for third-edition table " <> UUID.toText f.table)
  where
   notAdmin _ = pure False
   admin _ = pure True
