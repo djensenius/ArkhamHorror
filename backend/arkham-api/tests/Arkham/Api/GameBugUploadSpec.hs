@@ -187,6 +187,21 @@ spec = describe "bug report upload" do
     it "lets an asynchronous exception during the upload propagate" do
       runBugUploadGuarded (Base.throwIO ThreadKilled) `shouldThrow` (== ThreadKilled)
 
+    -- the composition 'awsBugUploadWith' runs, with each send stubbed to throw
+    it "classifies a thrown Amazonka Error before the guard's catch-all, keeping its typed failure" do
+      let stubbed headSend putSend =
+            runBugUploadGuarded $
+              runBugUploadPolicy
+                (runHeadObjectAction (Base.try @Error headSend))
+                (runPutObjectAction (Base.try @Error putSend))
+          neverPut = Base.throwIO (ErrorCall "PutObject after a failed HeadObject") :: IO ()
+      stubbed (Base.throwIO (serviceErrorWithStatus status403) :: IO ()) neverPut
+        `shouldReturn` BugUploadFailed (HeadCheckFailed (AwsServiceFailure 403 AwsCategoryClientError))
+      stubbed (Base.throwIO transportFailure :: IO ()) neverPut
+        `shouldReturn` BugUploadFailed (HeadCheckFailed AwsTransportFailure)
+      stubbed (Base.throwIO (serviceErrorWithStatus status404) :: IO ()) (Base.throwIO (serviceErrorWithStatus status500) :: IO ())
+        `shouldReturn` BugUploadFailed (PutObjectFailed (AwsServiceFailure 500 AwsCategoryServerError))
+
     {- | Regression for the async-refresh/lazy-thunk audit: the diagnostic
     used to cross the 'runResourceT IO' -> 'Handler' boundary through a
     non-strict 'IORef' that could retain a thunk closing over the raw

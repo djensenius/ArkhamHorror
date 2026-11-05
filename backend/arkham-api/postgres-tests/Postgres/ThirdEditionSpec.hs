@@ -10,7 +10,8 @@ Arkham bug endpoint's hardened upload.
 
 Only two things are supplied rather than real. The S3 transport is a stub
 built from the production upload seams, or the production transport with a
-credential discovery that fails, so nothing reaches AWS or this machine's
+credential discovery that fails or hands back an environment that throws once
+used, so nothing reaches AWS or this machine's
 credentials. The admin lookup is a constant: User's entity reads an
 @admin@ column that Sqitch does not create, so the real lookup cannot run here
 (see 'Main.seedUser').
