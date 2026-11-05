@@ -10,6 +10,7 @@ import Api.Handler.Arkham.Games.Shared (
   planMainStreetSwap,
   requireMainStreetReady,
   resolveSwapGames,
+  validateSwapOrdinals,
  )
 import Arkham.Classes.Entity (attr, overAttrs)
 import Arkham.Difficulty (Difficulty (Easy))
@@ -67,6 +68,15 @@ secondSide = readySide 1 daisy mainStreetB
 
 spec :: Spec
 spec = do
+  describe "validateSwapOrdinals" do
+    it "accepts two distinct, non-negative groups" do
+      validateSwapOrdinals 1 0 `shouldBe` Right ()
+
+    it "refuses the same group twice, or a negative ordinal, from the request alone" do
+      validateSwapOrdinals 1 1 `shouldBe` Left SwapSameGroup
+      validateSwapOrdinals (-1) 0 `shouldBe` Left (SwapBadOrdinal (-1))
+      validateSwapOrdinals 0 (-2) `shouldBe` Left (SwapBadOrdinal (-2))
+
   describe "resolveSwapGames" do
     it "resolves each requested group's game, in request order" do
       resolveSwapGames 1 0 [(0, Just gameA), (1, Just gameB)] `shouldBe` Right (gameB, gameA)
@@ -147,7 +157,8 @@ spec = do
 
   describe "clearMainStreetReady" do
     it "forgets the investigator the scenario readied at Main Street" do
-      let readied = setInitialScenarioMeta "mainStreetReady" roland $ newScenario "85001" 1 2 Easy False
+      let readied =
+            setInitialScenarioMeta "mainStreetReady" roland $ newScenario "85001" 1 2 Easy False
       mainStreetSideReady (mainStreetSwapSide (GroupOrdinal 0) readied) `shouldBe` Just roland
       mainStreetSideReady (mainStreetSwapSide (GroupOrdinal 0) (clearMainStreetReady readied))
         `shouldBe` Nothing

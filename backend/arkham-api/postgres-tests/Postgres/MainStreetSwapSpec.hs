@@ -101,11 +101,13 @@ spec harness app seedUser = describe "Main Street swap" do
       f <- seedFixture connection seedUser "swap-commit"
       requestSwap app f.organizer f.eventId 0 1 `shouldReturn` Succeeded
       assertSwapped connection f
-      -- Each game has a step row at its new step that keeps its pending queue.
+      -- Each game has a step row at its new step whose queue is empty: the
+      -- pending queue ([BeginRound]) is dropped, as the next run read none
+      -- before the swap was atomic.
       queues <- transaction connection $ forM [f.side0, f.side1] \side ->
         fmap (toJSON . choiceMessages . arkhamStepChoice . entityVal)
           <$> P.getBy (UniqueStep side.gameId 2)
-      queues `shouldBe` replicate 2 (Just $ toJSON [BeginRound])
+      queues `shouldBe` replicate 2 (Just $ toJSON ([] :: [Message]))
       -- Each spend is recorded against its game's swap step.
       spends <- transaction connection $
         P.selectList [ArkhamEpicStepArkhamEpicEventId P.==. f.eventId] [Asc ArkhamEpicStepStep]
@@ -140,17 +142,44 @@ spec harness app seedUser = describe "Main Street swap" do
     withConnection harness \connection -> do
       f <- seedFixture connection seedUser "swap-invalid"
       original <- rows connection f
-      requestSwap app f.organizer f.eventId 1 1 `shouldReturn` Refused 400 (Just "main-street-same-group")
-      requestSwap app f.organizer f.eventId 0 (-1) `shouldReturn` Refused 400 (Just "main-street-bad-group")
+      requestSwap app f.organizer f.eventId 1 1
+        `shouldReturn` Refused 400 (Just "main-street-same-group")
+      requestSwap app f.organizer f.eventId 0 (-1)
+        `shouldReturn` Refused 400 (Just "main-street-bad-group")
       requestSwap app f.organizer f.eventId 0 2 `shouldReturn` Missing
       requestSwap app f.side0.user f.eventId 0 1 `shouldReturn` Denied
       rows connection f `shouldReturn` original
 
+  it "refuses an invalid request without waiting on the games or the event" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      f <- seedFixture observer seedUser "swap-invalid-unlocked"
+      held <- newBarrier
+      withAsync
+        ( transaction holding do
+            lockGameRow (lowerGame f)
+            lockEventRow f.eventId
+            liftIO $ pauseAt held
+        )
+        \holder -> do
+          link holder
+          awaitBarrier held
+          -- Each answers while the locks are held; behind them it would time out.
+          requestSwap app f.organizer f.eventId 1 1
+            `shouldReturn` Refused 400 (Just "main-street-same-group")
+          requestSwap app f.organizer f.eventId 0 (-1)
+            `shouldReturn` Refused 400 (Just "main-street-bad-group")
+          releaseBarrier held
+          within "lock holder commit" $ wait holder
+
   it "lets one of two concurrent identical swaps win; the other is 409 with one spend" $
     withConnection harness \holding -> withConnection harness \observer -> do
       f <- seedFixture observer seedUser "swap-double"
-      outcomes <- whileHeld holding observer (lockGameRow $ lowerGame f)
-        [requestSwap app f.organizer f.eventId 0 1, requestSwap app f.organizer f.eventId 0 1]
+      outcomes <-
+        whileHeld
+          holding
+          observer
+          (lockGameRow $ lowerGame f)
+          [requestSwap app f.organizer f.eventId 0 1, requestSwap app f.organizer f.eventId 0 1]
       sort outcomes `shouldBe` [Succeeded, notReady]
       assertSwapped observer f
 
@@ -158,8 +187,12 @@ spec harness app seedUser = describe "Main Street swap" do
     withConnection harness \holding -> withConnection harness \observer -> do
       f <- seedFixture observer seedUser "swap-reversed"
       -- Both wait on the event row while holding their games, in id order.
-      outcomes <- whileHeld holding observer (lockEventRow f.eventId)
-        [requestSwap app f.organizer f.eventId 0 1, requestSwap app f.organizer f.eventId 1 0]
+      outcomes <-
+        whileHeld
+          holding
+          observer
+          (lockEventRow f.eventId)
+          [requestSwap app f.organizer f.eventId 0 1, requestSwap app f.organizer f.eventId 1 0]
       sort outcomes `shouldBe` [Succeeded, notReady]
       assertSwapped observer f
 
@@ -205,7 +238,13 @@ assertSwapped :: SqlBackend -> Fixture -> IO ()
 assertSwapped connection f = do
   r <- rows connection f
   map (fmap fst) r.games `shouldBe` [Just 2, Just 2]
-  r.steps `shouldBe` sort [(f.side0.gameId, 1), (f.side0.gameId, 2), (f.side1.gameId, 1), (f.side1.gameId, 2)]
+  r.steps
+    `shouldBe` sort
+      [ (f.side0.gameId, 1)
+      , (f.side0.gameId, 2)
+      , (f.side1.gameId, 1)
+      , (f.side1.gameId, 2)
+      ]
   r.floors `shouldBe` sort [(f.side0.gameId, 2), (f.side1.gameId, 2)]
   r.seats `shouldBe` sort [(f.side0.user, f.side1.gameId), (f.side1.user, f.side0.gameId)]
   r.memberships
@@ -258,14 +297,20 @@ lowerGame f = min f.side0.gameId f.side1.gameId
 higherGame f = max f.side0.gameId f.side1.gameId
 
 lockGameRow :: ArkhamGameId -> ReaderT SqlBackend IO ()
-lockGameRow gameId = void
-  (rawSql "SELECT 1::bigint FROM arkham_games WHERE id = ? FOR UPDATE" [toPersistValue gameId]
-    :: ReaderT SqlBackend IO [Single Int64])
+lockGameRow gameId =
+  void
+    ( rawSql "SELECT 1::bigint FROM arkham_games WHERE id = ? FOR UPDATE" [toPersistValue gameId]
+        :: ReaderT SqlBackend IO [Single Int64]
+    )
 
 lockEventRow :: ArkhamEpicEventId -> ReaderT SqlBackend IO ()
-lockEventRow eventId = void
-  (rawSql "SELECT 1::bigint FROM arkham_epic_events WHERE id = ? FOR UPDATE" [toPersistValue eventId]
-    :: ReaderT SqlBackend IO [Single Int64])
+lockEventRow eventId =
+  void
+    ( rawSql
+        "SELECT 1::bigint FROM arkham_epic_events WHERE id = ? FOR UPDATE"
+        [toPersistValue eventId]
+        :: ReaderT SqlBackend IO [Single Int64]
+    )
 
 -- A Blob group game at step 1 with a pending queue, whose one investigator
 -- stands at its Main Street, readied there by the scenario. @uid@ holds the seat.
@@ -290,7 +335,8 @@ seedSide connection label user investigator = do
                   Map.singleton investigator
                     $ overAttrs (\a -> a {investigatorPlacement = AtLocation mainStreet})
                     $ lookupInvestigator investigator playerId
-              , entitiesLocations = Map.singleton mainStreet $ lookupLocation "89006" mainStreet cardId
+              , entitiesLocations =
+                  Map.singleton mainStreet $ lookupLocation "89006" mainStreet cardId
               }
         }
   transaction connection do
@@ -312,7 +358,9 @@ seedFixture connection seedUser label = do
           $ setSharedCounter (MainStreetReady (GroupOrdinal 1)) 1
           $ emptySharedEventState 2
   transaction connection do
-    eventId <- P.insert $ ArkhamEpicEvent label organizer (Just "85001") Nothing "Easy" shared 2 0 now now
+    eventId <-
+      P.insert
+        $ ArkhamEpicEvent label organizer (Just "85001") Nothing "Easy" shared 2 0 now now
     P.insert_ $ ArkhamEpicMember eventId organizer Organizer Nothing
     P.insert_ $ ArkhamEpicMember eventId alice GroupPlayer (Just 0)
     P.insert_ $ ArkhamEpicMember eventId bob GroupPlayer (Just 1)
@@ -336,12 +384,15 @@ relocate connection side placement = do
                 }
           }
   transaction connection $ P.update side.gameId [ArkhamGameCurrentData P.=. moved]
-  (attr investigatorPlacement <$> Map.lookup side.investigator (entitiesInvestigators $ Game.gameEntities moved))
+  ( attr investigatorPlacement
+      <$> Map.lookup side.investigator (entitiesInvestigators $ Game.gameEntities moved)
+    )
     `shouldBe` Just placement
 
 gameData :: SqlBackend -> ArkhamGameId -> IO Game.Game
 gameData connection gameId =
-  maybe (fail "game missing") (pure . arkhamGameCurrentData) =<< transaction connection (P.get gameId)
+  maybe (fail "game missing") (pure . arkhamGameCurrentData)
+    =<< transaction connection (P.get gameId)
 
 rows :: SqlBackend -> Fixture -> IO Rows
 rows connection f = transaction connection do
@@ -350,13 +401,26 @@ rows connection f = transaction connection do
     fmap (\g -> (arkhamGameStep g, toJSON $ arkhamGameCurrentData g)) <$> P.get gameId
   steps <- sort . map ((\s -> (arkhamStepArkhamGameId s, arkhamStepStep s)) . entityVal)
     <$> P.selectList [ArkhamStepArkhamGameId P.<-. gameIds] []
-  floors <- sort . map ((\u -> (arkhamGameUndoFloorArkhamGameId u, arkhamGameUndoFloorFloorStep u)) . entityVal)
-    <$> P.selectList [ArkhamGameUndoFloorArkhamGameId P.<-. gameIds] []
+  floors <-
+    sort
+      . map
+        ( (\u -> (arkhamGameUndoFloorArkhamGameId u, arkhamGameUndoFloorFloorStep u))
+            . entityVal
+        )
+      <$> P.selectList [ArkhamGameUndoFloorArkhamGameId P.<-. gameIds] []
   seats <- sort . map ((\p -> (arkhamPlayerUserId p, arkhamPlayerArkhamGameId p)) . entityVal)
     <$> P.selectList [ArkhamPlayerArkhamGameId P.<-. gameIds] []
-  memberships <- sort . map ((\m -> (arkhamEpicMemberUserId m, arkhamEpicMemberRole m, arkhamEpicMemberGroupOrdinal m)) . entityVal)
-    <$> P.selectList [ArkhamEpicMemberArkhamEpicEventId P.==. f.eventId] []
-  event <- fmap (\e -> (arkhamEpicEventSharedState e, arkhamEpicEventStep e)) <$> P.get f.eventId
+  memberships <-
+    sort
+      . map
+        ( ( \m ->
+              (arkhamEpicMemberUserId m, arkhamEpicMemberRole m, arkhamEpicMemberGroupOrdinal m)
+          )
+            . entityVal
+        )
+      <$> P.selectList [ArkhamEpicMemberArkhamEpicEventId P.==. f.eventId] []
+  event <-
+    fmap (\e -> (arkhamEpicEventSharedState e, arkhamEpicEventStep e)) <$> P.get f.eventId
   epicSteps <- P.count [ArkhamEpicStepArkhamEpicEventId P.==. f.eventId]
   pure Rows {..}
 

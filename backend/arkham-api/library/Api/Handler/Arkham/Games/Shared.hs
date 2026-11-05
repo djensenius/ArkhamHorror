@@ -1403,6 +1403,9 @@ state are published, after the commit.
 -}
 swapMainStreetInvestigators
   :: ArkhamEpicEventId -> Int -> Int -> Handler (Either MainStreetSwapError ())
+-- A request that names no two distinct groups is refused before any lock.
+swapMainStreetInvestigators _ firstOrdinal secondOrdinal
+  | Left invalid <- validateSwapOrdinals firstOrdinal secondOrdinal = pure (Left invalid)
 swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
   now <- liftIO getCurrentTime
   firstSpend <- mainStreetSpend firstOrdinal
@@ -1427,7 +1430,8 @@ swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
     -- Groups are created with their event, so their games were locked above.
     let loadGame gameId
           | gameId `notElem` lockedGameIds = pure $ Left (SwapGameMissing gameId)
-          | otherwise = maybeToRight (SwapGameMissing gameId) . fmap entityVal <$> P.getEntity gameId
+          | otherwise =
+              maybeToRight (SwapGameMissing gameId) . fmap entityVal <$> P.getEntity gameId
     firstRaw <- ExceptT $ loadGame firstGameId
     secondRaw <- ExceptT $ loadGame secondGameId
     let
@@ -1493,12 +1497,12 @@ swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
         , sharedDeltaAmount = -1
         }
 
-  -- The game at its next step, with a step row that keeps the pending queue.
+  -- The game at its next step, with a step row whose queue is empty. The swap
+  -- used to bump the step with no row, so the next run read an empty queue;
+  -- the pending one may name the investigator who just left the game.
   -- Its empty down-patch is never undone: the swap's undo floor walls it off.
   writeSwapStep now gameId raw game' = do
-    mLastStep <- getBy (UniqueStep gameId (arkhamGameStep raw))
     let
-      currentQueue = maybe [] (choiceMessages . arkhamStepChoice . entityVal) mLastStep
       swapped =
         raw
           { arkhamGameCurrentData = game'
@@ -1509,7 +1513,7 @@ swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
     insert_
       $ ArkhamStep
         gameId
-        (Choice mempty currentQueue)
+        (Choice mempty [])
         (arkhamGameStep swapped)
         (ActionDiff $ view actionDiffL game')
     pure swapped
@@ -1659,6 +1663,15 @@ data MainStreetSwapError
     SwapInvestigatorMoved GroupOrdinal
   deriving stock (Eq, Show)
 
+{- | A request names two distinct, non-negative group ordinals. Checked before
+the swap takes any lock, and again by 'resolveSwapGames'.
+-}
+validateSwapOrdinals :: Int -> Int -> Either MainStreetSwapError ()
+validateSwapOrdinals firstOrdinal secondOrdinal = do
+  when (firstOrdinal == secondOrdinal) $ Left SwapSameGroup
+  for_ [firstOrdinal, secondOrdinal] \ordinal ->
+    when (ordinal < 0) $ Left (SwapBadOrdinal ordinal)
+
 {- | The two groups' games, from the requested ordinals and the event's
 @(ordinal, game)@ group rows for them.
 -}
@@ -1668,9 +1681,7 @@ resolveSwapGames
   -> [(Int, Maybe ArkhamGameId)]
   -> Either MainStreetSwapError (ArkhamGameId, ArkhamGameId)
 resolveSwapGames firstOrdinal secondOrdinal groups = do
-  when (firstOrdinal == secondOrdinal) $ Left SwapSameGroup
-  for_ [firstOrdinal, secondOrdinal] \ordinal ->
-    when (ordinal < 0) $ Left (SwapBadOrdinal ordinal)
+  validateSwapOrdinals firstOrdinal secondOrdinal
   (,) <$> gameOf firstOrdinal <*> gameOf secondOrdinal
  where
   byOrdinal = Map.fromList groups
