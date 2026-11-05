@@ -8,6 +8,7 @@ import Import hiding (on, (==.))
 import Api.Arkham.Epic (
   GroupMembershipReservation (GroupMembershipInOtherGroup),
   applyEpicDeltasLocked,
+  lockEpicEventRow,
   lookupGameEvent,
   mkEpicEnv,
   reserveGroupMembership,
@@ -52,8 +53,12 @@ getApiV1ArkhamPendingGameR gameId = do
 
 -- | Refuses a join inside the game-locked transaction. Thrown rather than
 -- answered there, so the transaction rolls back; 'putApiV1ArkhamPendingGameR'
--- turns it into the 403 once runDB has returned.
-data PendingJoinRefused = SeatedInAnotherGroup
+-- turns it into the 403 (or, when the event is gone, the 404) once runDB has
+-- returned.
+data PendingJoinRefused
+  = SeatedInAnotherGroup
+  | -- | The game's event was deleted before the join could lock it.
+    EpicEventGone
   deriving stock Show
   deriving anyclass Exception
 
@@ -68,8 +73,10 @@ putApiV1ArkhamPendingGameR gameId = do
   -- reserves the membership row before the seat insert, so two concurrent
   -- first joins to different groups of one event cannot both pass it.
   -- Lock order follows 'canonicalEpicGameLockOrder': the game, then the event
-  -- (the KEY SHARE that the member insert's foreign key takes on the event row
-  -- counts as an event lock), then the member row.
+  -- row FOR UPDATE, then the member row. The event is locked before the member
+  -- insert: that insert's foreign key takes KEY SHARE on the event row, and
+  -- two first joins to different groups holding KEY SHARE would deadlock when
+  -- each then asks for FOR UPDATE to commit its setup's shared deltas.
   joined <- try $ runDB $ atomicallyWithGame gameId \original@ArkhamGame {..} -> do
     mEpicCtx <- lookupGameEvent gameId
     let
@@ -80,12 +87,16 @@ putApiV1ArkhamPendingGameR gameId = do
           when (arkhamEpicMemberGroupOrdinal membership /= Just requestedOrdinal)
             $ liftIO
             $ throwIO SeatedInAnotherGroup
-      -- Paths that seat the player reserve the membership first. Seating
-      -- changes the event roster, so it is announced once the join commits.
-      reserveMembership = forM mEpicCtx \(eventEntity, ordinal) ->
-        reserveGroupMembership (entityKey eventEntity) userId ordinal >>= \case
+      -- Paths that seat the player lock the event row, then reserve the
+      -- membership. Seating changes the event roster, so it is announced once
+      -- the join commits. Returns the event as read under the lock.
+      reserveMembership = forM mEpicCtx \(eventEntity, ordinal) -> do
+        lockedEvent <-
+          lockEpicEventRow (entityKey eventEntity)
+            >>= maybe (liftIO $ throwIO EpicEventGone) pure
+        reserveGroupMembership (entityKey lockedEvent) userId ordinal >>= \case
           GroupMembershipInOtherGroup _ -> liftIO $ throwIO SeatedInAnotherGroup
-          _ -> pure (entityKey eventEntity)
+          _ -> pure (lockedEvent, ordinal)
       -- Cap the engine run like updateGame does: a runaway setup must not
       -- hold the game lock, and the timeout rolls the join back.
       runWithTimeout action =
@@ -106,7 +117,7 @@ putApiV1ArkhamPendingGameR gameId = do
             if alreadyExists
               then unchanged
               else do
-                mChangedEvent <- reserveMembership
+                mLockedCtx <- reserveMembership
                 mLastStep <- getBy (UniqueStep gameId arkhamGameStep)
                 let currentQueue = maybe [] (choiceMessages . arkhamStepChoice . entityVal) mLastStep
 
@@ -142,14 +153,14 @@ putApiV1ArkhamPendingGameR gameId = do
                     (arkhamGameStep + 1)
                     (ActionDiff $ view actionDiffL updatedGame)
 
-                pure (game', Nothing, mChangedEvent)
+                pure (game', Nothing, entityKey . fst <$> mLockedCtx)
       IsPending _ -> do
         alreadyExists <- exists [ArkhamPlayerArkhamGameId ==. gameId, ArkhamPlayerUserId ==. userId]
 
         if alreadyExists
           then unchanged
           else do
-            mChangedEvent <- reserveMembership
+            mLockedCtx <- reserveMembership
             mLastStep <- getBy (UniqueStep gameId arkhamGameStep)
             let currentQueue = maybe [] (choiceMessages . arkhamStepChoice . entityVal) mLastStep
 
@@ -164,7 +175,7 @@ putApiV1ArkhamPendingGameR gameId = do
             -- (countermeasures, Subject 8L-08 health) start from the CURRENT
             -- pool rather than 0/seed — otherwise a group set up after others
             -- have acted would not reflect their spends/damage.
-            mEpicEnv <- traverse (uncurry mkEpicEnv) mEpicCtx
+            mEpicEnv <- traverse (uncurry mkEpicEnv) mLockedCtx
 
             runWithTimeout $ runGameApp (GameApp gameRef queueRef genRef (pure . const ()) mEpicEnv) $ do
               addPlayer (PlayerId $ coerce pid)
@@ -187,7 +198,7 @@ putApiV1ArkhamPendingGameR gameId = do
             updatedQueue <- liftIO $ readIORef (queueToRef queueRef)
 
             -- Commit any shared deltas emitted during setup (same transaction).
-            mShared <- case (mEpicCtx, mEpicEnv) of
+            mShared <- case (mLockedCtx, mEpicEnv) of
               (Just (eventEntity, _), Just epic) -> do
                 deltas <- liftIO $ readIORef (epicEnvDeltaRef epic)
                 if null deltas
@@ -216,12 +227,13 @@ putApiV1ArkhamPendingGameR gameId = do
                 (arkhamGameStep + 1)
                 (ActionDiff $ view actionDiffL updatedGame)
 
-            pure (game', mShared, mChangedEvent)
+            pure (game', mShared, entityKey . fst <$> mLockedCtx)
       _ -> unchanged
 
   (game@ArkhamGame {..}, mShared, mChangedEvent) <- case joined of
     Left SeatedInAnotherGroup ->
       permissionDenied "You already occupy a seat in another group in this event"
+    Left EpicEventGone -> notFound
     Right result -> pure result
   for_ mShared \(eid, s) -> propagateShared eid (Just gameId) s
   for_ mChangedEvent broadcastEventChanged

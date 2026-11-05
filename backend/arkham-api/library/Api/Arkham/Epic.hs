@@ -55,7 +55,8 @@ lockEpicEventRow eid = do
 
 {- | The canonical Epic lock order: games (ascending id, one at a time), then
 the event row ('lockEpicEventRow'; the KEY SHARE that a member or step insert
-takes on it counts as an event lock), then member rows. Single-game gameplay
+takes on it counts as an event lock, but a path that will also want
+@FOR UPDATE@ must take that before any such insert), then member rows. Single-game gameplay
 paths lock game then event, so delete cannot deadlock with them. Paths that
 lock several games must take them in ascending id order; the Main Street swap
 still locks by group ordinal and moves onto this helper in TASK-2.7. Returns
@@ -98,7 +99,11 @@ A player may occupy seats in only one group of an event. The row is written
 with @INSERT ... ON CONFLICT DO NOTHING@ on the members' unique key, so two
 concurrent seat takers in different groups cannot both create a row: the
 second waits for the first and then reads the committed row back. It does not
-lock the event row, so it adds no lock-order edge beyond game-then-event.
+lock the event row itself, but the insert's foreign key takes KEY SHARE on it.
+A caller that may later lock the event @FOR UPDATE@ in the same transaction
+(the pending join, which commits setup's shared deltas) must take
+'lockEpicEventRow' before calling this, or two such callers holding KEY SHARE
+deadlock on the upgrade. Claim seat never locks the event, so it does not.
 
 A membership row with no group ordinal is not this group, matching the pending
 join check. Nothing is thrown: the caller decides how to refuse, and rolls the

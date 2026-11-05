@@ -15,11 +15,13 @@ import Arkham.Campaign.Types (campaignStep)
 import Arkham.CampaignStep (CampaignStep (ContinueCampaignStep, ScenarioStep), Continuation (..))
 import Arkham.Classes.Entity (overAttrs)
 import Arkham.Difficulty (Difficulty (Easy))
-import Arkham.Epic.Types (EpicRole (GroupPlayer), emptySharedEventState)
+import Arkham.Epic.Types (EpicRole (GroupPlayer), SharedKey (Countermeasures), emptySharedEventState, sharedCounter)
 import Arkham.Game qualified as Game
 import Arkham.Game.State (GameState (IsActive))
+import Arkham.Message (Message (RaiseShared))
 import Control.Concurrent (threadDelay)
 import Data.Aeson (encode)
+import Data.Aeson.Diff (Patch (..))
 import Arkham.Prelude (These (This))
 import Database.Persist (Entity (..), toPersistValue)
 import Database.Persist qualified as P
@@ -28,6 +30,7 @@ import Database.Persist.Types (PersistValue (..))
 import Entity.Arkham.Epic
 import Entity.Arkham.Game
 import Entity.Arkham.Player
+import Entity.Arkham.Step
 import Entity.User (UserId)
 import Foundation (App, Handler, Subscriber (..), unsafeHandler, userIdToToken)
 import Network.Wai (defaultRequest, requestHeaders, requestMethod)
@@ -43,8 +46,9 @@ import Yesod.Core.Types (ErrorResponse (..), HandlerContents (..))
 type SeedUser = SqlBackend -> Text -> IO UserId
 
 -- What the route answered. A permission failure is the HCError Yesod renders
--- as 403; anything else, a 500 included, fails the test.
-data Outcome = Succeeded | Forbidden Text
+-- as 403, and Missing the one it renders as 404; anything else, a 500
+-- included, fails the test.
+data Outcome = Succeeded | Forbidden Text | Missing
   deriving stock (Eq, Ord, Show)
 
 data EpicFixture = EpicFixture
@@ -156,6 +160,55 @@ spec harness app seedUser = describe "Pending game join" do
       membership connection f player `shouldReturn` [(GroupPlayer, Just 0)]
       announcements `shouldReturn` 1
 
+  it "commits two concurrent first joins to different groups whose setup changes the shared state" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      organizer <- seedUser observer "join-setup-organizer"
+      player0 <- seedUser observer "join-setup-player-0"
+      player1 <- seedUser observer "join-setup-player-1"
+      game0 <- seedSetupGame observer "join-setup-group-0"
+      game1 <- seedSetupGame observer "join-setup-group-1"
+      f <- seedEventWith observer "join-setup" organizer game0 game1
+      initial <- countermeasures observer f
+      -- Share the event row, as a member insert's KEY SHARE does, so both
+      -- joins have started when they go on. Before the event was locked ahead
+      -- of the member insert, each join held KEY SHARE and then deadlocked
+      -- waiting for FOR UPDATE to commit its setup's shared delta.
+      outcomes <-
+        joinsBehind holding observer
+          (eventRowLock "FOR SHARE" f)
+          (pendingJoin app player0 game0)
+          (pendingJoin app player1 game1)
+      outcomes `shouldBe` (Succeeded, Succeeded)
+      seatRows observer game0 `shouldReturn` [player0]
+      seatRows observer game1 `shouldReturn` [player1]
+      membership observer f player0 `shouldReturn` [(GroupPlayer, Just 0)]
+      membership observer f player1 `shouldReturn` [(GroupPlayer, Just 1)]
+      countermeasures observer f `shouldReturn` initial + 2
+      epicStepCount observer f `shouldReturn` 2
+      eventStep observer f `shouldReturn` 2
+      gameStep observer game0 `shouldReturn` 2
+      gameStep observer game1 `shouldReturn` 2
+
+  it "answers 404, not 500, when the event is deleted while a join waits for it" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      organizer <- seedUser observer "join-gone-organizer"
+      player <- seedUser observer "join-gone-player"
+      f <- seedEvent observer "join-gone" organizer
+      held <- newBarrier
+      holderPid <- backendPid holding
+      withAsync (transaction holding do
+        P.delete f.eventId
+        liftIO $ pauseAt held) \holder -> do
+          link holder
+          awaitBarrier held
+          withAsync (pendingJoin app player f.group0) \joining -> do
+            awaitBlockedSessions observer holderPid 1
+            releaseBarrier held
+            within "event delete commit" $ wait holder
+            within "join" (wait joining) `shouldReturn` Missing
+      seatRows observer f.group0 `shouldReturn` []
+      gameStep observer f.group0 `shouldReturn` 1
+
 -- A WithFriends campaign lobby with two seats, so a first join leaves it
 -- pending and runs no setup.
 seedGame :: SqlBackend -> Text -> IO ArkhamGameId
@@ -176,6 +229,17 @@ seedContinuationGame connection label = do
         }
   transaction connection $ P.insert $ ArkhamGame label game 1 WithFriends now now False
 
+-- A one-seat WithFriends lobby whose persisted queue raises the shared
+-- countermeasures, so its first join runs setup that commits a shared delta.
+seedSetupGame :: SqlBackend -> Text -> IO ArkhamGameId
+seedSetupGame connection label = do
+  now <- currentTimeMicros
+  let game = Game.newCampaign "01" Nothing 1 1 Easy False
+  transaction connection do
+    gameId <- P.insert $ ArkhamGame label game 1 WithFriends now now False
+    P.insert_ $ ArkhamStep gameId (Choice (Patch []) [RaiseShared Countermeasures 1]) 1 (ActionDiff [])
+    pure gameId
+
 seedEvent :: SqlBackend -> Text -> UserId -> IO EpicFixture
 seedEvent connection label organizer = do
   group0 <- seedGame connection (label <> "-group-0")
@@ -194,13 +258,19 @@ seedEventWith connection label organizer group0 group1 = do
 -- Run two joins while another session holds the games FOR UPDATE, and
 -- release the games only once both joins are queued behind that lock.
 joinsBehindLock :: SqlBackend -> SqlBackend -> [ArkhamGameId] -> IO Outcome -> IO Outcome -> IO (Outcome, Outcome)
-joinsBehindLock holding observer gameIds joinA joinB = do
+joinsBehindLock holding observer gameIds =
+  joinsBehind holding observer $ for_ gameIds \gameId ->
+    void (rawSql "SELECT 1::bigint FROM arkham_games WHERE id = ? FOR UPDATE"
+      [toPersistValue gameId] :: ReaderT SqlBackend IO [Single Int64])
+
+-- Run two joins while another session holds the locks the given statements
+-- take, and release them only once both joins are queued behind them.
+joinsBehind :: SqlBackend -> SqlBackend -> ReaderT SqlBackend IO () -> IO Outcome -> IO Outcome -> IO (Outcome, Outcome)
+joinsBehind holding observer hold joinA joinB = do
   held <- newBarrier
   holderPid <- backendPid holding
   withAsync (transaction holding do
-    for_ gameIds \gameId ->
-      rawSql "SELECT 1::bigint FROM arkham_games WHERE id = ? FOR UPDATE"
-        [toPersistValue gameId] :: ReaderT SqlBackend IO [Single Int64]
+    hold
     liftIO $ pauseAt held) \holder -> do
       link holder
       awaitBarrier held
@@ -210,6 +280,25 @@ joinsBehindLock holding observer gameIds joinA joinB = do
         releaseBarrier held
         within "lock holder commit" $ wait holder
         (,) <$> within "first join" (wait first) <*> within "second join" (wait second)
+
+eventRowLock :: Text -> EpicFixture -> ReaderT SqlBackend IO ()
+eventRowLock mode f =
+  void (rawSql ("SELECT 1::bigint FROM arkham_epic_events WHERE id = ? " <> mode)
+    [toPersistValue f.eventId] :: ReaderT SqlBackend IO [Single Int64])
+
+countermeasures :: SqlBackend -> EpicFixture -> IO Int
+countermeasures connection f = transaction connection do
+  event <- P.getJust f.eventId
+  pure $ sharedCounter Countermeasures (arkhamEpicEventSharedState event)
+
+eventStep :: SqlBackend -> EpicFixture -> IO Int
+eventStep connection f = transaction connection do
+  event <- P.getJust f.eventId
+  pure $ arkhamEpicEventStep event
+
+epicStepCount :: SqlBackend -> EpicFixture -> IO Int
+epicStepCount connection f = transaction connection $
+  P.count [ArkhamEpicStepArkhamEpicEventId P.==. f.eventId]
 
 seatRows :: SqlBackend -> ArkhamGameId -> IO [UserId]
 seatRows connection gameId = transaction connection do
@@ -251,13 +340,14 @@ route app uid action = do
   unsafeHandler app $
     (Succeeded <$ withRequest request action) `Exception.catch` \case
       HCError (PermissionDenied message) -> pure $ Forbidden message
+      HCError NotFound -> pure Missing
       other -> Exception.throwIO other
 
 -- Pool sessions have no PID the test can name up front, so wait until the
 -- expected number of sessions are blocked, directly or behind each other, on
 -- the holder's lock.
 awaitBlockedSessions :: SqlBackend -> Int64 -> Int64 -> IO ()
-awaitBlockedSessions observer holder expected = within "joins queued behind the game lock" loop
+awaitBlockedSessions observer holder expected = within "joins queued behind the holder's lock" loop
  where
   loop = do
     rows <- transaction observer $
