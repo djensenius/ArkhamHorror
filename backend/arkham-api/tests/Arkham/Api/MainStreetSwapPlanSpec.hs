@@ -99,6 +99,8 @@ spec = do
         `shouldBe` Left (SwapNotReady (GroupOrdinal 1))
 
     it "refuses a group whose game has no Main Street" do
+      planMainStreetSwap firstSide {mainStreetSideLocation = Nothing} secondSide
+        `shouldBe` Left (SwapNoMainStreet (GroupOrdinal 0))
       planMainStreetSwap firstSide secondSide {mainStreetSideLocation = Nothing}
         `shouldBe` Left (SwapNoMainStreet (GroupOrdinal 1))
 

@@ -1463,6 +1463,10 @@ swapInvestigatorState plan firstGame secondGame =
   secondDestination = mainStreetSecondDestination plan
   firstPid = attr investigatorPlayerId firstInvestigator
   secondPid = attr investigatorPlayerId secondInvestigator
+  -- Keeps the existing placement: each investigator is placed at the Main
+  -- Street of the game it leaves (firstMoved gets secondDestination, the first
+  -- game's Main Street), not the plan's destination in its new game.
+  -- TASK-2.103 tracks this known location-id mismatch.
   firstMoved = overAttrs (\a -> a {investigatorPlacement = AtLocation secondDestination}) firstInvestigator
   secondMoved = overAttrs (\a -> a {investigatorPlacement = AtLocation firstDestination}) secondInvestigator
   firstOwned = ownedEntities firstIid (gameEntities firstGame)
