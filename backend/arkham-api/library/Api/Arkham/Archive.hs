@@ -42,6 +42,7 @@ module Api.Arkham.Archive (
   startRestore,
   runRestore,
   restoreWorker,
+  claimStaleRestores,
 
   -- * Failures
   ArchiveFailure (..),
@@ -50,6 +51,7 @@ module Api.Arkham.Archive (
   describeArchiveException,
   archiveFailureSummary,
   archiveRestoreFailedMessage,
+  logArchiveFailures,
 
   -- * The daily sweep
   ArchiveSweep (..),
@@ -382,11 +384,42 @@ classifyArchiveException e = ArchiveFailure kind (describeArchiveException e)
 detail. The admin panel shows it as a tooltip.
 -}
 archiveFailureSummary :: ArchiveFailure -> Text
-archiveFailureSummary failure = "restore failed: " <> case archiveFailureKind failure of
+archiveFailureSummary failure = "restore failed: " <> archiveFailureKindName failure
+
+-- | The failure's kind alone, as 'archiveFailureSummary' and the logs name it.
+archiveFailureKindName :: ArchiveFailure -> Text
+archiveFailureKindName failure = case archiveFailureKind failure of
   ArchiveStorageFailure -> "storage"
   ArchiveDatabaseFailure -> "database"
   ArchiveIntegrityFailure -> "integrity"
   ArchiveUnknownFailure -> "unknown"
+
+{- | Run a background action, logging anything it throws instead of losing it.
+
+For the places nothing else would hear about a failure: a forked restore, and
+the restore worker's and the sweeper's loops. The line names the context, the
+failure's kind and the described detail, never the exception's text. Only
+synchronous exceptions are caught; an asynchronous one (the thread being
+killed) is neither logged nor swallowed.
+
+A failure to write the line is swallowed too: a loop must not die because
+stdout did.
+-}
+logArchiveFailures :: (Text -> IO ()) -> Text -> IO () -> IO ()
+logArchiveFailures logLine context action =
+  tryAny action >>= \case
+    Right () -> pure ()
+    Left err -> do
+      failure <- classifyStrict err
+      void
+        $ tryAny
+        $ logLine
+        $ "archive: "
+        <> context
+        <> " FAILED ("
+        <> archiveFailureKindName failure
+        <> "): "
+        <> archiveFailureDetail failure
 
 -- ----------------------------------------------------------------- reading ---
 
@@ -944,8 +977,7 @@ startRestore :: App -> ArkhamGameArchive -> IO ()
 startRestore app archive =
   void
     $ forkIO
-    $ void
-    $ tryAny
+    $ logArchiveFailures (logArchive . T.unpack) ("restore of game " <> toPathPiece archive.arkhamGameId)
     $ runRestore app (logArchive . T.unpack) (restoreGame app) (publishFromApp app archive.arkhamGameId) archive
 
 {- | The body of 'startRestore', run in the calling thread.
@@ -987,7 +1019,11 @@ runRestore app logLine restore publish archive = do
       {- Only a row that is still 'Restoring'. The worker restarts restores
       that look abandoned, so a slow first attempt can finish while the
       restarted one fails -- and an exception after the restore commits lands
-      here too. Either way the steps are back, and 'Restored' is the truth. -}
+      here too. Either way the steps are back, and 'Restored' is the truth.
+
+      And only for this attempt: @requested_at@ is the attempt's token, bumped
+      by 'claimStaleRestores', so a stale attempt failing while a restarted one
+      is still running cannot mark the row 'Failed' under it. -}
       changed <- runDBIO app $ updateCount \a -> do
         set
           a
@@ -997,15 +1033,23 @@ runRestore app logLine restore publish archive = do
           ]
         where_ $ a.arkhamGameId ==. val archive.arkhamGameId
         where_ $ a.state ==. val Restoring
+        for_ archive.requestedAt \token -> where_ $ a.requestedAt ==. just (val token)
       if changed > 0
         then publish $ GameUnarchiveFailed archiveRestoreFailedMessage
-        else
+        else do
+          current <- runDBIO app $ lookupArchive archive.arkhamGameId
+          let superseded = case current of
+                Just row -> row.state == Restoring && row.requestedAt /= archive.requestedAt
+                Nothing -> False
           logLine
             $ "archive: late restore failure ignored for game "
             <> toPathPiece archive.arkhamGameId
             <> " ("
             <> archiveFailureSummary failure
-            <> "): the archive is no longer restoring"
+            <> "): "
+            <> if superseded
+              then "a newer restore attempt owns the archive"
+              else "the archive is no longer restoring"
 
 {- | Pick up restores a replica died in the middle of.
 
@@ -1019,31 +1063,38 @@ restoreWorker app = case archiveConfig (appSettings app) of
   Nothing -> pure ()
   Just _ -> forever do
     threadDelay (restorePollSeconds * 1000000)
-    void $ tryAny do
+    logArchiveFailures (logArchive . T.unpack) "restore worker tick" do
       now <- getCurrentTime
-      let staleBefore = addUTCTime (negate $ fromIntegral restoreStaleMinutes * 60) now
-      stale <- runDBIO app $ claimStale now staleBefore
+      stale <- runDBIO app $ claimStaleRestores now
       for_ stale \archive -> do
         logArchive
           $ "archive: picking up abandoned restore for game "
           <> T.unpack (toPathPiece archive.arkhamGameId)
         startRestore app archive
- where
-  claimStale now staleBefore = do
-    candidates <- select do
-      a <- from $ table @ArkhamGameArchive
+
+{- | Claim up to five restores that have sat in 'Restoring' too long.
+
+Each is returned as it is stored after the claim, so the restarted attempt
+carries the new @requested_at@ -- as PostgreSQL rounded it -- which is what
+fences a failure of the attempt it replaced (see 'runRestore').
+-}
+claimStaleRestores :: UTCTime -> DB [ArkhamGameArchive]
+claimStaleRestores now = do
+  let staleBefore = addUTCTime (negate $ fromIntegral restoreStaleMinutes * 60) now
+  candidates <- select do
+    a <- from $ table @ArkhamGameArchive
+    where_ $ a.state ==. val Restoring
+    where_ $ a.requestedAt <. just (val staleBefore)
+    orderBy [asc a.requestedAt]
+    limit 5
+    pure a
+  catMaybes <$> for candidates \(Entity _ archive) -> do
+    n <- updateCount \a -> do
+      set a [ArkhamGameArchiveRequestedAt =. val (Just now)]
+      where_ $ a.arkhamGameId ==. val archive.arkhamGameId
       where_ $ a.state ==. val Restoring
       where_ $ a.requestedAt <. just (val staleBefore)
-      orderBy [asc a.requestedAt]
-      limit 5
-      pure a
-    catMaybes <$> for candidates \(Entity _ archive) -> do
-      n <- updateCount \a -> do
-        set a [ArkhamGameArchiveRequestedAt =. val (Just now)]
-        where_ $ a.arkhamGameId ==. val archive.arkhamGameId
-        where_ $ a.state ==. val Restoring
-        where_ $ a.requestedAt <. just (val staleBefore)
-      pure $ if n == 1 then Just archive else Nothing
+    if n == 1 then lookupArchive archive.arkhamGameId else pure Nothing
 
 -- ------------------------------------------------------------------- sweep ---
 
@@ -1233,7 +1284,7 @@ archiveSweeper app = case archiveConfig (appSettings app) of
   Just cfg -> do
     threadDelay (bootDelaySeconds * 1000000)
     forever do
-      void $ tryAny do
+      logArchiveFailures (logArchive . T.unpack) "sweeper tick" do
         -- Not during a maintenance window. 'runArchiveSweep' checks again before
         -- every batch, but there is no reason to claim the day's run for one that
         -- is about to stop.
