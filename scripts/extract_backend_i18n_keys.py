@@ -3522,10 +3522,11 @@ def build_artifact(
                 )
             ),
             "byClass": dict(sorted(class_summary.items())),
-            # The complete inventory, not a sample: a site the extractor cannot
-            # resolve is a hole in the requirement set, and the only honest way
-            # to carry one is to name it, commit it, and let `--check` fail the
-            # moment the set moves.
+            # Every unresolved site, grouped by file#binding, emitter, reason
+            # and class with a count: a site the extractor cannot resolve is a
+            # hole in the requirement set, so it is named and committed, and
+            # `--check` fails when the grouped inventory changes. A dynamic
+            # site moving within the same binding is intentionally not detected.
             "sites": [
                 {
                     "site": site,

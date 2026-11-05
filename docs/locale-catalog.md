@@ -210,10 +210,13 @@ Three fail-closed rules keep the registry honest:
   only, never inside a string literal, and without moving an offset — and there
   is no waiver: skipping a module rests on a lexical guess about what an
   unreadable file contains, which is the reasoning this registry replaces;
-* every site that cannot be resolved is committed in full in `dynamicSites`
-  with a reason from a **closed vocabulary** (`runtime-key`, `runtime-scope`,
+* every site that cannot be resolved is committed in `dynamicSites`, grouped
+  by file#binding, emitter, reason and class with a `count`, with a reason
+  from a **closed vocabulary** (`runtime-key`, `runtime-scope`,
   `caller-scope`, `partial-key`, `scope-underflow`); an unclassifiable reason
-  fails the run, and the drift gate fails when the set moves;
+  fails the run, and the drift gate fails when that grouped inventory changes.
+  A dynamic site that moves within the same binding is intentionally not
+  detected;
 * the extractor has its own tests (`mise run locale-catalog:backend-keys-test`)
   that feed synthetic Haskell modules to the production code path, one rule at
   a time.
