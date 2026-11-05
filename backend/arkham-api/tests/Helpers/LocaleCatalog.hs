@@ -11,10 +11,11 @@ text, and is never regenerated from @frontend\/src\/locales\/**@. Every digest,
 count and path in it is computed by @scripts\/build-locale-catalog-fixture.py@,
 whose @--check@ mode re-derives all of it: the catalog\'s own content from
 committed sibling fixtures (@contracts\/fixtures\/locale-catalog-source-*.json@,
-@-backend-registry.json@, @-chunk-*.json@), and
-@provenance.generatorSha256@\/@schemasSha256@ from the real repository sources
-they name — that script itself and the published
-@frontend\/schemas\/locale-catalog\/v1\/@ schemas. That is what
+@-backend-registry.json@, @-chunk-*.json@), @provenance.schemasSha256@ from
+the published @frontend\/schemas\/locale-catalog\/v1\/@ schemas, and
+@provenance.generatorSha256@ from the generator name and version alone (the
+generator's tooling bytes are pinned by the non-governed
+@scripts\/locale_catalog_tooling_lock.json@ instead). That is what
 keeps the governed contract stable while production catalog content changes
 freely — a real deployment's revision and digest are runtime configuration
 (see @docs\/locale-catalog.md@), not contract bytes.
