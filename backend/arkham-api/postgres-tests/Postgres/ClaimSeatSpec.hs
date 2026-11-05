@@ -16,7 +16,6 @@ import Arkham.Epic.Types (EpicRole (GroupPlayer), emptySharedEventState)
 import Arkham.Game qualified as Game
 import Arkham.Id (PlayerId (..))
 import Arkham.Investigator (lookupInvestigator)
-import Control.Concurrent (threadDelay)
 import Data.Aeson (encode, object, (.=))
 import Data.Map.Strict qualified as Map
 import Data.UUID qualified as UUID
@@ -41,9 +40,10 @@ import Yesod.Core.Types (ErrorResponse (..), HandlerContents (..))
 
 type SeedUser = SqlBackend -> Text -> IO UserId
 
--- What the route answered. Permission and argument failures are the HCError
--- responses Yesod renders as 403 and 400; anything else fails the test.
-data Outcome = Succeeded | Forbidden Text | BadRequest [Text]
+-- What the route answered. Permission, argument and not-found failures are
+-- the HCError responses Yesod renders as 403, 400 and 404; anything else
+-- fails the test.
+data Outcome = Succeeded | Forbidden Text | BadRequest [Text] | Missing
   deriving stock (Eq, Ord, Show)
 
 data EpicFixture = EpicFixture
@@ -185,6 +185,23 @@ spec harness app seedUser = describe "Claim seat" do
       map fst <$> seatRows observer f.group0 `shouldReturn` [player]
       seatRows observer f.group1 `shouldReturn` []
 
+  it "answers 404, not 500, when a delete outside the canonical lock order removes the event under a waiting claim" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      organizer <- seedUser observer "claim-gone-organizer"
+      player <- seedUser observer "claim-gone-player"
+      f <- seedEvent observer "claim-gone" organizer
+      -- The event delete handler locks the group games first, so a claim
+      -- never sees its event vanish. Deleting the row directly bypasses that
+      -- order: the claim, already past its event lookup, waits on the event
+      -- lock and finds the row gone once the delete commits.
+      behindHeldLock holding observer (P.delete f.eventId) (claim app player f.group0 "01001")
+        `shouldReturn` Missing
+      seatRows observer f.group0 `shouldReturn` []
+      membership observer f player `shouldReturn` []
+      -- The seat's placeholder player id was not remapped either.
+      seatPlayerId observer f.group0 "c01001"
+        `shouldReturn` Just (UUID.toText $ UUID.fromWords 0x2580 0 0 1)
+
 -- A WithFriends game with two seats, each investigator carrying a placeholder
 -- player id that claim seat swaps for the new player's.
 seedGame :: SqlBackend -> Text -> IO ArkhamGameId
@@ -257,22 +274,5 @@ route app uid method body action = do
     (Succeeded <$ withRequest request action) `Exception.catch` \case
       HCError (PermissionDenied message) -> pure $ Forbidden message
       HCError (InvalidArgs messages) -> pure $ BadRequest messages
+      HCError NotFound -> pure Missing
       other -> Exception.throwIO other
-
--- Pool sessions have no PID the test can name up front, so wait until the
--- expected number of sessions are blocked, directly or behind each other, on
--- the holder's lock.
-awaitBlockedSessions :: SqlBackend -> Int64 -> Int64 -> IO ()
-awaitBlockedSessions observer holder expected = within "claims queued behind the game lock" loop
- where
-  loop = do
-    rows <- transaction observer $
-      rawSql
-        "SELECT count(*)::bigint FROM pg_stat_activity \
-        \WHERE datname = current_database() AND pid <> ?::integer \
-        \AND cardinality(pg_blocking_pids(pid)) > 0"
-        [PersistInt64 holder]
-    case rows of
-      [Single n] | n >= expected -> pure ()
-      [Single _] -> threadDelay 10000 >> loop
-      _ -> fail "Expected one PostgreSQL lock observation"
