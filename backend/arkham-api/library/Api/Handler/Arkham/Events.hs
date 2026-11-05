@@ -21,6 +21,7 @@ module Api.Handler.Arkham.Events (
   postApiV1ArkhamEventResolveAdvanceR,
   postApiV1ArkhamEventReplicateR,
   postApiV1ArkhamEventSwapMainStreetR,
+  mainStreetSwapErrorStatus,
   deduplicateEventMemberships,
   withEventMember,
   EventDeletionOutcome (..),
@@ -41,6 +42,7 @@ import Api.Arkham.Epic (
 import Api.Arkham.Helpers
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (WithFriends))
 import Api.Handler.Arkham.Games.Shared (
+  MainStreetSwapError (..),
   broadcastSharedToEvent,
   deleteEventRoom,
   deleteRoom,
@@ -92,6 +94,7 @@ import Database.Esqueleto.Experimental hiding (isNothing, update, (=.))
 import Database.Persist qualified as P
 import Entity.Arkham.Step (ActionDiff (..), ArkhamStep (..), Choice (..))
 import Import hiding (on, (==.))
+import Network.HTTP.Types.Status qualified as Status
 import UnliftIO.Exception (catch)
 import Yesod.WebSockets (WebSocketsT, webSocketsOptions)
 
@@ -587,14 +590,40 @@ postApiV1ArkhamEventReplicateR eid = do
     [ScenarioSpecific "blobRequestAberration" (toJSON (cardCode, target))]
     gameId
 
+{- | Swap two groups' readied Main Street investigators (organizer only). A
+missing event is 404 before any organizer check, as for deletion. A refused
+swap changes nothing: a missing group or game is 404, anything else is
+'mainStreetSwapErrorStatus' with a stable @{"error": code}@ body.
+-}
 postApiV1ArkhamEventSwapMainStreetR :: ArkhamEpicEventId -> Handler ()
 postApiV1ArkhamEventSwapMainStreetR eid = do
   userId <- getRequestUserId
+  eventExists <- runDB $ P.exists [ArkhamEpicEventId P.==. eid]
+  unless eventExists notFound
   requireOrganizer userId eid
   MainStreetSwapPost {..} <- requireCheckJsonBody
-  when (firstGroupOrdinal == secondGroupOrdinal)
-    $ invalidArgs ["Investigators must be in different groups"]
-  swapMainStreetInvestigators eid firstGroupOrdinal secondGroupOrdinal
+  swapped <- swapMainStreetInvestigators eid firstGroupOrdinal secondGroupOrdinal
+  for_ (leftToMaybe swapped) \err -> case mainStreetSwapErrorStatus err of
+    (errorStatus, code)
+      | errorStatus == Status.status404 -> notFound
+      | otherwise -> sendStatusJSON errorStatus $ object ["error" .= code]
+
+{- | The status and stable error code for a refused Main Street swap: 400 for a
+malformed request, 404 for a group or game that does not exist, 409 for groups
+not ready to swap (@main-street-not-ready@) or whose readiness no longer holds
+(@main-street-stale@).
+-}
+mainStreetSwapErrorStatus :: MainStreetSwapError -> (Status.Status, Text)
+mainStreetSwapErrorStatus = \case
+  SwapSameGroup -> (Status.status400, "main-street-same-group")
+  SwapBadOrdinal _ -> (Status.status400, "main-street-bad-group")
+  SwapGroupMissing _ -> (Status.status404, "main-street-group-missing")
+  SwapGroupHasNoGame _ -> (Status.status404, "main-street-game-missing")
+  SwapGameMissing _ -> (Status.status404, "main-street-game-missing")
+  SwapNotReady _ -> (Status.status409, "main-street-not-ready")
+  SwapNoMainStreet _ -> (Status.status409, "main-street-stale")
+  SwapInvestigatorMissing _ -> (Status.status409, "main-street-stale")
+  SwapInvestigatorMoved _ -> (Status.status409, "main-street-stale")
 
 {- | Whether any agenda currently in play in the group's game is at or past
 @stage@. Used as the in-lock idempotency guard for the time-up forcing: a group
