@@ -100,10 +100,12 @@ with @INSERT ... ON CONFLICT DO NOTHING@ on the members' unique key, so two
 concurrent seat takers in different groups cannot both create a row: the
 second waits for the first and then reads the committed row back. It does not
 lock the event row itself, but the insert's foreign key takes KEY SHARE on it.
-A caller that may later lock the event @FOR UPDATE@ in the same transaction
-(the pending join, which commits setup's shared deltas) must take
-'lockEpicEventRow' before calling this, or two such callers holding KEY SHARE
-deadlock on the upgrade. Claim seat never locks the event, so it does not.
+Precondition: the caller holds the game lock and has taken 'lockEpicEventRow'
+on the event first. Without it, two pending joins holding KEY SHARE deadlock
+when each upgrades to @FOR UPDATE@ to commit setup's shared deltas, and an
+unlocked caller's insert, waiting for KEY SHARE behind another caller's event
+lock, holds a uniqueness entry that the other caller's insert waits on. Both
+callers (pending join and claim seat) lock the event first.
 
 A membership row with no group ordinal is not this group, matching the pending
 join check. Nothing is thrown: the caller decides how to refuse, and rolls the
