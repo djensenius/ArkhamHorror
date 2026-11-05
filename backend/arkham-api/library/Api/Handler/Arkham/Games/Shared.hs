@@ -1387,7 +1387,8 @@ monotonic.
 investigator's deck, hand, discard, resources, damage, trauma, logs, and
 other personal state. We additionally move every controlled/play-area asset,
 threat-area treachery, controlled event, per-investigator entity cache,
-history, question, and player authorization row. Enemy cards stay behind
+history, and player authorization row. A pending question is not moved: it
+was built from the game the investigator left. Enemy cards stay behind
 because the printed ability disengages them before publishing readiness.
 
 One transaction does the whole swap under 'canonicalEpicGameLockOrder' (the
@@ -1399,7 +1400,8 @@ clears the scenarios' readiness, writes both games with a step row each, moves
 the seats and the players' event memberships, and places an undo floor at each
 new step, so ordinary undo can never cross the swap. A refused request
 ('MainStreetSwapError') writes nothing. Only the committed games and shared
-state are published, after the commit.
+state are published, after the commit. Each swapped game is then re-asked
+(see @reask@).
 -}
 swapMainStreetInvestigators
   :: ArkhamEpicEventId -> Int -> Int -> Handler (Either MainStreetSwapError ())
@@ -1486,8 +1488,23 @@ swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
         $ PublicGame gameId (arkhamGameName raw) [] (arkhamGameCurrentData raw)
     broadcastSharedToEvent eventId shared
     broadcastEventChanged eventId
+    for_ swapped \(gameId, _) -> reask gameId
   pure $ void committed
  where
+  -- After the commit, outside its locks: run each swapped game's empty queue
+  -- so the engine asks its question afresh (in the investigation phase, the
+  -- turn investigator's PlayerWindow) for the investigators now in it; the
+  -- incoming player brought no question from the game it left. The undo
+  -- floor moves up to the re-asked step, so undo cannot return to the
+  -- question-less swap step. A game that is not active is left as the swap
+  -- wrote it. A failure is logged and never undoes the committed swap.
+  reask gameId =
+    ( runMessagesInGroupCore (const True) [] gameId
+        >>= traverse_ (setGameUndoFloor gameId . arkhamGameStep)
+    )
+      `catch` \(e :: SomeException) ->
+        $(logWarn) $ "Main Street swap re-ask failed for " <> tshow gameId <> ": " <> tshow e
+
   mainStreetSpend ordinal = do
     deltaId <- UUID.toText <$> liftIO nextRandom
     pure
@@ -1591,11 +1608,6 @@ swapInvestigatorState plan firstGame secondGame =
       , gamePhaseHistory = copyMapEntry iid (gamePhaseHistory source) (gamePhaseHistory game)
       , gameTurnHistory = copyMapEntry iid (gameTurnHistory source) (gameTurnHistory game)
       , gameRoundHistory = copyMapEntry iid (gameRoundHistory source) (gameRoundHistory game)
-      , gameQuestion =
-          copyMapEntry
-            pid
-            (gameQuestion source)
-            (gameQuestion game)
       , gameModifiers =
           copyMapEntry (InvestigatorTarget iid) (gameModifiers source) (gameModifiers game)
       , gameCardUses = transferCardUses iid (gameCardUses source) (gameCardUses game)

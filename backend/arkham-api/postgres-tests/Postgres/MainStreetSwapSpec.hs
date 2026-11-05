@@ -27,12 +27,15 @@ import Arkham.Epic.Types (
   sharedCounter,
  )
 import Arkham.Game qualified as Game
+import Arkham.Game.State (GameState (IsActive))
 import Arkham.Id (InvestigatorId, LocationId (..), PlayerId (..))
 import Arkham.Investigator (lookupInvestigator)
 import Arkham.Investigator.Types (investigatorPlacement)
 import Arkham.Location (lookupLocation)
 import Arkham.Message (Message (BeginRound))
+import Arkham.Phase (Phase (InvestigationPhase))
 import Arkham.Placement (Placement (AtLocation, Unplaced))
+import Arkham.Question (Question (ChooseOne, PlayerWindowChooseOne))
 import Control.Concurrent (threadDelay)
 import Data.Aeson (Value, decode, encode, object, toJSON, (.=))
 import Data.Map.Strict qualified as Map
@@ -69,6 +72,7 @@ data Side = Side
   , user :: UserId
   , investigator :: InvestigatorId
   , mainStreet :: LocationId
+  , player :: PlayerId
   }
 
 data Fixture = Fixture
@@ -121,6 +125,38 @@ spec harness app seedUser = describe "Main Street swap" do
       requestSwap app f.organizer f.eventId 0 1 `shouldReturn` notReady
       requestSwap app f.organizer f.eventId 1 0 `shouldReturn` notReady
       rows connection f `shouldReturn` original
+
+  it "re-asks each active game, at a new floored step, for the investigator it received" $
+    withConnection harness \connection -> do
+      f <- seedFixture connection seedUser "swap-reask"
+      for_ [f.side0, f.side1] \side -> activate connection side
+      requestSwap app f.organizer f.eventId 0 1 `shouldReturn` Succeeded
+      r <- rows connection f
+      -- The swap step (2), then the re-asked step (3), which the floor moved to.
+      map (fmap fst) r.games `shouldBe` [Just 3, Just 3]
+      r.steps
+        `shouldBe` sort [(side.gameId, step) | side <- [f.side0, f.side1], step <- [1, 2, 3]]
+      r.floors `shouldBe` sort [(f.side0.gameId, 3), (f.side1.gameId, 3)]
+      -- Each incoming player is asked afresh, by this game, to take a turn;
+      -- the stale question it was given in the game it left is gone.
+      for_ [(f.side0, f.side1), (f.side1, f.side0)] \(side, other) -> do
+        game <- gameData connection side.gameId
+        Map.keys (Game.gameQuestion game) `shouldBe` [other.player]
+        (isPlayerWindow <$> Map.lookup other.player (Game.gameQuestion game)) `shouldBe` Just True
+
+  it "keeps a committed swap whose game is not active, with no re-ask" $
+    withConnection harness \connection -> do
+      f <- seedFixture connection seedUser "swap-reask-skipped"
+      -- Only group 0's game is playing; group 1's is still pending.
+      activate connection f.side0
+      requestSwap app f.organizer f.eventId 0 1 `shouldReturn` Succeeded
+      r <- rows connection f
+      map (fmap fst) r.games `shouldBe` [Just 3, Just 2]
+      r.floors `shouldBe` sort [(f.side0.gameId, 3), (f.side1.gameId, 2)]
+      pending <- gameData connection f.side1.gameId
+      -- Alice's seat moved there and was asked nothing.
+      Map.member f.side0.player (Game.gameQuestion pending) `shouldBe` False
+      Map.keys (entitiesInvestigators $ Game.gameEntities pending) `shouldBe` [f.side0.investigator]
 
   it "refuses a spent readiness with 409 and changes no row" $
     withConnection harness \connection -> do
@@ -345,6 +381,7 @@ seedSide connection label user investigator = do
   cardId <- unsafeMakeCardId <$> nextRandom
   let
     playerId = PlayerId playerUuid
+    player = playerId
     initial =
       Game.setInitialScenarioMeta "mainStreetReady" investigator
         $ Game.newScenario "85001" 1 2 Easy False
@@ -395,6 +432,29 @@ seedFixtureWith connection seedUser label investigator0 investigator1 = do
     for_ [(0 :: Int, side0), (1, side1)] \(ordinal, side) ->
       P.insert_ $ ArkhamEpicGroup eventId ordinal (Just side.gameId) ("Group " <> show ordinal) 1
     pure Fixture {..}
+
+-- The side's game is playing its investigation phase, its readied
+-- investigator taking a turn, and its player holds a question the swap must
+-- not carry into the other game.
+activate :: SqlBackend -> Side -> IO ()
+activate connection side = do
+  game <- gameData connection side.gameId
+  let playing =
+        game
+          { Game.gameGameState = IsActive
+          , Game.gamePhase = InvestigationPhase
+          , Game.gameTurnPlayerInvestigatorId = Just side.investigator
+          , Game.gameActiveInvestigatorId = side.investigator
+          , Game.gameLeadInvestigatorId = side.investigator
+          , Game.gameActivePlayerId = side.player
+          , Game.gameQuestion = Map.singleton side.player (ChooseOne [])
+          }
+  transaction connection $ P.update side.gameId [ArkhamGameCurrentData P.=. playing]
+
+isPlayerWindow :: Question msg -> Bool
+isPlayerWindow = \case
+  PlayerWindowChooseOne {} -> True
+  _ -> False
 
 -- The side's game also seats @investigator@, away from Main Street.
 addBystander :: SqlBackend -> Side -> InvestigatorId -> IO ()

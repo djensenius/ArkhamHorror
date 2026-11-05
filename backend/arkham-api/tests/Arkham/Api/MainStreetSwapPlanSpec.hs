@@ -30,10 +30,10 @@ import Arkham.Investigator (lookupInvestigator)
 import Arkham.Investigator.Types (Investigator, investigatorPlacement)
 import Arkham.Location (lookupLocation)
 import Arkham.Placement (Placement (AtLocation, Unplaced))
+import Arkham.Question (Question (ChooseOne))
 import Arkham.Prelude
 import Data.Map.Strict qualified as Map
 import Data.UUID qualified as UUID
-import Data.Word (Word32)
 import Entity.Arkham.Game qualified as GameRow
 import Network.HTTP.Types.Status qualified as Status
 import Test.Hspec
@@ -89,13 +89,13 @@ readyGame iid player mainStreet =
 
 -- | Plan and run the swap of two groups' games.
 swapGames :: Game -> Game -> Either MainStreetSwapError (Game, Game)
-swapGames first second = do
+swapGames firstGame secondGame = do
   plan <-
     planMainStreetSwap
-      (mainStreetSwapSide (GroupOrdinal 0) first)
-      (mainStreetSwapSide (GroupOrdinal 1) second)
-  let (first', second', _, _) = swapInvestigatorState plan first second
-  pure (first', second')
+      (mainStreetSwapSide (GroupOrdinal 0) firstGame)
+      (mainStreetSwapSide (GroupOrdinal 1) secondGame)
+  let (firstGame', secondGame', _, _) = swapInvestigatorState plan firstGame secondGame
+  pure (firstGame', secondGame')
 
 placementIn :: InvestigatorId -> Game -> Maybe Placement
 placementIn iid game =
@@ -201,18 +201,31 @@ spec = do
       (placementIn daisy . fst <$> swapped) `shouldBe` Right (Just (AtLocation mainStreetA))
       (placementIn roland . snd <$> swapped) `shouldBe` Right (Just (AtLocation mainStreetB))
 
+    it "does not carry a player's pending question into the game it joins" do
+      let
+        rolandPlayer = PlayerId $ UUID.fromWords 0 0 2 0
+        asked =
+          (readyGame roland 0 mainStreetA)
+            { Game.gameQuestion = Map.singleton rolandPlayer (ChooseOne [])
+            }
+        swapped = swapGames asked (readyGame daisy 1 mainStreetB)
+      -- Roland's seat now plays in the second game, with nothing asked yet.
+      (elem rolandPlayer . Game.gamePlayers . snd <$> swapped) `shouldBe` Right True
+      (Map.member rolandPlayer . Game.gameQuestion . snd <$> swapped)
+        `shouldBe` Right False
+
     it "swaps two copies of the same investigator, each with its own state" do
       let
         -- Each group's Roland has used a different card.
         withUses code game = game {Game.gameCardUses = Map.singleton code [roland]}
-        first = withUses "01020" $ readyGame roland 0 mainStreetA
-        second = withUses "01030" $ readyGame roland 1 mainStreetB
-        swapped = swapGames first second
+        firstGame = withUses "01020" $ readyGame roland 0 mainStreetA
+        secondGame = withUses "01030" $ readyGame roland 1 mainStreetB
+        swapped = swapGames firstGame secondGame
         seats = Game.gamePlayers
         uses = Map.filter (not . null) . Game.gameCardUses
       -- Each game now seats the other group's player, whose Roland brought its
       -- own card uses and stands at this game's Main Street.
-      (bimap seats seats <$> swapped) `shouldBe` Right (seats second, seats first)
+      (bimap seats seats <$> swapped) `shouldBe` Right (seats secondGame, seats firstGame)
       (bimap uses uses <$> swapped)
         `shouldBe` Right (Map.singleton "01030" [roland], Map.singleton "01020" [roland])
       (bimap (placementIn roland) (placementIn roland) <$> swapped)
