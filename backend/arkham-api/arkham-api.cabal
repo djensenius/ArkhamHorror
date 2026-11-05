@@ -9846,6 +9846,7 @@ test-suite arkhamdb-postgres
       Postgres.DeleteSpec
       Postgres.DispatchSpec
       Postgres.EndToEndSpec
+      Postgres.EventDeleteSpec
       Postgres.Harness
       Postgres.HarnessSpec
       Postgres.PayloadSpec
@@ -9943,12 +9944,14 @@ test-suite spec
       Arkham.Agenda.Cards.TheDunwichLegacy.TheMiskatonicMuseum.ShadowsDeepenSpec
       Arkham.Agenda.Cards.TheScarletKeys.CongressOfTheKeys.TheWorldUnbiddenSpec
       Arkham.Agenda.Cards.TheScarletKeys.DeadHeat.EmptyStreetsSpec
+      Arkham.Api.ArchiveFailureLogSpec
       Arkham.Api.ArkhamDBCleanupSpec
       Arkham.Api.ArkhamDBLoggingSpec
       Arkham.Api.ArkhamDBSpec
       Arkham.Api.ArkhamDBWriteBackSpec
       Arkham.Api.CampaignCatalogSpec
       Arkham.Api.Events.EventCreationSpec
+      Arkham.Api.Events.EventDeletionSpec
       Arkham.Api.Events.EventListSpec
       Arkham.Api.Events.EventStreamAuthSpec
       Arkham.Api.GameBugUploadSpec
@@ -9961,6 +9964,7 @@ test-suite spec
       Arkham.Api.JsonContractsSpec
       Arkham.Api.LocaleCatalogCapabilitySpec
       Arkham.Api.LocaleCatalogSettingsPreflightSpec
+      Arkham.Api.MainStreetSwapPlanSpec
       Arkham.Asset.Assets.AncientAnkhSpec
       Arkham.Asset.Assets.Aquinnah1Spec
       Arkham.Asset.Assets.Aquinnah3Spec

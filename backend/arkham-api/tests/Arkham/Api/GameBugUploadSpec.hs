@@ -8,13 +8,17 @@ import Api.Handler.Arkham.Game.Bug (
   BugUploadFailure (..),
   BugUploadOutcome (..),
   HeadObjectOutcome (..),
+  awsBugUploadWith,
   classifyHeadObjectError,
   runBugUploadPolicy,
+  runBugUploadWithDiscovery,
   runBugUploadWithEnvDiscovery,
   runHeadObjectAction,
   runPutObjectAction,
  )
 import Arkham.Prelude
+import Control.Exception (AsyncException (ThreadKilled), ErrorCall (..))
+import Control.Exception qualified as Base
 import Data.Text qualified as T
 import Network.HTTP.Client qualified as Client
 import Network.HTTP.Types.Status (Status, status403, status404, status429, status500)
@@ -55,6 +59,15 @@ transportFailure = TransportError httpExceptionFixture
 -- that cannot occur).
 httpExceptionFixture :: Client.HttpException
 httpExceptionFixture = Client.InvalidUrlException "https://arkham-horror-bugs.s3.amazonaws.com" "connection failure"
+
+-- | Text a failed credential discovery carries that must never surface.
+discoverySecret :: String
+discoverySecret = "aws-discovery-secret-must-never-leak-3c9e7"
+
+-- | Credential-discovery failures other than Amazonka's 'AuthError': an IO
+-- error (an unreadable credentials file) and a pure error (malformed config).
+discoveryFailures :: [IO a]
+discoveryFailures = [throwIO (userError discoverySecret), throwIO (ErrorCall discoverySecret)]
 
 {- | Regression for #30: 'postApiV1ArkhamGameBugR' caught only 'Amazonka.Error'
 around HeadObject and treated *every* service error -- including
@@ -129,6 +142,24 @@ spec = describe "bug report upload" do
     it "sanitizes AWS credential discovery failures before the upload policy runs" do
       outcome <- runBugUploadWithEnvDiscovery (pure $ Left ()) (\() -> pure BugUploadSucceeded)
       outcome `shouldBe` BugUploadFailed CredentialDiscoveryFailed
+
+    it "sanitizes any synchronous credential discovery exception, not only AuthError, and never uploads" do
+      for_ discoveryFailures \failingDiscovery -> do
+        uploads <- newIORef (0 :: Int)
+        outcome <- runBugUploadWithDiscovery failingDiscovery \() -> modifyIORef' uploads (+ 1) >> pure BugUploadSucceeded
+        readIORef uploads `shouldReturn` 0
+        outcome `shouldBe` BugUploadFailed CredentialDiscoveryFailed
+        T.isInfixOf (pack discoverySecret) (tshow outcome) `shouldBe` False
+
+    -- base's throwIO: UnliftIO's would rewrap ThreadKilled as synchronous
+    it "lets an asynchronous exception during credential discovery propagate" do
+      runBugUploadWithDiscovery (Base.throwIO ThreadKilled) (\() -> pure BugUploadSucceeded)
+        `shouldThrow` (== ThreadKilled)
+
+    it "answers the production transport's failed credential discovery with the sanitized failure" do
+      for_ discoveryFailures \failingDiscovery ->
+        awsBugUploadWith failingDiscovery "exports/fixture.json" "{}"
+          `shouldReturn` BugUploadFailed CredentialDiscoveryFailed
 
     {- | Regression for the async-refresh/lazy-thunk audit: the diagnostic
     used to cross the 'runResourceT IO' -> 'Handler' boundary through a

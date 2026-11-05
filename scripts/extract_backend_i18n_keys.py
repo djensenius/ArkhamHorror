@@ -29,6 +29,15 @@ consumed by the locale-catalog generator, which requires every emitted key that
 the default locale translates to render safely. `--check` re-derives the
 artifact and fails if it drifts, so adding a new backend `ikey` fails CI until
 the catalog is regenerated against it.
+
+The artifact records no digest of its input files. Its identity is
+`payloadSha256`: the sha256 hex of the artifact's canonical bytes (sorted keys,
+compact separators, UTF-8, trailing newline -- `canonical_bytes`) with the
+`payloadSha256` field itself left out. Editing a backend module without moving
+the extracted keys, variable types or dynamic-site inventory therefore leaves
+the artifact byte-identical, so unrelated backend changes do not conflict on
+it; `--check` still re-derives every byte, so nothing is lost by not hashing
+the inputs. The locale catalog binds to this digest as `backend.sourceSha256`.
 """
 
 import argparse
@@ -44,7 +53,7 @@ from tree_sitter import Language, Parser
 ROOT = Path(__file__).resolve().parents[1]
 LIBRARY = ROOT / "backend" / "arkham-api" / "library"
 ARTIFACT = ROOT / "backend" / "arkham-api" / "i18n-emitted-keys.json"
-ARTIFACT_VERSION = "1.0.0"
+ARTIFACT_VERSION = "2.0.0"
 
 EXTERNAL_DEFINITION_EXPORTS = frozenset({("ClassyPrelude", "tshow")})
 
@@ -3252,11 +3261,6 @@ def build_artifact(
         )
         parsed.append((path, source, tree, module))
 
-    digest = hashlib.sha256()
-    for path, source, tree, module in parsed:
-        digest.update(_relative_path(path, library).encode("utf-8"))
-        digest.update(hashlib.sha256(source).digest())
-
     # Pass one resolves everything that can be answered from a single module
     # and records which top-level helper parameters need their callers.
     context = ParameterContext()
@@ -3415,15 +3419,10 @@ def build_artifact(
         classification = classify_dynamic(site["reason"])
         class_summary[classification] = class_summary.get(classification, 0) + 1
 
-    return {
+    artifact = {
         "artifactVersion": ARTIFACT_VERSION,
         "generator": "scripts/extract-backend-i18n-keys.py",
         "variableTypes": variable_types,
-        "source": {
-            "root": _relative_path(library, library.parent if library != LIBRARY else ROOT),
-            "files": len(parsed),
-            "sha256": digest.hexdigest(),
-        },
         "keys": keys,
         "dynamicSites": {
             "total": len(dynamic),
@@ -3454,6 +3453,20 @@ def build_artifact(
             ],
         },
     }
+    artifact["payloadSha256"] = payload_sha256(artifact)
+    return artifact
+
+
+def payload_sha256(artifact: dict) -> str:
+    """The registry's identity: sha256 of its canonical bytes without this field.
+
+    It is derived only from what the registry says (keys, variable types and
+    dynamic sites), never from the backend files it was read from, so a library
+    edit that leaves the extracted surface unchanged leaves the artifact
+    byte-identical."""
+    return hashlib.sha256(
+        canonical_bytes({name: value for name, value in artifact.items() if name != "payloadSha256"})
+    ).hexdigest()
 
 
 # Every reason the extractor is allowed to give up for. A site it cannot place
@@ -3550,8 +3563,8 @@ def main() -> int:
             )
             return 1
         print(
-            f"backend-i18n: {len(artifact['keys'])} emitted keys verified from "
-            f"{artifact['source']['files']} modules"
+            f"backend-i18n: {len(artifact['keys'])} emitted keys verified "
+            f"(payload sha256 {artifact['payloadSha256'][:12]})"
         )
         return 0
 

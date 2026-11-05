@@ -15,6 +15,7 @@ No prose from the game is used; every fixture string is synthetic.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import tempfile
@@ -1969,6 +1970,42 @@ run = campaignI18n $ do
         check(expected in keys, f"heading emitters did not emit {expected}: {sorted(keys)}")
 
 
+def test_the_registry_digest_covers_the_extracted_surface_not_the_input_files() -> None:
+    card = """module Test.Card where
+
+import Test.Helpers
+
+run = campaignI18n $ labeled' "card.doTheThing" $ pure ()
+"""
+    base = {"Test/Helpers.hs": HELPERS, "Test/Card.hs": card}
+    baseline = registry_of(base)
+    payload = extractor.canonical_bytes(baseline)
+
+    expected = hashlib.sha256(
+        extractor.canonical_bytes({name: value for name, value in baseline.items() if name != "payloadSha256"})
+    ).hexdigest()
+    check(
+        baseline.get("payloadSha256") == expected,
+        f"payloadSha256 is not the digest of the canonical payload without it: {baseline.get('payloadSha256')}",
+    )
+
+    unchanged = {
+        **base,
+        "Test/Card.hs": card + "\n-- a comment\n\nhelper :: Int -> Int\nhelper = (+ 1)\n",
+        "Test/Unrelated.hs": "module Test.Unrelated where\n\nanswer :: Int\nanswer = 42\n",
+    }
+    check(
+        extractor.canonical_bytes(registry_of(unchanged)) == payload,
+        "a library edit that emits nothing new changed the registry bytes",
+    )
+
+    moved = registry_of({**base, "Test/Card.hs": card.replace("card.doTheThing", "card.doTheOtherThing")})
+    check(
+        extractor.canonical_bytes(moved) != payload and moved["payloadSha256"] != baseline["payloadSha256"],
+        "changing an emitted key left the registry bytes or payloadSha256 unchanged",
+    )
+
+
 def test_committed_registry_properties() -> None:
     artifact = json.loads(ARTIFACT.read_text(encoding="utf-8"))
     keys = {entry["key"] for entry in artifact["keys"]}
@@ -2126,6 +2163,7 @@ TESTS = (
     test_a_presentation_emitter_keeps_a_module_from_being_waived,
     test_only_known_caller_scope_alias_reasons_are_classified,
     test_a_heading_story_emits_its_title_and_body,
+    test_the_registry_digest_covers_the_extracted_surface_not_the_input_files,
     test_committed_registry_properties,
 )
 
