@@ -1,0 +1,191 @@
+{- | Per-viewer redaction of the 'Arkham.Game.PublicGame' wire value.
+
+Why this exists. Every client path sends the same @PublicGame@ JSON to every
+participant, and that JSON carries each investigator's hand and ordered deck.
+A modified client could read another player's hidden cards straight off the
+wire. 'redactFor' takes the encoded game and removes what the viewer is not
+entitled to see.
+
+It works on the encoded 'Value', not on 'Arkham.Game.Game', on purpose: both
+encoders ('toJSON' and the hand-written 'toEncoding') produce the same JSON,
+so redacting after encoding covers both, and the function stays pure and
+independent of the engine monads. Nothing calls it yet; wiring it into REST,
+the websocket and the contracts are later slices of TASK-2.22.
+
+What it does, for every investigator object in @investigators@,
+@otherInvestigators@, @killedInvestigators@ and @retiredInvestigators@:
+
+  * Adds @handCount@ (the length of @hand@) to every investigator, controlled
+    or not, so the shape is uniform. If @handCount@ is already present it is
+    kept, which is what makes 'redactFor' idempotent.
+  * Leaves investigators the viewer controls otherwise untouched. Control is
+    the investigator's @playerId@ field matching one of the viewer's seats.
+  * For every other investigator, empties the hidden zones listed in
+    'hiddenZoneKeys' (array stays an array, object stays an object, @null@
+    stays @null@), sets @drawing@ and @discarding@ to @null@ (they are
+    @Maybe@ records holding drawn/discarded cards, and @{}@ is not a valid
+    value of either type), and empties @search.searchFoundCards@ and
+    @search.searchDrawnCards@ (the rest of the search stays, so the table can
+    still see that a search is under way). @deckSize@ is kept as is.
+  * Keeps only the top card of @deck@ when the investigator's @modifiers@
+    include 'TopCardOfDeckIsRevealed' (Norman Withers, Montmartre); that
+    card is public information at the table.
+
+And for the @log@ tail: a structured row (or child entry) whose @audience@ is
+@OnlyPlayer p@ is dropped unless the viewer holds seat @p@; a spectator sees
+only @Everyone@ entries. A structured entry with no readable audience is
+dropped (fail closed). Legacy rows carry no audience and are kept.
+
+Deliberately not touched here (follow-ups): investigator @meta@, the
+@question@ map, the @cards@ registry, @foundCards@, @focusedCards@ and the
+encounter deck.
+-}
+module Api.Arkham.Redact (
+  Viewer (..),
+  redactFor,
+  viewerControls,
+  hiddenZoneKeys,
+  investigatorMapKeys,
+) where
+
+import Arkham.Id (PlayerId)
+import Arkham.Log.Entry (LogAudience (Everyone, OnlyPlayer))
+import Arkham.Modifier (ModifierType (TopCardOfDeckIsRevealed))
+import Data.Aeson
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Vector qualified as V
+import Relude
+
+{- | Who a game payload is being prepared for.
+
+A user can hold several seats (solo or multi-handed play) and must see every
+investigator they control, so a participant is a set of seats rather than one.
+-}
+data Viewer
+  = ViewerSeats (Set PlayerId)
+  | ViewerSpectator
+  deriving stock (Show, Eq)
+
+viewerSeats :: Viewer -> [PlayerId]
+viewerSeats = \case
+  ViewerSeats seats -> toList seats
+  ViewerSpectator -> []
+
+-- | Whether the viewer controls an investigator with this encoded @playerId@.
+viewerControls :: Viewer -> Value -> Bool
+viewerControls viewer pid = any ((== pid) . toJSON) (viewerSeats viewer)
+
+-- | The top-level PublicGame maps whose values are investigator objects.
+investigatorMapKeys :: [Key]
+investigatorMapKeys =
+  ["investigators", "otherInvestigators", "killedInvestigators", "retiredInvestigators"]
+
+{- | Investigator fields hidden from anyone who doesn't control the
+investigator, emptied in place. @deck@ is handled separately (top card) and
+@drawing@\/@discarding@\/@search@ are handled separately (see module docs).
+-}
+hiddenZoneKeys :: [Key]
+hiddenZoneKeys = ["hand", "sideDeck", "decks", "drawnCards", "cardsUnderneath"]
+
+redactFor :: Viewer -> Value -> Value
+redactFor viewer = \case
+  Object game ->
+    Object
+      . adjust (redactLog viewer) "log"
+      $ foldl' (\g k -> adjust (redactInvestigatorMap viewer) k g) game investigatorMapKeys
+  other -> other
+
+redactInvestigatorMap :: Viewer -> Value -> Value
+redactInvestigatorMap viewer = \case
+  Object investigators -> Object (KeyMap.map (redactInvestigator viewer) investigators)
+  other -> other
+
+redactInvestigator :: Viewer -> Value -> Value
+redactInvestigator viewer = \case
+  Object investigator ->
+    let counted = withHandCount investigator
+        controlled = maybe False (viewerControls viewer) (KeyMap.lookup "playerId" investigator)
+     in Object $ if controlled then counted else hideZones counted
+  other -> other
+
+withHandCount :: Object -> Object
+withHandCount investigator
+  | KeyMap.member "handCount" investigator = investigator
+  | otherwise = KeyMap.insert "handCount" (toJSON handCount) investigator
+ where
+  handCount = case KeyMap.lookup "hand" investigator of
+    Just (Array cards) -> V.length cards
+    _ -> 0
+
+hideZones :: Object -> Object
+hideZones investigator =
+  adjust emptySearch "search"
+    . adjust deck "deck"
+    . adjust nullify "drawing"
+    . adjust nullify "discarding"
+    $ foldl' (\o k -> adjust emptied k o) investigator hiddenZoneKeys
+ where
+  deck
+    | topCardRevealed investigator = \case
+        Array cards -> Array (V.take 1 cards)
+        other -> emptied other
+    | otherwise = emptied
+  emptySearch = \case
+    Object search ->
+      Object
+        . adjust emptied "searchDrawnCards"
+        $ adjust emptied "searchFoundCards" search
+    other -> other
+  nullify = const Null
+
+-- | Apply to a key's value if present. aeson's KeyMap has no @adjust@.
+adjust :: (Value -> Value) -> Key -> Object -> Object
+adjust f k o = maybe o (\v -> KeyMap.insert k (f v) o) (KeyMap.lookup k o)
+
+emptied :: Value -> Value
+emptied = \case
+  Array _ -> Array mempty
+  Object _ -> Object mempty
+  other -> other
+
+topCardRevealed :: Object -> Bool
+topCardRevealed investigator = case KeyMap.lookup "modifiers" investigator of
+  Just (Array modifiers) -> any isTopCardRevealed modifiers
+  _ -> False
+ where
+  revealed = toJSON TopCardOfDeckIsRevealed
+  isTopCardRevealed = \case
+    Object modifier -> KeyMap.lookup "type" modifier == Just revealed
+    _ -> False
+
+redactLog :: Viewer -> Value -> Value
+redactLog viewer = \case
+  Array rows -> Array (V.mapMaybe (redactLogRow viewer) rows)
+  other -> other
+
+redactLogRow :: Viewer -> Value -> Maybe Value
+redactLogRow viewer = \case
+  row@(Object o)
+    | KeyMap.lookup "tag" o == Just (String "LogRowStructured") ->
+        case KeyMap.lookup "contents" o of
+          Just entry ->
+            (\e -> Object (KeyMap.insert "contents" e o)) <$> redactLogEntry viewer entry
+          Nothing -> Just row
+  row -> Just row
+
+redactLogEntry :: Viewer -> Value -> Maybe Value
+redactLogEntry viewer = \case
+  Object entry
+    | maybe False (audienceVisible viewer) (KeyMap.lookup "audience" entry) ->
+        Just . Object $ adjust children "children" entry
+    | otherwise -> Nothing
+  other -> Just other
+ where
+  children = \case
+    Array entries -> Array (V.mapMaybe (redactLogEntry viewer) entries)
+    other -> other
+
+audienceVisible :: Viewer -> Value -> Bool
+audienceVisible viewer audience =
+  audience == toJSON Everyone
+    || any (\p -> audience == toJSON (OnlyPlayer p)) (viewerSeats viewer)

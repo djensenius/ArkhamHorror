@@ -33,6 +33,7 @@ library
       Api.Arkham.Export
       Api.Arkham.Helpers
       Api.Arkham.Maintenance
+      Api.Arkham.Redact
       Api.Arkham.RoomOps
       Api.Arkham.Types.Achievement
       Api.Arkham.Types.Deck
@@ -9966,6 +9967,7 @@ test-suite spec
       Arkham.Api.LocaleCatalogCapabilitySpec
       Arkham.Api.LocaleCatalogSettingsPreflightSpec
       Arkham.Api.MainStreetSwapPlanSpec
+      Arkham.Api.RedactSpec
       Arkham.Asset.Assets.AncientAnkhSpec
       Arkham.Asset.Assets.Aquinnah1Spec
       Arkham.Asset.Assets.Aquinnah3Spec
