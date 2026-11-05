@@ -2106,6 +2106,53 @@ def test_sites_are_named_by_file_and_top_level_binding() -> None:
     )
 
 
+NESTED_SCOPE_CARD = """module Test.Card where
+
+import Test.Helpers
+
+instance (A m, B m) =>
+  RunMessage (Foo a) where
+  runMessage msg a = campaignI18n $ labeled' "card.constrained" $ pure a
+
+outer x = campaignI18n $ helper x
+ where
+  helper y = labeled' "card.inWhere" $ pure y
+
+guarded x
+  | x > 0 = let go = campaignI18n $ labeled' "card.inLetUnderGuard" $ pure x in go
+  | otherwise = pure x
+"""
+
+
+def test_sites_drop_instance_context_and_name_the_outer_binding() -> None:
+    artifact = registry_of({"Test/Helpers.hs": HELPERS, "Test/Card.hs": NESTED_SCOPE_CARD})
+    sites = {entry["key"]: entry.get("site") for entry in artifact["keys"]}
+    for key, expected in (
+        ("standalone.testCampaign.label.card.constrained", "Test/Card.hs#instance RunMessage (Foo a)"),
+        ("standalone.testCampaign.label.card.inWhere", "Test/Card.hs#outer"),
+        ("standalone.testCampaign.label.card.inLetUnderGuard", "Test/Card.hs#guarded"),
+    ):
+        check(sites.get(key) == expected, f"{key} should be sited at {expected}: {sites}")
+
+
+def test_a_key_emitted_from_two_bindings_is_sited_at_the_least_binding() -> None:
+    card = """module Test.Card where
+
+import Test.Helpers
+
+zeta = campaignI18n $ labeled' "card.shared" $ pure ()
+
+alpha = campaignI18n $ labeled' "card.shared" $ pure ()
+"""
+    artifact = registry_of({"Test/Helpers.hs": HELPERS, "Test/Card.hs": card})
+    by_key = {entry["key"]: entry for entry in artifact["keys"]}
+    shared = by_key.get("standalone.testCampaign.label.card.shared", {})
+    check(
+        shared.get("site") == "Test/Card.hs#alpha" and shared.get("sites") == 2,
+        f"a key from two bindings should be sited at the least (file, binding, emitter): {shared}",
+    )
+
+
 def test_committed_registry_properties() -> None:
     artifact = json.loads(ARTIFACT.read_text(encoding="utf-8"))
     keys = {entry["key"] for entry in artifact["keys"]}
@@ -2194,6 +2241,10 @@ def test_committed_registry_properties() -> None:
     line_site = re.compile(r"\.hs:\d+$")
     for entry in [*artifact["keys"], *artifact["dynamicSites"]["sites"]]:
         check(line_site.search(entry["site"]) is None, f"a committed registry site names a line: {entry}")
+        check(
+            not entry["site"].endswith("#<top>"),
+            f"a committed registry site fell back to <top>: {entry}",
+        )
 
 
 TESTS = (
@@ -2274,6 +2325,8 @@ TESTS = (
     test_the_registry_digest_covers_the_extracted_surface_not_the_input_files,
     test_dynamic_sites_are_line_independent,
     test_sites_are_named_by_file_and_top_level_binding,
+    test_sites_drop_instance_context_and_name_the_outer_binding,
+    test_a_key_emitted_from_two_bindings_is_sited_at_the_least_binding,
     test_committed_registry_properties,
 )
 
