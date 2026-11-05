@@ -70,6 +70,7 @@ pattern QuestionPresentationWithMetadata version kind choiceCount choices metada
   QuestionPresentationV2 version kind choiceCount choices metadata
 
 {-# COMPLETE QuestionPresentationWithMetadata #-}
+{-# COMPLETE QuestionPresentation #-}
 
 data ChoicePresentation = ChoicePresentationV2
   Int

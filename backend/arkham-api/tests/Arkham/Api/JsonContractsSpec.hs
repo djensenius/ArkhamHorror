@@ -2207,7 +2207,6 @@ spec = describe "Native client contract fixtures" do
                   kind == QuestionPresentation.DrawEncounterCard
               )
               choices
-          other -> error $ "Unexpected encounter-draw question presentation shape: " <> show other
       drawMutations :: [(Text, Draw.CardDraw Message)]
       drawMutations =
         [ ("source", exactDraw {Draw.cardDrawSource = InvestigatorSource iid})
@@ -3160,10 +3159,6 @@ spec = describe "Native client contract fixtures" do
                                QuestionPresentation.AnywhereScope
                          )
                      ]
-      other ->
-        expectationFailure
-          $ "Unexpected Gathering act-objective presentation shape: "
-          <> show other
 
   it "projects the exact Gathering movement-entry sequence with native semantics" do
     let
@@ -3223,10 +3218,6 @@ spec = describe "Native client contract fixtures" do
                      , QuestionPresentation.Move
                      , QuestionPresentation.Investigate
                      ]
-      other ->
-        expectationFailure
-          $ "Unexpected Gathering movement presentation shape: "
-          <> show other
 
     for_
       [ "question-gathering-attic-entry-forced.json"
@@ -3360,10 +3351,6 @@ spec = describe "Native client contract fixtures" do
                 ]
             choiceCount `shouldBe` 12
             sourceIndexes `shouldBe` [0 .. 11]
-          other ->
-            expectationFailure
-              $ "Unexpected source-less movement presentation shape: "
-              <> show other
 
         case drop 9 choices of
           AbilityLabel _ cellarAbility _ _ _
@@ -3399,10 +3386,6 @@ spec = describe "Native client contract fixtures" do
                     ]
                 choiceCount `shouldBe` 12
                 sourceIndexes `shouldBe` [0 .. 11]
-              other ->
-                expectationFailure
-                  $ "Unexpected mismatched movement presentation shape: "
-                  <> show other
           otherChoices ->
             expectationFailure
               $ "Expected both Gathering movement choices, got "
@@ -3599,7 +3582,6 @@ spec = describe "Native client contract fixtures" do
             let sourceIndexes = [sourceIndex | QuestionPresentation.ChoicePresentation sourceIndex _ _ _ _ _ _ <- presentations]
             length presentations `shouldBe` choiceCount
             sourceIndexes `shouldBe` [0 .. choiceCount - 1]
-          other -> expectationFailure $ "Unexpected representative question presentation shape: " <> show other
       abilityChoice = case fixtureGatheringActObjectiveQuestion of
         PlayerWindowChooseOne choices ->
           fromMaybe (error "fixture objective ability missing") $ find (\case AbilityLabel {} -> True; _ -> False) choices
