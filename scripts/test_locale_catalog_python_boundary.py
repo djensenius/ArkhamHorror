@@ -56,6 +56,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER_RELATIVE_PATH = "scripts/run-locale-catalog-python.sh"
 BOUNDARY_TEST_RELATIVE_PATH = "scripts/test_locale_catalog_python_boundary.py"
 RUNTIME_PROFILE_RELATIVE_PATH = "scripts/locale_catalog_python_runtime.json"
+TOOLING_LOCK_RELATIVE_PATH = "scripts/locale_catalog_tooling_lock.json"
 FIXTURE_ENTRY = "scripts/build-locale-catalog-fixture.py"
 HELPER_SOURCE = "scripts/json_schema_subset.py"
 GRANTED_SOURCE = "scripts/strict_json.py"
@@ -94,6 +95,7 @@ CANONICAL_WITNESS_PATHS = (
     "scripts/locale_catalog_python_boundary.py",
     "scripts/locale_catalog_runtime.py",
     "scripts/locale_catalog_python_runtime.json",
+    "scripts/locale_catalog_tooling_lock.json",
     "scripts/run-locale-catalog-python.sh",
     "scripts/locale-catalog-python-sealed.sh",
     "scripts/generate-locale-catalog.py",
@@ -644,6 +646,36 @@ TAMPER_TARGETS = (
     "scripts/locale_catalog_python_boundary.py",
     "scripts/locale_catalog_python_runtime.json",
     "frontend/schemas/locale-catalog/v1/manifest.schema.json",
+    TOOLING_LOCK_RELATIVE_PATH,
+    ".github/workflows/contracts.yml",
+    ".github/workflows/locale-catalog.yml",
+    ".github/workflows/haskell.yml",
+    "mise.toml",
+    "Dockerfile",
+    "frontend/package.json",
+    "pyproject.toml",
+    "uv.lock",
+)
+
+# Tampering with these must fail *because of* the tooling lock: they are
+# pinned by no governed contract hash and by no earlier runtime refusal, so the
+# lock is their only pin and the refusal has to name it.
+LOCK_PINNED_TAMPER_TARGETS = frozenset(
+    {
+        "scripts/build-locale-catalog-fixture.py",
+        "scripts/strict_json.py",
+        "scripts/json_schema_subset.py",
+        "scripts/locale_catalog_python_runtime.json",
+        TOOLING_LOCK_RELATIVE_PATH,
+        ".github/workflows/contracts.yml",
+        ".github/workflows/locale-catalog.yml",
+        ".github/workflows/haskell.yml",
+        "mise.toml",
+        "Dockerfile",
+        "frontend/package.json",
+        "pyproject.toml",
+        "uv.lock",
+    }
 )
 
 HOSTILE_EXECUTABLES = (
@@ -1028,8 +1060,17 @@ def test_source_and_schema_drift(scratch: Path, token: str) -> int:
         try:
             path = tree / relative_path
             path.write_bytes(path.read_bytes() + b"\n")
-            require_authoritative_failure(
-                f"tampered {relative_path}", tree, [FIXTURE_ENTRY, "--check"]
+            result = run_authoritative(tree, [FIXTURE_ENTRY, "--check"])
+            require(
+                result.returncode != 0,
+                f"tampered {relative_path} was accepted by the real authoritative command\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+            )
+            require(
+                relative_path not in LOCK_PINNED_TAMPER_TARGETS
+                or f"{TOOLING_LOCK_RELATIVE_PATH} does not match" in result.stderr,
+                f"tampered {relative_path} failed, but not through the tooling lock that is its "
+                f"only pin\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
             )
             checked += 1
         finally:
@@ -1116,6 +1157,81 @@ def test_workflow_base_authority_wiring() -> int:
         "docker-build-api.sh does not force both Stack phases to use the image's system GHC",
     )
     return 3
+
+
+def git_output(tree: Path, arguments: list[str]) -> str:
+    result = subprocess.run(
+        strict_json.git_argv(arguments),
+        cwd=tree,
+        capture_output=True,
+        env=git_environment(),
+        timeout=300,
+    )
+    require(
+        result.returncode == 0,
+        f"probe setup failure: {arguments!r} exited {result.returncode}: "
+        f"{result.stderr.decode('utf-8', errors='replace')}",
+    )
+    return result.stdout.decode("utf-8").strip()
+
+
+def test_tooling_lock_end_to_end(scratch: Path, token: str) -> int:
+    """A tooling-only edit moves the non-governed lock, never a governed hash.
+
+    In a probe tree with history: edit only a workflow comment. The governed
+    fixture writer then rewrites contracts/ byte-identically, `--check` fails
+    naming the tooling lock, and once the lock is replaced with the bytes that
+    refusal prints, `--check` passes and the schema revision-drift gate passes
+    at the unchanged schemaRevision.
+    """
+    tree = create_probe_tree(scratch, "tooling-lock", token)
+    try:
+        base = git_output(tree, ["git", "rev-parse", "HEAD"])
+        workflow = tree / ".github" / "workflows" / "contracts.yml"
+        workflow.write_bytes(workflow.read_bytes() + b"# tooling-only probe edit\n")
+
+        written = run_authoritative(tree, [FIXTURE_ENTRY])
+        require(
+            written.returncode == 0,
+            "the governed fixture writer refused a tooling-only edit\n"
+            f"stdout:\n{written.stdout}\nstderr:\n{written.stderr}",
+        )
+        require(
+            git_output(tree, ["git", "status", "--porcelain", "--", "contracts"]) == "",
+            "a tooling-only edit changed governed contracts/ bytes",
+        )
+
+        refused = run_authoritative(tree, [FIXTURE_ENTRY, "--check"])
+        marker = f"{TOOLING_LOCK_RELATIVE_PATH} does not match"
+        require(
+            refused.returncode != 0
+            and marker in refused.stderr
+            and "changed ['.github/workflows/contracts.yml'], missing [], unexpected []"
+            in refused.stderr,
+            "a tooling-only edit did not fail the tooling lock check by name\n"
+            f"stdout:\n{refused.stdout}\nstderr:\n{refused.stderr}",
+        )
+        printed = refused.stderr.split("with exactly:\n", 1)
+        require(len(printed) == 2 and "\n}\n" in printed[1], "the lock refusal printed no lock")
+        (tree / TOOLING_LOCK_RELATIVE_PATH).write_text(
+            printed[1][: printed[1].index("\n}\n") + 3], encoding="utf-8"
+        )
+
+        require_authoritative_success(
+            "the updated tooling lock", tree, [FIXTURE_ENTRY, "--check"]
+        )
+        run_git(tree, ["git", "add", "-A"])
+        run_git(tree, ["git", "commit", "-q", "-m", "tooling-only probe edit"])
+        drift = run_authoritative(tree, ["scripts/check-schema-revision-drift.py", base])
+        require(
+            drift.returncode == 0
+            and "no governed artifact content changed" in drift.stdout,
+            "the revision-drift gate required a bump for a tooling-only edit\n"
+            f"stdout:\n{drift.stdout}\nstderr:\n{drift.stderr}",
+        )
+        return 4
+    finally:
+        release_probe_tree(tree, token)
 
 
 def test_fixture_writer_ownership(scratch: Path, token: str) -> int:
@@ -6347,6 +6463,7 @@ def main() -> None:
         totals["capability lint end to end"] = test_capability_lint_end_to_end(scratch, token)
         totals["target execution"] = test_validated_target_really_executes(scratch, token)
         totals["source and schema drift"] = test_source_and_schema_drift(scratch, token)
+        totals["tooling lock end to end"] = test_tooling_lock_end_to_end(scratch, token)
         totals["fixture writer ownership"] = test_fixture_writer_ownership(scratch, token)
         totals["workflow base authority"] = test_workflow_base_authority_wiring()
         totals["toolchain identity"] = test_toolchain_roots(scratch, token)
