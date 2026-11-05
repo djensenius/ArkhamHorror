@@ -553,8 +553,11 @@ way, inside the transaction that holds the game lock. The exception
 propagates out of runDB, so the transaction rolls back (nothing from the run
 is written) and the game lock and worker are freed. A request handler answers
 it as a 500; callers that catch per group and log (the Epic shared-state sync
-and time-up forcing) skip that group. Search Honeycomb / logs for this to
-find poison games.
+and time-up forcing) skip that group. The post-swap re-ask in
+'swapMainStreetInvestigators' also runs under it, through
+'runMessagesInGroupCore', after the swap has committed: on expiry only the
+re-ask's transaction rolls back, its catch-all logs a warning, and the
+committed swap stays. Search Honeycomb / logs for this to find poison games.
 -}
 data RunMessagesTimeout = RunMessagesTimeout ArkhamGameId Int
   deriving stock Show
