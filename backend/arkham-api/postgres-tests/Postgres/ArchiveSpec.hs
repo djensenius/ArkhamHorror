@@ -215,6 +215,7 @@ spec harness app = describe "Game archive access and restore failures with produ
       stored.errorMessage `shouldBe` Just "restore failed: storage"
       map (decode @Value) <$> drain listener
         `shouldReturn` [Just $ toJSON $ GameUnarchiveFailed fixtureMessage]
+
   {- The hand-archive fails before any S3 call: credentials come from fake
   environment keys (the first link of Amazonka's discovery chain, with the
   credential files and instance metadata pointed away), and the export's temp

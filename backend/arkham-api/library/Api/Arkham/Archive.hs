@@ -384,7 +384,11 @@ classifyArchiveException e = ArchiveFailure kind (describeArchiveException e)
 detail. The admin panel shows it as a tooltip.
 -}
 archiveFailureSummary :: ArchiveFailure -> Text
-archiveFailureSummary failure = "restore failed: " <> case archiveFailureKind failure of
+archiveFailureSummary failure = "restore failed: " <> archiveFailureKindName failure
+
+-- | The failure's kind alone, as 'archiveFailureSummary' and the logs name it.
+archiveFailureKindName :: ArchiveFailure -> Text
+archiveFailureKindName failure = case archiveFailureKind failure of
   ArchiveStorageFailure -> "storage"
   ArchiveDatabaseFailure -> "database"
   ArchiveIntegrityFailure -> "integrity"
@@ -393,10 +397,13 @@ archiveFailureSummary failure = "restore failed: " <> case archiveFailureKind fa
 {- | Run a background action, logging anything it throws instead of losing it.
 
 For the places nothing else would hear about a failure: a forked restore, and
-the restore worker's and the sweeper's loops. The line is the one a failed
-restore logs -- the safe summary and the described detail, never the
-exception's text. Only synchronous exceptions are caught; an asynchronous one
-(the thread being killed) is neither logged nor swallowed.
+the restore worker's and the sweeper's loops. The line names the context, the
+failure's kind and the described detail, never the exception's text. Only
+synchronous exceptions are caught; an asynchronous one (the thread being
+killed) is neither logged nor swallowed.
+
+A failure to write the line is swallowed too: a loop must not die because
+stdout did.
 -}
 logArchiveFailures :: (Text -> IO ()) -> Text -> IO () -> IO ()
 logArchiveFailures logLine context action =
@@ -404,11 +411,13 @@ logArchiveFailures logLine context action =
     Right () -> pure ()
     Left err -> do
       failure <- classifyStrict err
-      logLine
+      void
+        $ tryAny
+        $ logLine
         $ "archive: "
         <> context
         <> " FAILED ("
-        <> archiveFailureSummary failure
+        <> archiveFailureKindName failure
         <> "): "
         <> archiveFailureDetail failure
 

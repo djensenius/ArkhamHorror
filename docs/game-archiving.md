@@ -200,10 +200,12 @@ does say, by failure:
 | Anything else | `exception (ErrorCall)` — the exception's type |
 
 A throw that would otherwise go nowhere — out of a forked restore, or out of a
-tick of the restore worker or the sweeper — is logged the same way, as
-`archive: restore of game <id> FAILED (restore failed: database): sql error (state 57014)`
-(or `restore worker tick` / `sweeper tick`), and the loop carries on. The thread
-being killed is not caught.
+tick of the restore worker or the sweeper — is logged the same way, with the
+failure's kind alone, as
+`archive: restore of game <id> FAILED (database): sql error (state 57014)`
+(or `restore worker tick` / `sweeper tick`). A forked restore then simply
+ends; the worker and the sweeper carry on with their next tick, even if writing
+the line itself fails. The thread being killed is not caught.
 
 The AWS error code and request id are there because an operator needs them
 to look a failure up; neither is a credential. Each is logged only if it is

@@ -77,8 +77,16 @@ spec = describe "archive failure log rendering" do
         $ TransportError statusCodeFailure
       lines' <- readIORef logged
       lines'
-        `shouldBe` ["archive: restore worker tick FAILED (restore failed: storage): aws transport error (StatusCodeException, status 403)"]
+        `shouldBe` ["archive: restore worker tick FAILED (storage): aws transport error (StatusCodeException, status 403)"]
       for_ allSentinels \s -> for_ lines' (`shouldNotSatisfy` T.isInfixOf s)
+
+    it "lets nothing escape when writing the line throws" do
+      attempts <- newIORef (0 :: Int)
+      let throwingLogger _ = modifyIORef' attempts (+ 1) >> Base.throwIO (userError "stdout closed")
+      logArchiveFailures throwingLogger "sweeper tick" (pure ())
+      readIORef attempts `shouldReturn` 0
+      logArchiveFailures throwingLogger "sweeper tick" (Base.throwIO $ TransportError statusCodeFailure)
+      readIORef attempts `shouldReturn` 1
 
     it "logs nothing when the action succeeds" do
       logged <- newIORef []
