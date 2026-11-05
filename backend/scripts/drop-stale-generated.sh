@@ -29,9 +29,26 @@
 # (normal cascade), which is exactly what the missing dependency edge would have
 # given us.
 #
+# Dropping the objects alone is not enough, though. Stack keeps its own
+# per-component record of the source hashes it last built with
+# (.stack-work/dist/*/ghc-*/stack-build-caches), and it only hands a component to
+# Cabal/GHC when that record disagrees with the tree. The preprocessed source
+# never exists on disk, so after a generator-only change the record still
+# matches, Stack skips arkham-api entirely, the missing objects go unnoticed and
+# `stack install` copies the old executable. Removing the record too makes Stack
+# run the build, and GHC then recompiles exactly the modules dropped here.
+#
 # Set DRY_RUN=1 to print what would be removed.
 #
 # Usage: drop-stale-generated.sh <arkham-api-dir> <cards-discover-dir>
+#
+# Docker runs this from scripts/docker-build-api.sh. A local build reuses its
+# .stack-work the same way, so after pulling a cards-discover change, run from
+# backend/ before building:
+#
+#   sh scripts/drop-stale-generated.sh arkham-api cards-discover
+#
+# or, more bluntly, `stack build --force-dirty arkham-api`.
 set -eu
 
 API=${1:?arkham-api package directory}
@@ -48,11 +65,16 @@ else
 fi
 
 # Only the generator's hand-written sources: .stack-work below it holds build
-# products whose contents are not stable between builds.
+# products whose contents are not stable between builds. The leading tag
+# versions the stamp: bumping it forces one drop on every existing cache (v2:
+# caches stamped before stack-build-caches was dropped may still be stale).
 hash=$(
-  find "$DISCOVER/app" "$DISCOVER/library" -type f -name '*.hs' \
-    | LC_ALL=C sort \
-    | xargs cat \
+  {
+    echo 'drop-stale-generated v2'
+    find "$DISCOVER/app" "$DISCOVER/library" -type f -name '*.hs' \
+      | LC_ALL=C sort \
+      | xargs cat
+  } \
     | $checksum \
     | cut -d' ' -f1
 )
@@ -85,6 +107,16 @@ for build in "$WORK"/dist/*/ghc-*/build; do
       fi
     done
   done
+done
+
+# Stack's record of what it last built; see the header for why it must go too.
+for caches in "$WORK"/dist/*/ghc-*/stack-build-caches; do
+  [ -d "$caches" ] || continue
+  if [ "${DRY_RUN:-}" = 1 ]; then
+    echo "   would remove $caches"
+  else
+    rm -rf "$caches"
+  fi
 done
 
 if [ "${DRY_RUN:-}" != 1 ]; then
