@@ -108,7 +108,7 @@ newHarness :: IO Harness
 newHarness = newHarnessWithKey pushKey
 
 newHarnessWithKey :: ArkhamDBPushId -> IO Harness
-newHarnessWithKey pushKey = do
+newHarnessWithKey harnessPushKey = do
   (baseStore, linked) <- Linking.newStore
   let store = baseStore {validateDeck = PersistentWriteBack.validateWriteBackDeck mempty}
   Linking.linkAccount store
@@ -134,7 +134,7 @@ newHarnessWithKey pushKey = do
               pure $ Just $ Entity key updated
         , ownsPushClaim = \(Entity key previous) -> do
             current <- readIORef job
-            pure $ key == pushKey && arkhamDBPushStatus current == "running" && arkhamDBPushStatus previous == "running" &&
+            pure $ key == harnessPushKey && arkhamDBPushStatus current == "running" && arkhamDBPushStatus previous == "running" &&
               arkhamDBPushStage current == arkhamDBPushStage previous && arkhamDBPushUpdatedAt current == arkhamDBPushUpdatedAt previous}
       record call = modifyIORef' calls (<> [call])
       mapping = do
@@ -158,7 +158,7 @@ newHarnessWithKey pushKey = do
               pushCanRun time retry value then do
                 let next = value {arkhamDBPushStatus = "running", arkhamDBPushError = Nothing, arkhamDBPushUpdatedAt = time}
                 writeIORef job next
-                pure $ Just $ Entity pushKey next
+                pure $ Just $ Entity harnessPushKey next
             else pure Nothing
         , requestPushRetry = \_ _ _ -> pure ()
         , checkpointPush = \(Entity _ previous) next -> do
@@ -218,10 +218,10 @@ newHarnessWithKey pushKey = do
             link <- mapping
             state <- readIORef linked
             let resulting = arkhamDBDeckLinkDeckId <$> find ((== Just (arkhamDBPushCampaignKey value)) . arkhamDBDeckLinkCampaignKey) (Map.elems state.storedLinks)
-            pure [pushStatus Linking.deckId link (Just $ Entity pushKey value) (resulting <|> Just Linking.deckId)]
+            pure [pushStatus Linking.deckId link (Just $ Entity harnessPushKey value) (resulting <|> Just Linking.deckId)]
         , campaignOwnsTarget = \campaign remote -> do
             previous <- readIORef completed
-            pure $ previous == Just (campaign, remote.remoteDeckId) && hasPushMarker pushKey remote
+            pure $ previous == Just (campaign, remote.remoteDeckId) && hasPushMarker harnessPushKey remote
         , campaignXpBaseline = const $ readIORef baseline
         }
       client = Linking.stubClient
@@ -236,10 +236,10 @@ newHarnessWithKey pushKey = do
             record $ "upgrade/" <> source <> "/" <> showText xp
             modifyIORef' remotes \values ->
               let original = fromMaybe Linking.remote $ Map.lookup source values
-                  target = maybe "124" (showText . (+1)) (readMaybe (toString source) :: Maybe Int)
+                  target = maybe "124" (showText . (+ 1)) (readMaybe (toString source) :: Maybe Int)
                   version = original {deck = original.deck {Decklist.meta = metadata}, remoteDeckId = target, dateUpdate = Just "created", deckVersion = Just "2.0", nextDeckId = Nothing}
               in Map.insert target version $ Map.adjust (\value -> value {nextDeckId = Just target}) source values
-            pure $ Right $ maybe "124" (showText . (+1)) (readMaybe (toString source) :: Maybe Int)
+            pure $ Right $ maybe "124" (showText . (+ 1)) (readMaybe (toString source) :: Maybe Int)
         , createDeck = \_ deck -> do
             record "new"
             modifyIORef' remotes $ Map.insert "125" $ Linking.remote
@@ -525,7 +525,7 @@ spec = describe "ArkhamDB campaign write-back" do
     for_ ["same", "replace", "delete-reattach" :: Text] \edit ->
       for_ [False, True] \changedBase ->
         it ("retains a new identical attachment across two actual campaign exports: " <> show (adoption, edit, changedBase)) do
-          first <- newHarness
+          firstHarness <- newHarness
           (gameRef, pid, drain) <- newCampaignMessages
           let overlay = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
               base = Linking.remote.deck {Decklist.slots = Map.singleton "01006" 1, Decklist.meta = Nothing}
@@ -546,14 +546,14 @@ spec = describe "ArkhamDB campaign write-back" do
                   then importRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId target Linking.forbiddenPublic
                   else syncRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId Linking.deckId Linking.forbiddenPublic)
                     >>= either (fail . show) pure)
-          saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef first.linked >>= maybe (fail "Missing saved deck") pure
+          saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef firstHarness.linked >>= maybe (fail "Missing saved deck") pure
           let attached = attachDeckOverlay UUID.nil overlay saved {arkhamDeckList = base}
-          modifyIORef' first.linked \state -> state {Linking.storedDecks = Map.insert Linking.deckId attached state.storedDecks}
+          modifyIORef' firstHarness.linked \state -> state {Linking.storedDecks = Map.insert Linking.deckId attached state.storedDecks}
           initial <- readIORef gameRef
           drain $ deckChosenWithAttachment initial pid (arkhamDeckOverlayAttachmentId attached) (arkhamDeckOverlay attached) $ arkhamDeckPlayList attached
-          snapshot >>= \deck -> modifyIORef' first.job \job -> job {arkhamDBPushPayload = encodePushDeck deck}
-          first.run False
-          consumed <- adopt first "124"
+          snapshot >>= \deck -> modifyIORef' firstHarness.job \job -> job {arkhamDBPushPayload = encodePushDeck deck}
+          firstHarness.run False
+          consumed <- adopt firstHarness "124"
           arkhamDeckOverlay consumed `shouldBe` Nothing
           arkhamDeckOverlayAttachmentId consumed `shouldBe` Nothing
           -- The exact attachment builder used by PUT rotates even identical
@@ -566,29 +566,29 @@ spec = describe "ArkhamDB campaign write-back" do
                 _ -> attachDeckOverlay (UUID.fromWords 0 0 0 2) overlay cleared
               reattached = edited {arkhamDeckList = (arkhamDeckList edited)
                 {Decklist.slots = if changedBase then Map.singleton "01009" 1 else Decklist.slots $ arkhamDeckList edited}}
-          modifyIORef' first.linked \state -> state {Linking.storedDecks = Map.insert Linking.deckId reattached state.storedDecks}
+          modifyIORef' firstHarness.linked \state -> state {Linking.storedDecks = Map.insert Linking.deckId reattached state.storedDecks}
           -- A real incremental campaign edit retains the OLD materialization
           -- proof. It must not consume this NEW attachment, even on equal JSON.
           drain [GainXP "01001" GameSource 2]
-          second <- newHarnessWithKey $ ArkhamDBPushKey $ UUID.fromWords 0 0 0 246
-          readIORef first.linked >>= writeIORef second.linked
-          readIORef first.remotes >>= writeIORef second.remotes
-          readIORef first.baseline >>= writeIORef second.baseline
-          mapping <- Map.lookup Linking.deckId . (.storedLinks) <$> readIORef second.linked >>= maybe (fail "Missing link") pure
+          secondHarness <- newHarnessWithKey $ ArkhamDBPushKey $ UUID.fromWords 0 0 0 246
+          readIORef firstHarness.linked >>= writeIORef secondHarness.linked
+          readIORef firstHarness.remotes >>= writeIORef secondHarness.remotes
+          readIORef firstHarness.baseline >>= writeIORef secondHarness.baseline
+          mapping <- Map.lookup Linking.deckId . (.storedLinks) <$> readIORef secondHarness.linked >>= maybe (fail "Missing link") pure
           deck <- snapshot
-          modifyIORef' second.job \job -> job
+          modifyIORef' secondHarness.job \job -> job
             { arkhamDBPushPayload = encodePushDeck deck, arkhamDBPushTotalXp = 7
             , arkhamDBPushExpectedDateUpdate = arkhamDBDeckLinkLastSyncedDateUpdate mapping
             , arkhamDBPushExpectedVersion = arkhamDBDeckLinkLastSyncedVersion mapping }
-          second.run False
-          assertState second "succeeded"
+          secondHarness.run False
+          assertState secondHarness "succeeded"
           replicateM_ 2 do
-            adopted <- adopt second "125"
+            adopted <- adopt secondHarness "125"
             arkhamDeckOverlay adopted `shouldBe` Just overlay
             arkhamDeckOverlayAttachmentId adopted `shouldBe` arkhamDeckOverlayAttachmentId reattached
             Decklist.slots (arkhamDeckPlayList adopted) `shouldBe` Map.fromList [("01006", 1), ("01007", 2)]
-          filter (T.isPrefixOf "upgrade/") <$> readIORef first.calls `shouldReturn` ["upgrade/123/5"]
-          filter (T.isPrefixOf "upgrade/") <$> readIORef second.calls `shouldReturn` ["upgrade/124/2"]
+          filter (T.isPrefixOf "upgrade/") <$> readIORef firstHarness.calls `shouldReturn` ["upgrade/123/5"]
+          filter (T.isPrefixOf "upgrade/") <$> readIORef secondHarness.calls `shouldReturn` ["upgrade/124/2"]
 
   it "keeps attachment identity private in canonical Deck JSON and refuses legacy value-only proof" do
     h <- newHarness
@@ -645,7 +645,7 @@ spec = describe "ArkhamDB campaign write-back" do
             result <- withRefreshLock h.store uid action
             time <- readIORef clock
             reclaimed <- h.writes.claimPush time False Linking.userId Linking.deckId
-            when (isJust reclaimed) $ modifyIORef' steals (+1)
+            when (isJust reclaimed) $ modifyIORef' steals (+ 1)
             pure result}
           slowClient = h.client {loadDeck = \token remoteId -> do
             result <- h.client.loadDeck token remoteId
@@ -858,7 +858,7 @@ spec = describe "ArkhamDB campaign write-back" do
     filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
     readIORef h.baseline `shouldReturn` 5
 
-  for_ ["lost-create", "failed-save", "lost-save"] \failure ->
+  for_ ["lost-create" :: String, "failed-save", "lost-save"] \failure ->
     it ("resumes the exact prepared payload without remerging later source edits: " <> toString failure) do
       h <- newHarness
       let side = Map.singleton "01009" 2
@@ -907,11 +907,11 @@ spec = describe "ArkhamDB campaign write-back" do
     it ("does not create or publish a prepared payload when the conditional checkpoint is rejected: " <> toString mode) do
       h <- newHarness
       modifyIORef' h.job \job -> job {arkhamDBPushMode = mode}
-      before <- arkhamDBPushPayload <$> readIORef h.job
+      payloadBefore <- arkhamDBPushPayload <$> readIORef h.job
       let writes = h.writes {checkpointPush = \previous next ->
             if arkhamDBPushStage next == "creating" then pure False else h.writes.checkpointPush previous next}
       runWriteBack h.store writes h.client Linking.settings Linking.now False Linking.userId Linking.deckId
-      arkhamDBPushPayload <$> readIORef h.job `shouldReturn` before
+      arkhamDBPushPayload <$> readIORef h.job `shouldReturn` payloadBefore
       arkhamDBPushStage <$> readIORef h.job `shouldReturn` "ready"
       assertNoPush h
 
@@ -995,8 +995,8 @@ spec = describe "ArkhamDB campaign write-back" do
     transformed <- readIORef gameRef
     Map.keys (gameInvestigators transformed) `shouldBe` ["01001"]
     campaignWriteBackSeatIdentity transformed "01001" `shouldBe` Just ("11068b", "01001")
-    first <- boundary >>= \game -> submit game "01001"
-    Map.lookup "01008" first.slots `shouldBe` Just 1
+    firstDeck <- boundary >>= \game -> submit game "01001"
+    Map.lookup "01008" firstDeck.slots `shouldBe` Just 1
     drain [ResetGame, ForTarget GameTarget ResetGame]
     promoted <- readIORef gameRef
     Map.keys (gameInvestigators promoted) `shouldBe` ["11068b"]
@@ -1059,7 +1059,7 @@ spec = describe "ArkhamDB campaign write-back" do
     filter (T.isPrefixOf "upgrade/") <$> readIORef quest.calls `shouldReturn` ["upgrade/123/5", "upgrade/124/2"]
     filter (T.isPrefixOf "upgrade/") <$> readIORef web.calls `shouldReturn` ["upgrade/456/2"]
 
-  for_ [("scenarioEnd", ForTarget GameTarget $ EndOfScenario Nothing), ("upgrade", FinishedUpgradingDecks)] \(label, message) ->
+  for_ [("scenarioEnd" :: String, ForTarget GameTarget $ EndOfScenario Nothing), ("upgrade", FinishedUpgradingDecks)] \(label, message) ->
     it ("uses the captured Dream-Eaters part rather than the " <> toString label <> " continuation's part") do
       let quest = dreamIdentityGame Dream.FullMode $ Just Dream.TheDreamQuest
           web = dreamIdentityGame Dream.FullMode $ Just Dream.TheWebOfDreams
@@ -1155,12 +1155,12 @@ spec = describe "ArkhamDB campaign write-back" do
       classifyCampaignKey key `shouldBe` InvalidCampaignKey
 
   for_ [MissingCampaignGame, OrdinaryCampaignGame, FullDreamEatersGame Dream.TheDreamQuest,
-        FullDreamEatersGame Dream.TheWebOfDreams, MalformedCampaignGame] \identity ->
-    it ("distinguishes legacy own-job safety from inert history: " <> show identity) do
-      let games = Map.singleton identityGameId identity
-          ambiguous = identity `notElem` [MissingCampaignGame, OrdinaryCampaignGame]
+        FullDreamEatersGame Dream.TheWebOfDreams, MalformedCampaignGame] \gameIdentity ->
+    it ("distinguishes legacy own-job safety from inert history: " <> show gameIdentity) do
+      let games = Map.singleton identityGameId gameIdentity
+          ambiguous = gameIdentity `notElem` [MissingCampaignGame, OrdinaryCampaignGame]
       campaignKeyAmbiguous games legacyIdentityKey `shouldBe` ambiguous
-      campaignJobKeySafe games legacyIdentityKey `shouldBe` (identity == OrdinaryCampaignGame)
+      campaignJobKeySafe games legacyIdentityKey `shouldBe` (gameIdentity == OrdinaryCampaignGame)
       campaignAdmissionAllowed games [legacyIdentityKey] (legacyIdentityKey <> "/dreamQuest")
         `shouldBe` not ambiguous
 
@@ -1227,10 +1227,10 @@ spec = describe "ArkhamDB campaign write-back" do
     -- not a replacement claimPush implementation in a test store.
     campaignAdmissionAllowed games related currentKey `shouldBe` True
     for_ ["pending", "failed", "conflict"] \status -> do
-      let pending = job {arkhamDBPushStatus = status}
-      admitCampaignPush games related pending `shouldSatisfy` isRight
-      if status == "conflict" then canResolvePush "keep" pending `shouldBe` True
-        else pushCanRun Linking.now True pending `shouldBe` True
+      let pendingJob = job {arkhamDBPushStatus = status}
+      admitCampaignPush games related pendingJob `shouldSatisfy` isRight
+      if status == "conflict" then canResolvePush "keep" pendingJob `shouldBe` True
+        else pushCanRun Linking.now True pendingJob `shouldBe` True
     for_ ["keep", "overwrite", "new"] \mode ->
       canResolvePush mode job {arkhamDBPushStatus = "failed"} `shouldBe` True
     savedDeckUpgradeTargets (const $ pure $ Just saved) (const $ fail "Wrong URL fallback")
@@ -1322,15 +1322,15 @@ spec = describe "ArkhamDB campaign write-back" do
               , arkhamDBPushCreatedAt = addUTCTime 60 Linking.now
               }
         modifyIORef' rows $ Map.insert (ArkhamDBPushKey $ UUID.fromWords 0 0 0 250) fresh
-        before <- readIORef h.calls
+        callsBefore <- readIORef h.calls
         h.run False
         h.writes.resolvePush Linking.now Linking.userId Linking.deckId "overwrite" `shouldReturn` False
-        readIORef h.calls `shouldReturn` before
+        readIORef h.calls `shouldReturn` callsBefore
         h.run True
         if undo then do
           -- Neither restart-style fresh selection nor explicit retry may save
           -- the undone snapshot. Toggling must preserve boundaryUndone.
-          readIORef h.calls `shouldReturn` before
+          readIORef h.calls `shouldReturn` callsBefore
           latest <- readIORef rows
           fmap arkhamDBPushError (Map.lookup pushKey latest) `shouldBe` Just (Just "boundaryUndone")
           for_ ["keep", "new"] \mode ->
@@ -1396,17 +1396,17 @@ spec = describe "ArkhamDB campaign write-back" do
     h.writes.resolvePush Linking.now Linking.userId Linking.deckId "new" `shouldReturn` True
     runWith h failing False
     h.writes.resolvePush (addUTCTime 1 Linking.now) Linking.userId Linking.deckId "new" `shouldReturn` True
-    before <- readIORef rows
-    length (filter ((== "failed") . arkhamDBPushStatus) $ Map.elems before) `shouldBe` 2
+    rowsBefore <- readIORef rows
+    length (filter ((== "failed") . arkhamDBPushStatus) $ Map.elems rowsBefore) `shouldBe` 2
     -- Give the next independent creation its own server identifier.
     let client = h.client {createDeck = \token deck -> do
           result <- h.client.createDeck token deck
           modifyIORef' h.remotes \values -> maybe values (\remote -> Map.insert "126" remote {ArkhamDB.remoteDeckId = "126"} $ Map.delete "125" values) $ Map.lookup "125" values
           pure $ "126" <$ result}
     runWith h client False
-    after <- readIORef rows
-    length (filter ((== "cancelled") . arkhamDBPushStatus) $ Map.elems after) `shouldBe` 2
-    length (filter ((== "succeeded") . arkhamDBPushStatus) $ Map.elems after) `shouldBe` 1
+    rowsAfter <- readIORef rows
+    length (filter ((== "cancelled") . arkhamDBPushStatus) $ Map.elems rowsAfter) `shouldBe` 2
+    length (filter ((== "succeeded") . arkhamDBPushStatus) $ Map.elems rowsAfter) `shouldBe` 1
     readIORef h.baseline `shouldReturn` 5
     state <- readIORef h.linked
     fmap arkhamDBDeckLinkRemoteDeckId (Map.lookup Linking.deckId state.storedLinks) `shouldBe` Just "126"
@@ -1416,12 +1416,12 @@ spec = describe "ArkhamDB campaign write-back" do
       h <- newHarness
       (gameRef, pid, drain) <- newCampaignMessages
       let exported = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
-          local = if changedOverlay then exported {overlayAdd = Map.singleton "01008" 1} else exported
+          localOverlay = if changedOverlay then exported {overlayAdd = Map.singleton "01008" 1} else exported
           base = Linking.remote.deck {Decklist.slots = Map.singleton "01006" 1, Decklist.meta = Nothing}
           snapshot = withExportedAttachment (Just UUID.nil) (Just exported) base {Decklist.slots = Map.fromList [("01006", 1), ("01007", 1)]}
       modifyIORef' h.linked \state -> state
         {Linking.storedDecks = Map.adjust (\deck -> deck
-          { arkhamDeckList = base, arkhamDeckOverlay = Just local
+          { arkhamDeckList = base, arkhamDeckOverlay = Just localOverlay
           , arkhamDeckOverlayAttachmentId = Just $ if changedOverlay then UUID.fromWords 0 0 0 1 else UUID.nil
           }) Linking.deckId state.storedDecks}
       modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck snapshot}
@@ -1437,7 +1437,7 @@ spec = describe "ArkhamDB campaign write-back" do
       let adopted = applyDeckUpdates updates saved
           expected = Map.fromList $ [("01006", 1), ("01007", 1)] <> [("01008", 1) | changedOverlay]
       Decklist.slots (arkhamDeckPlayList adopted) `shouldBe` expected
-      arkhamDeckOverlay adopted `shouldBe` if changedOverlay then Just local else Nothing
+      arkhamDeckOverlay adopted `shouldBe` if changedOverlay then Just localOverlay else Nothing
       -- Display and reuse of the saved play list must agree, including after
       -- sync sees the already-copied push marker.
       modifyIORef' h.linked \state -> state {Linking.storedDecks = Map.insert Linking.deckId adopted state.storedDecks}
@@ -1575,11 +1575,11 @@ spec = describe "ArkhamDB campaign write-back" do
       timeout 2000000 (takeMVar reached) `shouldReturn` Just ()
       cancelHarnessUndo h 0
       assertState h "conflict"
-      before <- readIORef h.calls
-      before `shouldBe` ["load/123"]
+      callsBefore <- readIORef h.calls
+      callsBefore `shouldBe` ["load/123"]
       putMVar release ()
       timeout 2000000 (takeMVar done) `shouldReturn` Just ()
-      readIORef h.calls `shouldReturn` before
+      readIORef h.calls `shouldReturn` callsBefore
       readIORef h.baseline `shouldReturn` 0
 
   it "waits for an admitted request before cancelling and fences subsequent work" do
@@ -1730,7 +1730,7 @@ spec = describe "ArkhamDB campaign write-back" do
     let sweep = do
           atomically $ readTBQueue pool
           (do
-            modifyIORef' workers (+1)
+            modifyIORef' workers (+ 1)
             void $ tryPutMVar started ()
             takeMVar release)
             `finally` atomically (writeTBQueue pool ())
@@ -1754,14 +1754,14 @@ spec = describe "ArkhamDB campaign write-back" do
         -- Even if cancellation is caught during startup, the stopped flag must
         -- prevent entering the loop. The empty gate makes scheduling irrelevant.
         void (try (takeMVar gate) :: IO (Either AsyncException ()))
-        runArkhamDBExecutor executor $ modifyIORef' sweeps (+1)
+        runArkhamDBExecutor executor $ modifyIORef' sweeps (+ 1)
       state <- readMVar executor.executorState
       (tid, done) <- maybe (fail "Startup returned without publishing its child") pure state.executorThread
       timeout 2000000 (stopArkhamDBExecutor executor) `shouldReturn` Just ()
       tryReadMVar done `shouldReturn` Just ()
       putMVar gate ()
       wakeArkhamDBExecutor executor `shouldReturn` False
-      startArkhamDBExecutor executor $ modifyIORef' sweeps (+1)
+      startArkhamDBExecutor executor $ modifyIORef' sweeps (+ 1)
       fmap (fmap fst . (.executorThread)) (readMVar executor.executorState) `shouldReturn` Just tid
       readIORef sweeps `shouldReturn` 0
 
@@ -1813,7 +1813,7 @@ spec = describe "ArkhamDB campaign write-back" do
     sweeps <- newIORef (0 :: Int)
     timeout 2000000 (stopArkhamDBExecutor executor) `shouldReturn` Just ()
     replicateM_ 10 do
-      startArkhamDBExecutor executor $ runArkhamDBExecutor executor $ modifyIORef' sweeps (+1)
+      startArkhamDBExecutor executor $ runArkhamDBExecutor executor $ modifyIORef' sweeps (+ 1)
       wakeArkhamDBExecutor executor `shouldReturn` False
     isNothing . (.executorThread) <$> readMVar executor.executorState `shouldReturn` True
     tryReadMVar executor.executorWake `shouldReturn` Nothing
@@ -1910,12 +1910,12 @@ spec = describe "ArkhamDB campaign write-back" do
 
   it "snapshots campaign story cards and weaknesses with ReloadDecks reconciliation, not the investigator draw pile" do
     let card n code = MkPlayerCard (unsafeMakeCardId $ UUID.fromWords 0 0 0 n) Nothing code code mempty Nothing Nothing Nothing Nothing Nothing
-        first = card 1 "01006"
+        firstCard = card 1 "01006"
         duplicate = card 2 "01006"
         weakness = card 3 "01100"
         story = card 4 "01007"
         side = card 5 "01008"
-        snapshot = campaignDeckSnapshot currentDeck [first, duplicate, weakness, story] [PlayerCard story] [] (Just [side]) (Just TabooList25)
+        snapshot = campaignDeckSnapshot currentDeck [firstCard, duplicate, weakness, story] [PlayerCard story] [] (Just [side]) (Just TabooList25)
     snapshot.slots `shouldBe` Map.fromList [("01006", 2), ("01100", 1), ("01007", 1)]
     snapshot.sideSlots `shouldBe` Map.singleton "01008" 1
     snapshot.taboo_id `shouldBe` Just 10
@@ -2054,7 +2054,7 @@ spec = describe "ArkhamDB campaign write-back" do
       snapshot <- withCampaignWriteBackBoundary gameRef \observers -> do
         for_ observers.observeMessage ($ FinishedUpgradingDecks)
         throwIO $ userError "later continuation failed"
-      for_ snapshot $ const $ modifyIORef' queued (+1)
+      for_ snapshot $ const $ modifyIORef' queued (+ 1)
     result `shouldSatisfy` isLeft
     readIORef queued `shouldReturn` 0
 
@@ -2111,7 +2111,7 @@ spec = describe "ArkhamDB campaign write-back" do
     fmap (samePushedDeck expected) pushed `shouldBe` Just True
     readIORef h.baseline `shouldReturn` 5
 
-  for_ ["date", "version"] \marker ->
+  for_ ["date" :: String, "version"] \marker ->
     it ("records a " <> toString marker <> " conflict and performs no remote mutation") do
       h <- newHarness
       modifyIORef' h.job \job -> job {arkhamDBPushExpectedDateUpdate = Just "older-queued-baseline"}
@@ -2129,7 +2129,7 @@ spec = describe "ArkhamDB campaign write-back" do
     timeout 2000000 (h.run False) `shouldReturn` Just ()
     assertState h "succeeded"
 
-  for_ ["write-back", "retry", "save-as-new"] \mode ->
+  for_ ["write-back" :: String, "retry", "save-as-new"] \mode ->
     it ("accepts ArkhamDB's remote empty-string metadata through " <> toString mode) do
       h <- newHarness
       remote <- case fromJSON $ object
@@ -2202,9 +2202,9 @@ spec = describe "ArkhamDB campaign write-back" do
   it "does not upgrade twice when a successful job is retried" do
     h <- newHarness
     h.run False
-    before <- readIORef h.calls
+    callsBefore <- readIORef h.calls
     h.run True
-    readIORef h.calls `shouldReturn` before
+    readIORef h.calls `shouldReturn` callsBefore
 
   it "conflicts on recovered creation without a stored target baseline, without upgrading again" do
     h <- newHarness
@@ -2319,7 +2319,7 @@ spec = describe "ArkhamDB campaign write-back" do
           later = intent {arkhamDBPushEventKey = "game/2/iid", arkhamDBPushStatus = "pending",
             arkhamDBPushStage = "ready", arkhamDBPushCreatedAt = addUTCTime 60 Linking.now}
       modifyIORef' rows $ Map.insert laterKey later
-      before <- readIORef h.linked
+      linkedBefore <- readIORef h.linked
       beforeCalls <- readIORef h.calls
       beforeXp <- readIORef h.baseline
       modifyIORef' h.remotes $ Map.adjust (\remote -> remote
@@ -2333,9 +2333,9 @@ spec = describe "ArkhamDB campaign write-back" do
       persisted retained {arkhamDBPushStatus = arkhamDBPushStatus intent, arkhamDBPushError = arkhamDBPushError intent,
         arkhamDBPushMode = arkhamDBPushMode intent, arkhamDBPushUpdatedAt = arkhamDBPushUpdatedAt intent}
         `shouldBe` persisted intent
-      after <- readIORef h.linked
-      fmap persisted after.storedDecks `shouldBe` fmap persisted before.storedDecks
-      fmap persisted after.storedLinks `shouldBe` fmap persisted before.storedLinks
+      linkedAfter <- readIORef h.linked
+      fmap persisted linkedAfter.storedDecks `shouldBe` fmap persisted linkedBefore.storedDecks
+      fmap persisted linkedAfter.storedLinks `shouldBe` fmap persisted linkedBefore.storedLinks
       readIORef h.baseline `shouldReturn` beforeXp
       fmap persisted . Map.lookup laterKey <$> readIORef rows `shouldReturn` Just (persisted later)
       fmap persisted . Map.lookup pushKey <$> readIORef rows `shouldReturn` Just (persisted retained)
@@ -2787,7 +2787,7 @@ spec = describe "ArkhamDB campaign write-back" do
       state <- readIORef h.linked
       arkhamDBDeckLinkRemoteDeckId <$> Map.lookup otherId state.storedLinks `shouldBe` Just "124"
 
-  for_ ["missing", "cycle", "incomplete", "budget"] \ambiguity ->
+  for_ ["missing" :: String, "cycle", "incomplete", "budget"] \ambiguity ->
     it ("fails closed on ambiguous other-campaign lineage: " <> toString ambiguity) do
       h <- newHarness
       let otherId = ArkhamDeckKey $ UUID.fromWords 0 0 0 999
@@ -2905,7 +2905,7 @@ spec = describe "ArkhamDB campaign write-back" do
         again <- runExceptT $ syncRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId Linking.deckId Linking.forbiddenPublic
         fmap (arkhamDeckOverlay . entityVal) again `shouldBe` Right expectedOverlay
 
-  for_ ["keep", "finish", "copy"] \completion ->
+  for_ ["keep" :: String, "finish", "copy"] \completion ->
     it ("records a target-link conflict atomically on " <> toString completion <> " completion") do
       h <- newHarness
       let otherId = ArkhamDeckKey $ UUID.fromWords 0 0 0 999
@@ -2942,9 +2942,9 @@ spec = describe "ArkhamDB campaign write-back" do
       Map.size state.storedLinks `shouldBe` 2
       fmap arkhamDBDeckLinkRemoteDeckId (Map.lookup Linking.deckId state.storedLinks) `shouldBe` Just "123"
       fmap arkhamDeckList (Map.lookup Linking.deckId state.storedDecks) `shouldBe` Just (remoteDecklist Linking.settings Linking.remote)
-      before <- readIORef h.calls
+      callsBefore <- readIORef h.calls
       runWriteBack h.store h.writes h.client Linking.settings (addUTCTime 1000 Linking.now) False Linking.userId Linking.deckId
-      readIORef h.calls `shouldReturn` before
+      readIORef h.calls `shouldReturn` callsBefore
       h.writes.resolvePush Linking.now Linking.userId Linking.deckId "new" `shouldReturn` True
 
   for_ [False, True] \uncertain ->
@@ -2979,9 +2979,9 @@ spec = describe "ArkhamDB campaign write-back" do
       runWith h failed False
       intent <- readIORef h.job
       h.writes.toggleWriteBack Linking.now Linking.userId Linking.deckId False `shouldReturn` True
-      before <- readIORef h.calls
+      callsBefore <- readIORef h.calls
       h.run True
-      readIORef h.calls `shouldReturn` before
+      readIORef h.calls `shouldReturn` callsBefore
       h.writes.toggleWriteBack Linking.now Linking.userId Linking.deckId True `shouldReturn` True
       -- The old intent still heads the queue; re-enable cannot auto-retry it
       -- or let a later boundary replace it and submit its XP again.
@@ -3202,10 +3202,10 @@ spec = describe "ArkhamDB campaign write-back" do
     runWriteBack h.store h.writes h.client Linking.settings later True Linking.userId Linking.deckId
     assertState h "succeeded"
     modifyIORef' h.remotes $ Map.adjust (\remote -> remote {dateUpdate = Just "external-edit"}) "124"
-    before <- readIORef h.calls
+    callsBefore <- readIORef h.calls
     putMVar release ()
     timeout 2000000 (takeMVar done) `shouldReturn` Just ()
-    readIORef h.calls `shouldReturn` before
+    readIORef h.calls `shouldReturn` callsBefore
     fmap (.dateUpdate) . Map.lookup "124" <$> readIORef h.remotes `shouldReturn` Just (Just "external-edit")
 
   it "refuses to mutate with a replaced account generation" do
