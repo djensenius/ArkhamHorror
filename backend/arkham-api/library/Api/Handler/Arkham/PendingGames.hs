@@ -14,6 +14,7 @@ import Api.Arkham.Epic (
   reserveGroupMembership,
  )
 import Api.Arkham.Helpers
+import Api.Arkham.Viewer (RedactedGame (..), viewerForUser)
 import Api.Handler.Arkham.Games.Shared (
   broadcastEventChanged,
   epicSyncMessages,
@@ -45,11 +46,15 @@ import Entity.Arkham.Step
 import UnliftIO.Exception (throwIO, try)
 import UnliftIO.Timeout (timeout)
 
-getApiV1ArkhamPendingGameR :: ArkhamGameId -> Handler (PublicGame ArkhamGameId)
+{- | The game previewed before joining, redacted to what the caller's current
+seats may see ('viewerForUser'): someone not yet seated gets the spectator
+view.
+-}
+getApiV1ArkhamPendingGameR :: ArkhamGameId -> Handler (RedactedGame (PublicGame ArkhamGameId))
 getApiV1ArkhamPendingGameR gameId = do
-  _ <- getRequestUserId
-  ge <- runDB $ get404 gameId
-  pure $ toPublicGame (Entity gameId ge) mempty
+  userId <- getRequestUserId
+  (ge, gameView) <- runDB $ (,) <$> get404 gameId <*> viewerForUser userId gameId
+  pure $ RedactedGame gameView $ toPublicGame (Entity gameId ge) mempty
 
 -- | Refuses a join inside the game-locked transaction. Thrown rather than
 -- answered there, so the transaction rolls back; 'putApiV1ArkhamPendingGameR'
@@ -67,7 +72,10 @@ data PendingJoinRefused
   deriving stock Show
   deriving anyclass Exception
 
-putApiV1ArkhamPendingGameR :: ArkhamGameId -> Handler (PublicGame ArkhamGameId)
+{- | Join, then answer with the game redacted for the caller's seats as they
+stand after the join committed, so a new player sees their own seat's zones.
+-}
+putApiV1ArkhamPendingGameR :: ArkhamGameId -> Handler (RedactedGame (PublicGame ArkhamGameId))
 putApiV1ArkhamPendingGameR gameId = do
   userId <- getRequestUserId
   now <- liftIO getCurrentTime
@@ -256,4 +264,7 @@ putApiV1ArkhamPendingGameR gameId = do
   publishToRoom gameId
     $ GameUpdate
     $ PublicGame gameId arkhamGameName [] arkhamGameCurrentData
-  pure $ toPublicGame (Entity gameId game) mempty
+  -- A fresh read after the join's transaction committed, so it sees the
+  -- seat row the join inserted.
+  gameView <- runDB $ viewerForUser userId gameId
+  pure $ RedactedGame gameView $ toPublicGame (Entity gameId game) mempty

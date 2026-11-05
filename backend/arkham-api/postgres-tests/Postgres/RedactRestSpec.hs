@@ -3,11 +3,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- Per-viewer redaction on the REST game reads (TASK-2.22.1): GET game,
--- spectate and replay, through the production WAI application, so the
--- caller's seats come from the real arkham_players rows and the body is the
--- real wire bytes.
+-- spectate, replay, the pending game GET and PUT join, create and import,
+-- through the production WAI application, so the caller's seats come from the
+-- real arkham_players rows and the body is the real wire bytes.
 module Postgres.RedactRestSpec (spec) where
 
+import Api.Arkham.Export (ArkhamExport (..), ArkhamGameExportData (..))
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (Solo, WithFriends))
 import Arkham.Asset.Cards.NightOfTheZealot qualified as Assets
 import Arkham.Card (Card (PlayerCard))
@@ -21,7 +22,7 @@ import Arkham.Helpers (Deck (..))
 import Arkham.Id (PlayerId (..))
 import Arkham.Investigator (lookupInvestigator)
 import Arkham.Investigator.Types (InvestigatorAttrs (..))
-import Data.Aeson (Value (..), decode)
+import Data.Aeson (Value (..), decode, encode, object, toJSON, (.=))
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Map.Strict qualified as Map
 import Data.UUID (UUID)
@@ -33,12 +34,12 @@ import Entity.Arkham.Game
 import Entity.Arkham.Player
 import Entity.User (UserId)
 import Foundation (App)
-import Network.HTTP.Types (Status, status200, status404)
+import Network.HTTP.Types (Status, hContentType, status200, status404)
 import Postgres.Harness
 import Postgres.Production (authorizationFor, routeRequest)
 import Relude
 import Test.Hspec
-import Yesod.Core (toPathPiece)
+import Yesod.Core (fromPathPiece, toPathPiece)
 
 type SeedUser = SqlBackend -> Text -> IO UserId
 
@@ -114,10 +115,124 @@ spec harness app seedUser = describe "REST game reads are redacted per viewer" d
       zonesOf <$> request admin (gamePath gameId "/replay/0")
         `shouldReturn` (status200, Map.fromList [(seatText 1, (0, 0)), (seatText 2, (0, 0))])
       fst <$> request carol (gamePath gameId "/replay/0") `shouldReturn` status404
+
+  it "redacts the pending game for each seat, and shows a non-member the spectator view" $
+    withConnection harness \connection -> do
+      gameId <- seedGame connection "redact-pending" WithFriends
+      alice <- seedUser connection "redact-pending-alice"
+      bob <- seedUser connection "redact-pending-bob"
+      carol <- seedUser connection "redact-pending-carol"
+      seat connection gameId alice 1
+      seat connection gameId bob 2
+      gameZonesOf <$> request alice (gamePath gameId "/join")
+        `shouldReturn` (status200, Map.fromList [(seatText 1, (2, 3)), (seatText 2, (0, 0))])
+      gameZonesOf <$> request bob (gamePath gameId "/join")
+        `shouldReturn` (status200, Map.fromList [(seatText 1, (0, 0)), (seatText 2, (1, 2))])
+      gameZonesOf <$> request carol (gamePath gameId "/join")
+        `shouldReturn` (status200, Map.fromList [(seatText 1, (0, 0)), (seatText 2, (0, 0))])
+
+  it "redacts the join response for the caller's seats as they stand after the join" $
+    withConnection harness \connection -> do
+      -- A first joiner holds every seat row once the join commits, so a
+      -- lookup that missed the new row would wrongly answer the spectator
+      -- view here.
+      lobby <- seedGame connection "redact-join-first" WithFriends
+      dave <- seedUser connection "redact-join-first-dave"
+      gameZonesOf <$> joinAs dave lobby `shouldReturn` (status200, seededZones)
+      seatOwners connection lobby `shouldReturn` [dave]
+
+      gameId <- seedGame connection "redact-join" WithFriends
+      alice <- seedUser connection "redact-join-alice"
+      bob <- seedUser connection "redact-join-bob"
+      seat connection gameId alice 1
+      -- Bob's new seat has no investigator yet: Alice's hand and deck stay
+      -- hidden from him.
+      gameZonesOf <$> joinAs bob gameId
+        `shouldReturn` (status200, Map.fromList [(seatText 1, (0, 0)), (seatText 2, (0, 0))])
+      seatOwners connection gameId `shouldReturn` sort [alice, bob]
+      -- Joining again leaves the seats alone and shows Alice her own zones only.
+      gameZonesOf <$> joinAs alice gameId
+        `shouldReturn` (status200, Map.fromList [(seatText 1, (2, 3)), (seatText 2, (0, 0))])
+
+  it "answers a create with the creator's view of the new game" $
+    withConnection harness \connection -> do
+      dave <- seedUser connection "redact-create-dave"
+      authorization <- authorizationFor app dave
+      (status, body) <-
+        routeRequest app "POST" "/api/v1/arkham/games"
+          [authorization, (hContentType, "application/json")]
+          (encode createBody)
+      status `shouldBe` status200
+      let mGameId = do
+            Object response <- decode body
+            String gid <- KeyMap.lookup "id" response
+            fromPathPiece gid
+      gameId <- maybe (expectationFailure "create returned no game id" >> error "no id") pure mGameId
+      seatOwners connection gameId `shouldReturn` [dave, dave]
+      -- The creator holds every seat, so the body is the stored game unredacted.
+      stored <- transaction connection $ P.get gameId
+      decode body `shouldBe` fmap (\g -> toJSON (Game.PublicGame gameId g.name [] g.currentData)) stored
+
+  it "answers a Solo import with the full game for the importer" $
+    withConnection harness \connection -> do
+      source <- seedGame connection "redact-import-source" Solo
+      dave <- seedUser connection "redact-import-dave"
+      exported <- transaction connection $ P.get source
+      game <- maybe (expectationFailure "no source game" >> error "no source game") pure exported
+      authorization <- authorizationFor app dave
+      let export =
+            ArkhamExport
+              { aeCampaignPlayers = []
+              , aeCampaignData =
+                  ArkhamGameExportData
+                    { agedName = "redact-import"
+                    , agedCurrentData = game.currentData
+                    , agedStep = 1
+                    , agedSteps = []
+                    , agedLog = []
+                    , agedMultiplayerVariant = Solo
+                    }
+              }
+          boundary = "redact-import-boundary"
+          multipart =
+            mconcat
+              [ "--" <> boundary <> "\r\n"
+              , "Content-Disposition: form-data; name=\"debugFile\"; filename=\"export.json\"\r\n"
+              , "Content-Type: application/json\r\n\r\n"
+              , encode export
+              , "\r\n--" <> boundary <> "--\r\n"
+              ]
+      response <-
+        routeRequest app "POST" "/api/v1/arkham/games/import"
+          [authorization, (hContentType, "multipart/form-data; boundary=" <> toStrict boundary)]
+          multipart
+      -- The import keeps the exporter's player ids, and its seat rows (all
+      -- the importer's) match neither: only the full view shows the zones.
+      gameZonesOf response `shouldBe` (status200, seededZones)
  where
   request caller path = do
     authorization <- authorizationFor app caller
     routeRequest app "GET" path [authorization] ""
+  joinAs caller gameId = do
+    authorization <- authorizationFor app caller
+    routeRequest app "PUT" (gamePath gameId "/join") [authorization] ""
+  createBody =
+    object
+      [ "deckIds" .= ([] :: [Value])
+      , "playerCount" .= (2 :: Int)
+      , "campaignId" .= ("01" :: Text)
+      , "difficulty" .= ("Easy" :: Text)
+      , "campaignName" .= ("redact-create" :: Text)
+      , "multiplayerVariant" .= ("Solo" :: Text)
+      , "includeTarotReadings" .= False
+      , "options" .= ([] :: [Value])
+      ]
+
+-- | The users holding the game's seat rows, sorted.
+seatOwners :: SqlBackend -> ArkhamGameId -> IO [UserId]
+seatOwners connection gameId =
+  sort . map (arkhamPlayerUserId . P.entityVal)
+    <$> transaction connection (P.selectList [ArkhamPlayerArkhamGameId P.==. gameId] [])
 
 gamePath :: ArkhamGameId -> Text -> ByteString
 gamePath gameId suffix = encodeUtf8 $ "/api/v1/arkham/games/" <> toPathPiece gameId <> suffix
@@ -160,12 +275,26 @@ zonesOf (status, body) = (status, fromMaybe mempty zones)
   zones = do
     Object response <- decode body
     Object game <- KeyMap.lookup "game" response
-    Object investigators <- KeyMap.lookup "investigators" game
-    pure $ Map.fromList
-      [ (playerId, (size "hand" investigator, size "deck" investigator))
-      | Object investigator <- KeyMap.elems investigators
-      , Just (String playerId) <- [KeyMap.lookup "playerId" investigator]
-      ]
+    investigatorZones game
+
+-- | 'zonesOf' for a response that is itself the game (pending, create, import).
+gameZonesOf :: (Status, LByteString) -> (Status, Zones)
+gameZonesOf (status, body) = (status, fromMaybe mempty zones)
+ where
+  zones = do
+    Object game <- decode body
+    investigatorZones game
+
+-- | Each investigator's (hand, deck) sizes in an encoded game, by playerId.
+investigatorZones :: KeyMap.KeyMap Value -> Maybe Zones
+investigatorZones game = do
+  Object investigators <- KeyMap.lookup "investigators" game
+  pure $ Map.fromList
+    [ (playerId, (size "hand" investigator, size "deck" investigator))
+    | Object investigator <- KeyMap.elems investigators
+    , Just (String playerId) <- [KeyMap.lookup "playerId" investigator]
+    ]
+ where
   size key investigator = case KeyMap.lookup key investigator of
     Just (Array cards) -> length cards
     _ -> -1

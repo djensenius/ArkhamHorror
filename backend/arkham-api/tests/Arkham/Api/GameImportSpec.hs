@@ -401,7 +401,7 @@ spec = describe "selectUploadedExportFile" do
           map (T.length . fst) $ T.breakOnAll checkpointPlayerBindingNeedle importHandler
     normalized
       `shouldSatisfy` T.isInfixOf
-        "postApiV1ArkhamGamesImportR :: Handler (PublicGame ArkhamGameId)"
+        "postApiV1ArkhamGamesImportR :: Handler (RedactedGame (PublicGame ArkhamGameId))"
     decodePosition <- position "decodeExportBytes"
     checkpointBindingPosition <- position checkpointPlayerBindingNeedle
     transactionPosition <- position "(importedGame, importReceipt) <- runDB"
