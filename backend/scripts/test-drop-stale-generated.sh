@@ -28,15 +28,17 @@ echo '{-# OPTIONS_GHC -F -pgmF cards-discover -optF Arkham.Asset.Cards #-}' \
 echo 'module Arkham.Plain where' > "$API/library/Arkham/Plain.hs"
 echo 'main = pure ()' > "$DISCOVER/app/Main.hs"
 echo 'module Discover where' > "$DISCOVER/library/Discover.hs"
+echo 'module Spaced where' > "$DISCOVER/library/With Space.hs"
 
 populate() {
-  mkdir -p "$BUILD/Arkham" "$CACHES/0123abcd/lib" "$CACHES/0123abcd/exe-arkham-api"
+  # Stack 3.7.1 keeps one plain file per component under the hash directory.
+  mkdir -p "$BUILD/Arkham" "$CACHES/0123abcd"
   for ext in o hi dyn_o dyn_hi; do
     : > "$BUILD/Arkham/Generated.$ext"
   done
   : > "$BUILD/Arkham/Plain.o"
-  : > "$CACHES/0123abcd/lib/cache"
-  : > "$CACHES/0123abcd/exe-arkham-api/cache"
+  : > "$CACHES/0123abcd/lib"
+  : > "$CACHES/0123abcd/exe-arkham-api"
 }
 
 run() {
@@ -56,8 +58,8 @@ assert_kept() {
   for ext in o hi dyn_o dyn_hi; do
     [ -f "$BUILD/Arkham/Generated.$ext" ] || fail "$1: Generated.$ext was removed"
   done
-  [ -f "$CACHES/0123abcd/lib/cache" ] || fail "$1: stack-build-caches lib was removed"
-  [ -f "$CACHES/0123abcd/exe-arkham-api/cache" ] \
+  [ -f "$CACHES/0123abcd/lib" ] || fail "$1: stack-build-caches lib was removed"
+  [ -f "$CACHES/0123abcd/exe-arkham-api" ] \
     || fail "$1: stack-build-caches exe-arkham-api was removed"
   [ -f "$BUILD/Arkham/Plain.o" ] || fail "$1: unrelated Plain.o was removed"
 }
@@ -85,5 +87,28 @@ echo '-- changed' >> "$DISCOVER/library/Discover.hs"
 run
 assert_dropped "changed generator"
 [ "$(cat "$STAMP")" != "$stamp" ] || fail "changed generator: stamp not updated"
+
+# (e) A file name with a space is hashed whole, not split.
+populate
+stamp=$(cat "$STAMP")
+echo '-- changed' >> "$DISCOVER/library/With Space.hs"
+run
+assert_dropped "changed spaced file"
+[ "$(cat "$STAMP")" != "$stamp" ] || fail "changed spaced file: stamp not updated"
+
+# (f) An unreadable source stops the script before the stamp moves. Skipped
+# where chmod cannot make it unreadable (e.g. running as root).
+populate
+stamp=$(cat "$STAMP")
+echo '-- changed' >> "$DISCOVER/library/Discover.hs"
+chmod 000 "$DISCOVER/library/Discover.hs"
+if ! cat "$DISCOVER/library/Discover.hs" > /dev/null 2>&1; then
+  if sh "$SCRIPT" "$API" "$DISCOVER" > /dev/null 2>&1; then
+    fail "unreadable source: script succeeded"
+  fi
+  [ "$(cat "$STAMP")" = "$stamp" ] || fail "unreadable source: stamp changed"
+  assert_kept "unreadable source"
+fi
+chmod 644 "$DISCOVER/library/Discover.hs"
 
 echo "ok: drop-stale-generated.sh"

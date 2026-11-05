@@ -48,7 +48,9 @@
 #
 #   sh scripts/drop-stale-generated.sh arkham-api cards-discover
 #
-# or, more bluntly, `stack build --force-dirty arkham-api`.
+# `stack build --force-dirty` alone does not help: GHC still sees the unchanged
+# one-line source and keeps the stale module. The blunt fallback is
+# `stack clean arkham-api`, which recompiles all ~9,400 modules.
 set -eu
 
 API=${1:?arkham-api package directory}
@@ -68,16 +70,25 @@ fi
 # products whose contents are not stable between builds. The leading tag
 # versions the stamp: bumping it forces one drop on every existing cache (v2:
 # caches stamped before stack-build-caches was dropped may still be stale).
-hash=$(
-  {
-    echo 'drop-stale-generated v2'
-    find "$DISCOVER/app" "$DISCOVER/library" -type f -name '*.hs' \
-      | LC_ALL=C sort \
-      | xargs cat
-  } \
-    | $checksum \
-    | cut -d' ' -f1
-)
+#
+# No pipelines here: a pipeline reports only its last command's status, so an
+# unreadable source would be hashed as partial input instead of stopping set -e
+# before the stamp is written. Paths are read whole, so spaces are fine.
+sources=$(find "$DISCOVER/app" "$DISCOVER/library" -type f -name '*.hs')
+sources=$(printf '%s\n' "$sources" | LC_ALL=C sort)
+input=$(mktemp)
+trap 'rm -f "$input"' EXIT
+{
+  echo 'drop-stale-generated v2'
+  while IFS= read -r source; do
+    [ -n "$source" ] || continue
+    cat "$source"
+  done <<EOF
+$sources
+EOF
+} > "$input"
+hash=$($checksum < "$input")
+hash=${hash%% *}
 
 previous=$(cat "$STAMP" 2>/dev/null || true)
 
