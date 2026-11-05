@@ -29,14 +29,18 @@
 # (normal cascade), which is exactly what the missing dependency edge would have
 # given us.
 #
-# Dropping the objects alone is not enough, though. Stack keeps its own
-# per-component record of the source hashes it last built with
-# (.stack-work/dist/*/ghc-*/stack-build-caches), and it only hands a component to
-# Cabal/GHC when that record disagrees with the tree. The preprocessed source
-# never exists on disk, so after a generator-only change the record still
-# matches, Stack skips arkham-api entirely, the missing objects go unnoticed and
-# `stack install` copies the old executable. Removing the record too makes Stack
-# run the build, and GHC then recompiles exactly the modules dropped here.
+# Note that Stack rebuilding arkham-api does not help by itself. A changed
+# cards-discover is a build-tool dependency, so Stack does unregister and rebuild
+# arkham-api, but GHC's per-module check still skips every unchanged one-line
+# generated source and relinks the executable with the stale code. Only the
+# dropped artifacts force those modules to recompile.
+#
+# We also remove Stack's per-component record of the source hashes it last built
+# with (.stack-work/dist/*/ghc-*/stack-build-caches). That covers the case where
+# Stack skips arkham-api altogether, e.g. when an earlier, interrupted build
+# already installed the new cards-discover: the record still matches the tree,
+# so without removing it the missing objects would go unnoticed. Removing it is
+# harmless otherwise.
 #
 # Set DRY_RUN=1 to print what would be removed.
 #
