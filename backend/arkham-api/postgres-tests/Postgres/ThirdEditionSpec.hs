@@ -1,20 +1,22 @@
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NoFieldSelectors #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-{- | The third-edition export and file-bug handlers against the production
-table store and JWT authentication. A table's export is its whole engine state,
-hidden information included, so only its seated players, its host and admins may
-have it; anyone else gets the missing-table 404. A filed bug goes through the
-Arkham bug endpoint's hardened upload.
+{- | The third-edition table handlers against the production table store and
+JWT authentication. A table's export is its whole engine state, hidden
+information included, so only its seated players, its host and admins may have
+it; anyone else gets the missing-table 404. A filed bug goes through the Arkham
+bug endpoint's hardened upload. The table itself, its socket and every action
+on it answer anyone else the same way, except that an unstarted table may be
+watched and joined by anyone; those routes go through production WAI dispatch.
 
-Only two things are supplied rather than real. The S3 transport is a stub
-built from the production upload seams, or the production transport with a
-credential discovery that fails or hands back an environment that throws once
-used, so nothing reaches AWS or this machine's
-credentials. The admin lookup is a constant: User's entity reads an
-@admin@ column that Sqitch does not create, so the real lookup cannot run here
-(see 'Main.seedUser').
+In the export and file-bug examples the admin lookup is a constant, and the S3
+transport is a stub built from the production upload seams, or the production
+transport with a credential discovery that fails or hands back an environment
+that throws once used, so nothing reaches AWS or this machine's credentials. The
+routed examples use the real lookup, against an admin seeded through the
+@admin@ column (Sqitch change @add_admin_to_users@).
 -}
 module Postgres.ThirdEditionSpec (spec) where
 
@@ -22,6 +24,7 @@ import AH3e.Types.Card (Expansion (CoreSet))
 import AH3e.Types.State (GameMode (StandardMode))
 import Amazonka (Error (..))
 import Amazonka.Error (serviceError)
+import Api.Arkham.Helpers (joinRoomIn, releaseRoomIfEmpty)
 import Api.Handler.Arkham.Game.Bug (
   BugUploadOutcome (..),
   BugUploadTransport,
@@ -32,7 +35,7 @@ import Api.Handler.Arkham.Game.Bug (
   runHeadObjectAction,
   uploadBugExportUsing,
  )
-import Api.Handler.ThirdEdition (getApiV1ThirdEditionExportWith, postApiV1ThirdEditionBugWith)
+import Api.Handler.ThirdEdition (getApiV1ThirdEditionExportWith, postApiV1ThirdEditionBugWith, tableFeedGate)
 import Config (makeYesodLogger)
 import Control.Exception (ErrorCall (..))
 import Data.Aeson (Value, decode, object, withObject, (.:), (.=))
@@ -41,17 +44,18 @@ import Data.ByteString.Builder (toLazyByteString)
 import Data.Char (isHexDigit)
 import Data.Text qualified as T
 import Data.Time.Clock (getCurrentTime)
+import Data.Map.Strict qualified as Map
 import Data.UUID (UUID)
 import Data.UUID qualified as UUID
 import Data.UUID.V4 (nextRandom)
-import Database.Persist.Sql (Single (..), SqlBackend, rawSql, toSqlKey)
+import Database.Persist.Sql (Single (..), SqlBackend, rawExecute, rawSql, toPersistValue, toSqlKey)
 import Database.Persist.Types (PersistValue (..))
 import Entity.User (UserId)
-import Foundation (App (..), Handler, unsafeHandler, userIdToToken)
-import Network.HTTP.Types (Status, status403, status404, status500, status502)
+import Foundation (App (..), Handler, Subscriber (..), anonymousSubscriber, unsafeHandler, unsubscribeFromRoom, userIdToToken)
+import Network.HTTP.Types (Header, Method, Status, status200, status400, status403, status404, status500, status502)
 import Network.Wai (defaultRequest, requestHeaders)
 import Postgres.Harness
-import Postgres.Production (withRequest)
+import Postgres.Production (authorizationFor, routeRequest, withRequest)
 import Relude
 import System.Directory (getTemporaryDirectory, removeFile)
 import System.IO (hClose, openTempFile)
@@ -61,6 +65,7 @@ import Test.Hspec
 import ThirdEdition.Store (Store (..))
 import ThirdEdition.Table (Seat (..), Table (..), TableOptions (..))
 import UnliftIO.Exception qualified as Exception
+import UnliftIO.STM (tryReadTBQueue)
 import Yesod.Core.Types (Content (..), HandlerContents (..), TypedContent (..))
 
 data Fixture = Fixture
@@ -74,7 +79,12 @@ data Fixture = Fixture
   }
 
 spec :: Harness -> App -> Spec
-spec harness app = describe "Third-edition export and file-bug with production SQL" do
+spec harness app = do
+  exportSpec harness app
+  tableRouteSpec harness app
+
+exportSpec :: Harness -> App -> Spec
+exportSpec harness app = describe "Third-edition export and file-bug with production SQL" do
   it "exports a table to its seated players, its host (seated or not) and an admin" $
     withFixture "3e-export" \f -> do
       for_ [(f.host, f.table), (f.seated, f.table), (f.host, f.hostless), (f.seated, f.hostless)] \(uid, tid) ->
@@ -186,19 +196,186 @@ spec harness app = describe "Third-edition export and file-bug with production S
     host <- seedUser connection (label <> "-host")
     seated <- seedUser connection (label <> "-seated")
     outsider <- seedUser connection (label <> "-outsider")
-    table <- insertTable host [(1, host, "host"), (2, seated, "seated")] 3
-    hostless <- insertTable host [(1, seated, "seated")] 2
+    table <- insertTable app host [(1, host, "host"), (2, seated, "seated")] 3
+    hostless <- insertTable app host [(1, seated, "seated")] 2
     action Fixture {..}
-  insertTable host occupied size = do
-    tid <- nextRandom
-    now <- getCurrentTime
-    let seat n = case find (\(m, _, _) -> m == n) occupied of
-          Just (_, uid, name) -> Seat n (Just uid) (Just name)
-          Nothing -> Seat n Nothing Nothing
-    app.appThirdEditionStore.insertTable
-      (Table tid "Fixture table" host "host" (map seat [1 .. size]) (TableOptions [CoreSet] StandardMode Nothing) Nothing 0 now)
-      []
-    pure tid
+
+data Members = Members
+  { host :: UserId
+  , seated :: UserId
+  , outsider :: UserId
+  , admin :: UserId
+  -- ^ a real admin (@users.admin@), seated nowhere
+  , lobby :: UUID
+  -- ^ unstarted: the host in seat 1, the seated player in seat 2, seat 3 open
+  , game :: UUID
+  -- ^ the same two players, started by the host through its route
+  }
+
+tableRouteSpec :: Harness -> App -> Spec
+tableRouteSpec harness app = describe "Third-edition table routes through WAI dispatch" do
+  it "answers an outsider on a started table exactly as a missing table, and changes nothing" $
+    withMembers "3e-route-outsider" \m -> do
+      missing <- nextRandom
+      unchanged <- snapshot m.game
+      for_ (join' : actions) \(method, suffix, body) -> do
+        refused <- route m.outsider method m.game suffix [] body
+        (method, suffix, refused) `shouldBe` (method, suffix, (status404, Just noSuchTable))
+        route m.outsider method missing suffix [] body `shouldReturn` refused
+        snapshot m.game `shouldReturn` unchanged
+
+  it "lets an outsider watch and join an unstarted table, and nothing else" $
+    withMembers "3e-route-lobby" \m -> do
+      unchanged <- snapshot m.lobby
+      for_ (filter (\(method, _, _) -> method /= "GET") actions) \(method, suffix, body) -> do
+        refused <- route m.outsider method m.lobby suffix [] body
+        (method, suffix, refused) `shouldBe` (method, suffix, (status404, Just noSuchTable))
+        snapshot m.lobby `shouldReturn` unchanged
+      (watched, view) <- route m.outsider "GET" m.lobby "" [] ""
+      (watched, view >>= tableId) `shouldBe` (status200, Just m.lobby)
+      (joined, _) <- route m.outsider "POST" m.lobby "/join" [] "{}"
+      joined `shouldBe` status200
+      Just (t, _) <- app.appThirdEditionStore.getTable m.lobby
+      t.version `shouldBe` 1
+      [s.user | s <- t.seats] `shouldBe` [Just m.host, Just m.seated, Just m.outsider]
+
+  it "refuses an outsider's socket on a started table before the upgrade, so no room is joined" $
+    withMembers "3e-route-socket" \m -> do
+      -- The 404 is the guard itself, answered before any upgrade.
+      route m.outsider "GET" m.game "" upgrade "" `shouldReturn` (status404, Just noSuchTable)
+      Map.member m.game <$> readMVar app.appThirdEditionRooms `shouldReturn` False
+      -- A socket the check lets through reaches the upgrade. A WAI test session
+      -- cannot carry out a raw (websocket) response and answers with Yesod's 500
+      -- fallback instead: the 500 shows the gate passed, nothing more. That
+      -- holds for a member, and for an outsider while the table is unstarted.
+      for_ [(m.seated, m.game), (m.outsider, m.lobby)] \(uid, tid) -> do
+        (accepted, _) <- route uid "GET" tid "" upgrade ""
+        accepted `shouldBe` status500
+
+  it "stops a lobby socket once the game starts unless its user turns out to be a member" $
+    withMembers "3e-route-feed" \m -> do
+      stranger <- withConnection harness (`seedUser` "3e-route-feed-stranger")
+      ready <- insertTable app m.host [(1, m.host, "host"), (2, m.seated, "seated")] 2
+      -- one socket's gate per user, made while the table is a lobby
+      gates <- forM [stranger, m.outsider, m.seated, m.host, m.admin] \uid -> handlerAs uid (tableFeedGate ready)
+      -- the room's queue, holding exactly what publishTable put on the feed
+      (room, subId, sub) <- unsafeHandler app do
+        info <- anonymousSubscriber
+        joinRoomIn info appThirdEditionRooms (const "ah3e-feed-test") ready
+      let published uid method suffix body = do
+            (status, _) <- route uid method ready suffix [] body
+            (method, suffix, status) `shouldBe` (method, suffix, status200)
+            atomically (tryReadTBQueue sub.subQueue) >>= maybe (fail "Expected a published message") pure
+          verdicts msg = forM gates \gate -> unsafeHandler app (gate msg)
+      -- the lobby is anyone's to watch
+      left <- published m.seated "POST" "/leave" "{}"
+      verdicts left `shouldReturn` [True, True, True, True, True]
+      joined <- published m.outsider "POST" "/join" "{}"
+      verdicts joined `shouldReturn` [True, True, True, True, True]
+      -- the game is not: the outsider took a seat and stays, the seated player
+      -- gave theirs up and is cut off with the stranger
+      begun <- published m.host "POST" "/start" "{}"
+      verdicts begun `shouldReturn` [False, True, False, True, True]
+      closed <- published m.host "DELETE" "" ""
+      verdicts closed `shouldReturn` [True, True, True, True, True]
+      unsafeHandler app do
+        unsubscribeFromRoom room subId
+        void $ releaseRoomIfEmpty appThirdEditionRooms ready
+
+  it "lets the seated players, the host and an admin through, under each route's own rules" $
+    withMembers "3e-route-members" \m -> do
+      for_ [m.host, m.seated, m.admin] \uid -> do
+        (status, view) <- route uid "GET" m.game "" [] ""
+        (status, view >>= tableId) `shouldBe` (status200, Just m.game)
+      -- seated players use debug actions and undo them
+      (debugged, _) <- route m.seated "POST" m.game "/debug" [] debugBody
+      debugged `shouldBe` status200
+      (undone, _) <- route m.seated "POST" m.game "/undo" [] ""
+      undone `shouldBe` status200
+      Just (t, _) <- app.appThirdEditionStore.getTable m.game
+      t.version `shouldBe` 3 -- start, debug, undo
+      -- the rules for members are unchanged: a 400 or 403, not the 404
+      let refusedWith status message = (status, Just $ object ["error" .= (message :: Text)])
+      route m.seated "POST" m.game "/answer" [] "{\"player\":1,\"choice\":0}"
+        `shouldReturn` refusedWith status400 "That isn't your seat"
+      route m.admin "POST" m.game "/debug" [] debugBody
+        `shouldReturn` refusedWith status400 "Only seated players can use debug actions"
+      route m.admin "POST" m.game "/start" [] "{}"
+        `shouldReturn` refusedWith status400 "Only the host can start the game"
+      route m.seated "POST" m.game "/leave" [] "{}"
+        `shouldReturn` refusedWith status400 "The game has already started"
+      for_ [m.seated, m.admin] \uid ->
+        route uid "DELETE" m.lobby "" [] "" `shouldReturn` refusedWith status403 "Only the host can close the table"
+      -- a table that is not there is a 404 for members too, not a 400
+      missing <- nextRandom
+      route m.host "POST" missing "/leave" [] "{}" `shouldReturn` (status404, Just noSuchTable)
+      -- an admin may leave (holding no seat, nothing moves but the version), and the host closes the table
+      for_ [m.admin, m.seated] \uid -> do
+        (left, _) <- route uid "POST" m.lobby "/leave" [] "{}"
+        left `shouldBe` status200
+      Just (lobby, _) <- app.appThirdEditionStore.getTable m.lobby
+      (lobby.version, [s.user | s <- lobby.seats]) `shouldBe` (2, [Just m.host, Nothing, Nothing])
+      (closed, _) <- route m.host "DELETE" m.lobby "" [] ""
+      closed `shouldBe` status200
+      app.appThirdEditionStore.getTable m.lobby `shouldReturn` Nothing
+ where
+  withMembers :: Text -> (Members -> IO a) -> IO a
+  withMembers label action = withConnection harness \connection -> do
+    host <- seedUser connection (label <> "-host")
+    seated <- seedUser connection (label <> "-seated")
+    outsider <- seedUser connection (label <> "-outsider")
+    admin <- seedUser connection (label <> "-admin")
+    transaction connection $ rawExecute "UPDATE users SET admin = true WHERE id = ?" [toPersistValue admin]
+    let players = [(1, host, "host"), (2, seated, "seated")]
+    lobby <- insertTable app host players 3
+    game <- insertTable app host players 2
+    (started, _) <- route host "POST" game "/start" [] "{}"
+    started `shouldBe` status200
+    action Members {..}
+  snapshot tid = app.appThirdEditionStore.getTable tid
+  handlerAs :: UserId -> Handler a -> IO a
+  handlerAs uid action = do
+    authorization <- authorizationFor app uid
+    unsafeHandler app $ withRequest defaultRequest {requestHeaders = [authorization]} action
+  route :: UserId -> Method -> UUID -> ByteString -> [Header] -> LByteString -> IO (Status, Maybe Value)
+  route uid method tid suffix headers body = do
+    authorization <- authorizationFor app uid
+    (status, response) <-
+      routeRequest app method ("/api/v1/3ed/tables/" <> UUID.toASCIIBytes tid <> suffix)
+        (authorization : ("Content-Type", "application/json") : headers) body
+    pure (status, decode response)
+  tableId = parseMaybe $ withObject "Table" (.: "id")
+  -- every route on a table but join and the export and file-bug routes above
+  actions :: [(Method, ByteString, LByteString)]
+  actions =
+    [ ("GET", "", "")
+    , ("POST", "/leave", "{}")
+    , ("POST", "/start", "{}")
+    , ("POST", "/answer", "{\"player\":1,\"choice\":0}")
+    , ("POST", "/debug", debugBody)
+    , ("POST", "/undo", "")
+    , ("DELETE", "", "")
+    ]
+  join' = ("POST", "/join", "{}")
+  debugBody = "{\"tag\":\"DebugSetSheetDoom\",\"contents\":1}"
+  upgrade =
+    [ ("Connection", "Upgrade")
+    , ("Upgrade", "websocket")
+    , ("Sec-WebSocket-Version", "13")
+    , ("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+    ]
+
+insertTable :: App -> UserId -> [(Int, UserId, Text)] -> Int -> IO UUID
+insertTable app host occupied size = do
+  tid <- nextRandom
+  now <- getCurrentTime
+  let seat n = case find (\(m, _, _) -> m == n) occupied of
+        Just (_, uid, name) -> Seat n (Just uid) (Just name)
+        Nothing -> Seat n Nothing Nothing
+  app.appThirdEditionStore.insertTable
+    (Table tid "Fixture table" host "host" (map seat [1 .. size]) (TableOptions [CoreSet] StandardMode Nothing) Nothing 0 now)
+    []
+  pure tid
 
 -- | 'Postgres.Production.runHandlerResponse', keeping an error response's
 -- JSON body so the envelope itself is checked rather than only its status.
