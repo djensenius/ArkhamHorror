@@ -12,10 +12,10 @@ on it answer anyone else the same way, except that an unstarted table may be
 watched and joined by anyone; those routes go through production WAI dispatch.
 
 In the export and file-bug examples the admin lookup is a constant, and the S3
-transport is a stub built from the production upload seams, so nothing reaches
-AWS or this machine's credentials. The routed examples use the real lookup,
-against an admin seeded through the @admin@ column (Sqitch change
-@add_admin_to_users@).
+transport is a stub built from the production upload seams, or the production
+transport with a credential discovery that fails, so nothing reaches AWS or this
+machine's credentials. The routed examples use the real lookup, against an admin
+seeded through the @admin@ column (Sqitch change @add_admin_to_users@).
 -}
 module Postgres.ThirdEditionSpec (spec) where
 
@@ -27,12 +27,16 @@ import Api.Arkham.Helpers (joinRoomIn, releaseRoomIfEmpty)
 import Api.Handler.Arkham.Game.Bug (
   BugUploadOutcome (..),
   BugUploadTransport,
+  awsBugUploadWith,
   runBugUploadPolicy,
+  runBugUploadWithDiscovery,
   runBugUploadWithEnvDiscovery,
   runHeadObjectAction,
   uploadBugExportUsing,
  )
 import Api.Handler.ThirdEdition (getApiV1ThirdEditionExportWith, postApiV1ThirdEditionBugWith, tableFeedGate)
+import Config (makeYesodLogger)
+import Control.Exception (ErrorCall (..))
 import Data.Aeson (Value, decode, object, withObject, (.:), (.=))
 import Data.Aeson.Types (parseMaybe)
 import Data.ByteString.Builder (toLazyByteString)
@@ -52,6 +56,10 @@ import Network.Wai (defaultRequest, requestHeaders)
 import Postgres.Harness
 import Postgres.Production (authorizationFor, routeRequest, withRequest)
 import Relude
+import System.Directory (getTemporaryDirectory, removeFile)
+import System.IO (hClose, openTempFile)
+import System.IO.Error (userError)
+import System.Log.FastLogger (defaultBufSize, newFileLoggerSet, rmLoggerSet)
 import Test.Hspec
 import ThirdEdition.Store (Store (..))
 import ThirdEdition.Table (Seat (..), Table (..), TableOptions (..))
@@ -127,17 +135,49 @@ exportSpec harness app = describe "Third-edition export and file-bug with produc
         response <- fileBug notAdmin transport f.seated f.table
         response `shouldBe` Left (status502, Just $ object ["message" .= ("Failed to upload bug report" :: Text)])
       readIORef puts `shouldReturn` 0
+
+  it "answers any exception from credential discovery with the sanitized 502, never PUTs and never logs its text" $
+    withFixture "3e-bug-discovery-throws" \f -> do
+      puts <- newIORef (0 :: Int)
+      let recordPut = modifyIORef' puts (+ 1) $> Right ()
+          discoveryThrows failure = \_ _ ->
+            runBugUploadWithDiscovery failure \() ->
+              runBugUploadPolicy (fail "HeadObject after failed discovery") recordPut
+          -- the stub counts PUTs; the production transport proves it is wired the same way
+          transports = map discoveryThrows discoveryFailures <> map awsBugUploadWith discoveryFailures
+      for_ transports \transport -> do
+        (response, logged) <- withCapturedLog \foundation -> fileBugOn foundation notAdmin transport f.seated f.table
+        T.isInfixOf discoverySecret (show response) `shouldBe` False
+        T.isInfixOf discoverySecret logged `shouldBe` False
+        response `shouldBe` Left (status502, Just $ object ["message" .= ("Failed to upload bug report" :: Text)])
+        logged `shouldSatisfy` T.isInfixOf ("bug report upload: AWS credential discovery failed for third-edition table " <> UUID.toText f.table)
+      readIORef puts `shouldReturn` 0
  where
   notAdmin _ = pure False
   admin _ = pure True
   export isAdmin uid tid = runAs uid $ getApiV1ThirdEditionExportWith isAdmin tid
-  fileBug isAdmin transport uid tid = runAs uid $ postApiV1ThirdEditionBugWith isAdmin transport tid
+  fileBug = fileBugOn app
+  fileBugOn foundation isAdmin transport uid tid = runAsOn foundation uid $ postApiV1ThirdEditionBugWith isAdmin transport tid
   -- the actual JWT the API hands out, on an actual request
   runAs :: UserId -> Handler a -> IO (Either (Status, Maybe Value) a)
-  runAs uid action = do
-    token <- unsafeHandler app $ userIdToToken uid
-    runResponse app $
+  runAs = runAsOn app
+  runAsOn :: App -> UserId -> Handler a -> IO (Either (Status, Maybe Value) a)
+  runAsOn foundation uid action = do
+    token <- unsafeHandler foundation $ userIdToToken uid
+    runResponse foundation $
       withRequest defaultRequest {requestHeaders = [("Authorization", "Token " <> encodeUtf8 token)]} action
+  -- The app with its logger writing to a file, as 'Arkham.Api.ArkhamDBLoggingSpec'
+  -- captures the request log, and everything the action logged.
+  withCapturedLog :: (App -> IO a) -> IO (a, Text)
+  withCapturedLog action = do
+    directory <- lookupEnv "ARKHAM_TEST_LOG_DIR" >>= maybe getTemporaryDirectory pure
+    Exception.bracket (openTempFile directory "bug-upload.log") (removeFile . fst) \(file, handle) -> do
+      hClose handle
+      result <- Exception.bracket (newFileLoggerSet defaultBufSize file) rmLoggerSet \loggerSet -> do
+        logger <- makeYesodLogger loggerSet
+        action app {appLogger = logger}
+      logged <- decodeUtf8 <$> readFileBS file
+      pure (result, logged)
   withFixture :: Text -> (Fixture -> IO a) -> IO a
   withFixture label action = withConnection harness \connection -> do
     host <- seedUser connection (label <> "-host")
@@ -360,6 +400,19 @@ rawAwsError status =
 
 rawDiscoveryError :: Text
 rawDiscoveryError = "raw-aws-discovery: /home/someone/.aws/credentials"
+
+-- | Text a failed credential discovery carries that must reach neither the
+-- client nor the log.
+discoverySecret :: Text
+discoverySecret = "raw-aws-discovery-exception: /home/someone/.aws/config"
+
+-- | Credential discovery throwing something other than Amazonka's 'AuthError':
+-- an IO error (an unreadable credentials file) and a pure error (malformed config).
+discoveryFailures :: [IO a]
+discoveryFailures =
+  [ Exception.throwIO $ userError $ toString discoverySecret
+  , Exception.throwIO $ ErrorCall $ toString discoverySecret
+  ]
 
 -- Fixture SQL only, as 'Main.seedUser'.
 seedUser :: SqlBackend -> Text -> IO UserId

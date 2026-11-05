@@ -10,12 +10,12 @@ import writtenInRock from './writtenInRock.json'
 
 export default {
   ...base,
-  writtenInRock,
-  theTwistedHollow,
-  hemlockHouse,
-  theSilentHeath,
-  theLostSister,
-  theThingInTheDepths,
-  theLongestNight,
   fateOfTheVale,
+  hemlockHouse,
+  theLongestNight,
+  theLostSister,
+  theSilentHeath,
+  theThingInTheDepths,
+  theTwistedHollow,
+  writtenInRock,
 }

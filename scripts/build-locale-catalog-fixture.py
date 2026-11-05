@@ -31,7 +31,8 @@ by mutating each claimed field in turn.
 
 The chain deliberately reads no production input, so publishing new catalog
 content never touches it. The one production-shaped part, the `cardNames` pack,
-is a hand-pinned copy of the Night of the Zealot card names (en and de) that
+is a hand-pinned copy of the Night of the Zealot card names (en and de, plus
+the card-only `pl` locale) that
 `frontend/tests/localeCatalogCardNames.test.mjs` proves equal to what the real
 generator resolves from `frontend/public/cards_<locale>.json`. The chain does
 depend on `contracts/manifest.json`'s `schemaRevision` (the real generator
@@ -252,7 +253,7 @@ def runtime_identity() -> dict[str, object]:
 # The card names below are the one exception: card data, not prose.
 # ---------------------------------------------------------------------------
 
-LOCALES = ("de", "en", "pt-BR")
+LOCALES = ("de", "en", "pl", "pt-BR")
 DEFAULT_LOCALE = "en"
 
 SOURCE_MESSAGES: dict[str, dict[str, dict[str, str]]] = {
@@ -280,7 +281,8 @@ SOURCE_MESSAGES: dict[str, dict[str, dict[str, str]]] = {
 # asset and treachery in the core-box encounter sets (discoverClueAt, enemy
 # logs, add-Lita-to-deck, drew/heal labels). 01121 shows a bare code answered
 # by its `a` record, 01121b a real `b` record, and 01001b the lent `b` alias.
-# pt-BR has no card pack, so it falls back to en. These are card data, never
+# pt-BR has no card pack, so it falls back to en; the card-only pl locale
+# below has nothing else. These are card data, never
 # backend-emitted keys, so the backend registry leaves them out.
 #
 # The table is pinned by hand so card-data refreshes do not move the fixture.
@@ -368,6 +370,90 @@ CARD_NAMES: dict[str, tuple[str, str]] = {
 SOURCE_MESSAGES["en"][CARD_NAMES_PACK] = {f"{CARD_NAMES_PACK}.{code}": en for code, (en, _) in CARD_NAMES.items()}
 SOURCE_MESSAGES["de"][CARD_NAMES_PACK] = {f"{CARD_NAMES_PACK}.{code}": de for code, (_, de) in CARD_NAMES.items()}
 
+# `pl` is a card-only locale, as the real catalog publishes pl, pt, ru and uk:
+# its only keys are the same Night of the Zealot card names, resolved from
+# frontend/public/cards_pl.json, and every other key falls back to en. Pinned
+# and proven exactly like the en and de names above.
+CARD_ONLY_CARD_NAMES: dict[str, dict[str, str]] = {
+    "pl": {
+        "01001": "Roland Banks",
+        "01001b": "Roland Banks",
+        "01002": "Daisy Walker",
+        "01003": "\"\u015alizg\" O'Toole",
+        "01004": "Agnes Baker",
+        "01005": "Wendy Adams",
+        "01101": "Mafijny egzekutor d\u0142ug\u00f3w",
+        "01102": "Akolita Srebrnego \u015awitu",
+        "01103": "Uparty detektyw",
+        "01111": "Gabinet",
+        "01112": "Hol",
+        "01113": "Strych",
+        "01114": "Piwnica",
+        "01115": "Salon",
+        "01116": "Kap\u0142an ghouli",
+        "01117": "Lita Chantler",
+        "01118": "Po\u017ceracz cia\u0142",
+        "01119": "Lodowy Ghoul",
+        "01121": "My\u015bliwy czy zwierzyna?",
+        "01121b": "Zamaskowany \u0142owca",
+        "01124": "Tw\u00f3j dom",
+        "01125": "Rivertown",
+        "01126": "Southside",
+        "01127": "Southside",
+        "01128": "Szpital \u015bw Marii",
+        "01129": "Uniwersytet Miskatonic",
+        "01130": "Downtown",
+        "01131": "Downtown",
+        "01132": "Easttown",
+        "01133": "Cmentarz",
+        "01134": "Northside",
+        "01135": "Prze\u015bladuj\u0105cy cie\u0144",
+        "01136": "Fa\u0142szywy trop",
+        "01137": "Drew \"Cz\u0142owiek-wilk\"",
+        "01138": "Herman Collins",
+        "01139": "Peter Warren",
+        "01140": "Victoria Devereux",
+        "01141": "Ruth Turner",
+        "01149": "G\u0142\u00f3wna \u015bcie\u017cka",
+        "01150": "Lasy Arkham",
+        "01151": "Lasy Arkham",
+        "01152": "Lasy Arkham",
+        "01153": "Lasy Arkham",
+        "01154": "Lasy Arkham",
+        "01155": "Lasy Arkham",
+        "01156": "Miejsce rytua\u0142u",
+        "01157": "Um\u00f4rdhoth",
+        "01158": "Gniew Um\u00f4rdhotha",
+        "01159": "R\u00f3j szczur\u00f3w",
+        "01160": "Ghoul s\u0142ugus",
+        "01161": "Wyg\u0142odnia\u0142y ghoul",
+        "01162": "Chwytaj\u0105ce d\u0142onie",
+        "01163": "Gnij\u0105ce szcz\u0105tki",
+        "01164": "Sparali\u017cowany ze strachu",
+        "01165": "Kakofonia g\u0142os\u00f3w",
+        "01166": "Pradawne z\u0142o",
+        "01167": "Grobowy ch\u0142\u00f3d",
+        "01168": "G\u0119sta mg\u0142a",
+        "01169": "Akolita",
+        "01170": "Czarownik bractwa",
+        "01171": "Tajemnicze pie\u015bni",
+        "01172": "Poluj\u0105ce Skrzydlate Dzieci\u0119 Nocy",
+        "01173": "Na skrzyd\u0142ach ciemno\u015bci",
+        "01174": "Zamkni\u0119te drzwi",
+        "01175": "Wrzeszcz\u0105cy Byakhee",
+        "01176": "\u017b\u00f3\u0142ty Znak",
+        "01177": "Yithian obserwator",
+        "01178": "Oferta pot\u0119gi",
+        "01179": "Nieust\u0119pliwe Mroczne M\u0142ode",
+        "01180": "Kozi pomiot",
+        "01181": "M\u0142oda Istota z G\u0142\u0119bin",
+        "01182": "Sny o R'lyeh",
+    },
+}
+for _locale, _names in CARD_ONLY_CARD_NAMES.items():
+    require(set(_names) == set(CARD_NAMES), f"the {_locale} card-only fixture names a different code set")
+    SOURCE_MESSAGES[_locale] = {CARD_NAMES_PACK: {f"{CARD_NAMES_PACK}.{code}": name for code, name in _names.items()}}
+
 # A key the registry says the backend emits that no locale translates, so the
 # catalog publishes a real, non-empty `backend.untranslatedKeys` gap.
 UNTRANSLATED_KEY = "nightOfTheZealot.theGathering.setup.setOutOfPlay"
@@ -397,6 +483,8 @@ UNSUPPORTED_KEY = "shuffleRemainder"
 LANGUAGE_RESOLUTION = (
     ("de", "de"),
     ("en", "en"),
+    ("pl", "pl"),
+    ("pl-PL", "pl"),
     ("pt", "pt-BR"),
     ("pt-BR", "pt-BR"),
 )

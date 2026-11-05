@@ -1,9 +1,9 @@
 {
   "schemaVersion": "1.0.0",
-  "catalogRevision": "1.33acb26ef58945162a45203a3326ed74",
+  "catalogRevision": "1.6d23b2893fef02360a599a8aac212b36",
   "basePath": "/locale-catalog",
   "manifestPath": "/locale-catalog/manifest.json",
-  "revisionManifestPath": "/locale-catalog/r/1.33acb26ef58945162a45203a3326ed74/manifest.json",
+  "revisionManifestPath": "/locale-catalog/r/1.6d23b2893fef02360a599a8aac212b36/manifest.json",
   "chunkPathPrefix": "/locale-catalog/c/",
   "digestAlgorithm": "sha256",
   "defaultLocale": "en",
@@ -15,6 +15,14 @@
     {
       "tag": "en",
       "locale": "en"
+    },
+    {
+      "tag": "pl",
+      "locale": "pl"
+    },
+    {
+      "tag": "pl-PL",
+      "locale": "pl"
     },
     {
       "tag": "pt",
@@ -83,6 +91,22 @@
       ]
     },
     {
+      "locale": "pl",
+      "fallback": "en",
+      "keys": 72,
+      "bytes": 13611,
+      "chunks": [
+        {
+          "pack": "cardNames",
+          "path": "/locale-catalog/c/97c056d4405e800061cff060f996eff82dde0f84fb396321448bd4e58e6a3640.json",
+          "bytes": 13611,
+          "sha256": "97c056d4405e800061cff060f996eff82dde0f84fb396321448bd4e58e6a3640",
+          "keys": 72,
+          "unsupportedKeys": 0
+        }
+      ]
+    },
+    {
       "locale": "pt-BR",
       "fallback": "en",
       "keys": 1,
@@ -100,16 +124,16 @@
     }
   ],
   "totals": {
-    "locales": 3,
-    "chunks": 6,
-    "bytes": 30036,
-    "keys": 155,
+    "locales": 4,
+    "chunks": 7,
+    "bytes": 43647,
+    "keys": 227,
     "unsupportedKeys": 1
   },
   "backend": {
     "artifactPath": "contracts/fixtures/locale-catalog-backend-registry.json",
-    "artifactSha256": "177b4a1ff7c810d5e264d93de0e813ca4b72ecf77d063d289c3906e3a193444f",
-    "sourceSha256": "4290b030b652d8889e74174e91ca997ea5ffae67e8daf07451d2b238414ca10e",
+    "artifactSha256": "8a3bd549d7553a248a9b8c5996c811183060ce823d8b1ad391b5006d6886b642",
+    "sourceSha256": "c505d91d299cef36647ce15bc9c492df4932ed9f2d2cb30efedddc8e0d278ba6",
     "emittedKeys": 10,
     "requiredKeys": 10,
     "untranslatedKeys": [
@@ -120,13 +144,13 @@
     "unknownVariableTypes": []
   },
   "provenance": {
-    "sha256": "33acb26ef58945162a45203a3326ed744c1466a347250800d44217e1a5ae4121",
-    "outputSha256": "f2b58a0bd75195daa79819ca497b5fa3d65213ff9984f496b01bf01fb57ff51d",
+    "sha256": "6d23b2893fef02360a599a8aac212b36929b2aa759d4f4f3675ca2e335142940",
+    "outputSha256": "1d6ffefb0335b6d8cfbddb14420e9ab4cb9a4e1146f1d27211c6e9b63f05d161",
     "generator": {
       "name": "arkham-locale-catalog",
       "version": "1.0.0"
     },
-    "contractRevision": "0.1.60",
+    "contractRevision": "0.1.63",
     "fixtureKeys": [
       "addToken",
       "continue",
@@ -139,9 +163,9 @@
       "setup",
       "shuffleRemainder"
     ],
-    "localeSourceFiles": 3,
-    "localeSourcesSha256": "4290b030b652d8889e74174e91ca997ea5ffae67e8daf07451d2b238414ca10e",
+    "localeSourceFiles": 4,
+    "localeSourcesSha256": "c505d91d299cef36647ce15bc9c492df4932ed9f2d2cb30efedddc8e0d278ba6",
     "schemasSha256": "1a7c5d1a585bcf495f2c8698c74f885a5732886a51a3409aafd3d9c34191571a",
-    "generatorSha256": "6641a91abb46fe02b386508c2fdc50e4c9ffd3f38c3de4abffed429f9c2921f7"
+    "generatorSha256": "08f3532df0168bbfa98d1d8051077fe0d3af3dfd78d49b8e3874b2a142a03920"
   }
 }
