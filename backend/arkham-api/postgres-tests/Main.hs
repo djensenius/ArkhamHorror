@@ -48,6 +48,7 @@ import Postgres.DispatchSpec qualified as DispatchSQL
 import Postgres.PayloadSpec qualified as PayloadSQL
 import Postgres.ConcurrencySpec qualified as ConcurrencySQL
 import Postgres.DeleteSpec qualified as DeleteSQL
+import Postgres.EventDeleteSpec qualified as EventDeleteSQL
 import Postgres.EndToEndSpec qualified as EndToEndSQL
 import Postgres.ThirdEditionSpec qualified as ThirdEditionSQL
 import Postgres.Production
@@ -83,6 +84,7 @@ main = withHarness \harness -> withProductionApp harness \app ->
     ThirdEditionSQL.spec harness app
     ArchiveSQL.spec harness app
     ClaimSeatSQL.spec harness app seedUser
+    EventDeleteSQL.spec harness app seedUser
 
 writeBackSeed :: App -> WriteBackSQL.Seed
 writeBackSeed app connection label = do

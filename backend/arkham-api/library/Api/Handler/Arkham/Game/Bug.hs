@@ -13,6 +13,7 @@ module Api.Handler.Arkham.Game.Bug (
   classifyHeadObjectError,
   runBugUploadPolicy,
   runBugUploadWithEnvDiscovery,
+  runBugUploadWithDiscovery,
   runHeadObjectAction,
   runPutObjectAction,
   describeBugUploadFailure,
@@ -20,12 +21,12 @@ module Api.Handler.Arkham.Game.Bug (
   -- * The hardened upload, shared with the third-edition bug endpoint
   BugUploadTransport,
   awsBugUpload,
+  awsBugUploadWith,
   uploadBugExport,
   uploadBugExportUsing,
 ) where
 
-import Amazonka (Error (..), SerializeError (..), ServiceError (..), ToBody (toBody), discover, newEnv, runResourceT, send)
-import Amazonka.Auth (AuthError)
+import Amazonka (Env, Error (..), SerializeError (..), ServiceError (..), ToBody (toBody), discover, newEnv, runResourceT, send)
 import Api.Arkham.Export
 import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Amazonka.S3
@@ -36,7 +37,7 @@ import Data.ByteString.Base16 qualified as B16
 import Import hiding ((==.))
 import Network.HTTP.Types.Status (statusCode)
 import Network.HTTP.Types.Status qualified as Status
-import UnliftIO.Exception (try)
+import UnliftIO.Exception (try, tryAny)
 
 {- | Non-secret, structured classification of a per-request AWS error, safe to
 log. Deliberately extracts only the numeric HTTP status, plus a category
@@ -136,6 +137,16 @@ runBugUploadWithEnvDiscovery discoverEnv uploadWithEnv =
     Left _ -> pure $ BugUploadFailed CredentialDiscoveryFailed
     Right env -> uploadWithEnv env
 
+{- | Run credential discovery, then the upload with the environment it found.
+Any synchronous exception discovery throws -- Amazonka's 'AuthError', but also
+an IO error reading a credentials file or malformed configuration -- becomes
+'CredentialDiscoveryFailed'; the exception itself is dropped unseen, so its
+text can reach neither the log nor the response. Asynchronous exceptions
+still propagate.
+-}
+runBugUploadWithDiscovery :: MonadUnliftIO m => m env -> (env -> m BugUploadOutcome) -> m BugUploadOutcome
+runBugUploadWithDiscovery discoverEnv = runBugUploadWithEnvDiscovery (tryAny discoverEnv)
+
 {- | Classify a HeadObject failure using the exact Amazonka SDK error type.
 
 Per AWS, a HeadObject error response carries no body (it's a HEAD request),
@@ -226,9 +237,14 @@ an existing object is never rewritten, only a confirmed 404 unlocks the PUT,
 and every other failure is returned already sanitized.
 -}
 awsBugUpload :: BugUploadTransport
-awsBugUpload objectKey jsonBody =
-  runBugUploadWithEnvDiscovery
-    (try @_ @AuthError (newEnv discover))
+awsBugUpload = awsBugUploadWith (newEnv discover)
+
+-- | 'awsBugUpload' with the credential discovery supplied, so tests can make
+-- discovery fail without touching AWS or this machine's credentials.
+awsBugUploadWith :: IO Env -> BugUploadTransport
+awsBugUploadWith discoverEnv objectKey jsonBody =
+  runBugUploadWithDiscovery
+    discoverEnv
     \env -> runResourceT do
       result <-
         runBugUploadPolicy
