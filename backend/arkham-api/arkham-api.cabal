@@ -9847,6 +9847,7 @@ test-suite arkhamdb-postgres
       Postgres.DispatchSpec
       Postgres.EndToEndSpec
       Postgres.EventDeleteSpec
+      Postgres.EventReplicateSpec
       Postgres.Harness
       Postgres.HarnessSpec
       Postgres.MainStreetSwapSpec

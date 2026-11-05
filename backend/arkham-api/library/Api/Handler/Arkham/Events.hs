@@ -583,7 +583,8 @@ postApiV1ArkhamEventReplicateR eid = do
         []
     pure $ mGroup >>= arkhamEpicGroupArkhamGameId . entityVal
   gameId <- maybe (invalidArgs ["Unknown event group"]) pure mGameId
-  rawGame <- runDB $ P.getJust gameId
+  -- The game can be deleted after the group read: 404, not a 500.
+  rawGame <- runDB (P.get gameId) >>= maybe notFound pure
   unless (gameUsesBlobElse $ arkhamGameCurrentData rawGame)
     $ permissionDenied "Replicating Aberrations require The Blob That Ate Everything ELSE!"
   runMessagesInGroupWhen
