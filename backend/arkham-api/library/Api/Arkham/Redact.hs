@@ -19,10 +19,13 @@ What it does, for every investigator object in @investigators@,
     or not, so the shape is uniform. If @handCount@ is already present it is
     kept, which is what makes 'redactFor' idempotent.
   * Leaves investigators the viewer controls otherwise untouched. Control is
-    the investigator's @playerId@ field matching one of the viewer's seats.
+    the investigator's @playerId@ field matching one of the viewer's seats; an
+    investigator with no @playerId@ is controlled by nobody.
   * For every other investigator, empties the hidden zones listed in
     'hiddenZoneKeys' (array stays an array, object stays an object, @null@
-    stays @null@), sets @drawing@ and @discarding@ to @null@ (they are
+    stays @null@). That includes @excludeFromMulligan@, which holds the card
+    ids of the pre-mulligan hand and so, read against the top-level @cards@
+    registry, would reveal it. It also sets @drawing@ and @discarding@ to @null@ (they are
     @Maybe@ records holding drawn/discarded cards, and @{}@ is not a valid
     value of either type), and empties @search.searchFoundCards@ and
     @search.searchDrawnCards@ (the rest of the search stays, so the table can
@@ -31,14 +34,28 @@ What it does, for every investigator object in @investigators@,
     include 'TopCardOfDeckIsRevealed' (Norman Withers, Montmartre); that
     card is public information at the table.
 
+Each of those four maps is expected to be an object keyed by investigator id
+(the spec pins that against the real encoder). Anything else fails closed: a
+map that is not an object becomes @{}@, and a map entry that is not an object
+is dropped.
+
 And for the @log@ tail: a structured row (or child entry) whose @audience@ is
 @OnlyPlayer p@ is dropped unless the viewer holds seat @p@; a spectator sees
-only @Everyone@ entries. A structured entry with no readable audience is
-dropped (fail closed). Legacy rows carry no audience and are kept.
+only @Everyone@ entries. A structured row with no @contents@, a structured
+entry that is not an object, and a structured entry with no readable audience
+are all dropped (fail closed), and a @log@ or @children@ that is not an
+array becomes @[]@. Legacy rows carry no audience and are kept.
 
-Deliberately not touched here (follow-ups): investigator @meta@, the
-@question@ map, the @cards@ registry, @foundCards@, @focusedCards@ and the
-encounter deck.
+Known leak surfaces deliberately not touched here (follow-ups):
+
+  * @question@ and @questionPresentation@ (a prompt can name hand or deck
+    cards of the player it is for);
+  * the top-level @cards@ registry (every card by id, including hand cards);
+  * top-level @foundCards@ and @focusedCards@;
+  * the @card@ payload on each entry of an investigator's @modifiers@;
+  * investigator @meta@ and @formMeta@ (shapes vary per investigator, and
+    generic redaction could break rendering);
+  * the encounter deck order.
 -}
 module Api.Arkham.Redact (
   Viewer (..),
@@ -85,7 +102,8 @@ investigator, emptied in place. @deck@ is handled separately (top card) and
 @drawing@\/@discarding@\/@search@ are handled separately (see module docs).
 -}
 hiddenZoneKeys :: [Key]
-hiddenZoneKeys = ["hand", "sideDeck", "decks", "drawnCards", "cardsUnderneath"]
+hiddenZoneKeys =
+  ["hand", "sideDeck", "decks", "drawnCards", "cardsUnderneath", "excludeFromMulligan"]
 
 redactFor :: Viewer -> Value -> Value
 redactFor viewer = \case
@@ -97,8 +115,13 @@ redactFor viewer = \case
 
 redactInvestigatorMap :: Viewer -> Value -> Value
 redactInvestigatorMap viewer = \case
-  Object investigators -> Object (KeyMap.map (redactInvestigator viewer) investigators)
-  other -> other
+  Object investigators ->
+    Object (KeyMap.map (redactInvestigator viewer) (KeyMap.filter isObject investigators))
+  _ -> Object mempty
+ where
+  isObject = \case
+    Object _ -> True
+    _ -> False
 
 redactInvestigator :: Viewer -> Value -> Value
 redactInvestigator viewer = \case
@@ -161,16 +184,16 @@ topCardRevealed investigator = case KeyMap.lookup "modifiers" investigator of
 redactLog :: Viewer -> Value -> Value
 redactLog viewer = \case
   Array rows -> Array (V.mapMaybe (redactLogRow viewer) rows)
-  other -> other
+  _ -> Array mempty
 
 redactLogRow :: Viewer -> Value -> Maybe Value
 redactLogRow viewer = \case
-  row@(Object o)
+  Object o
     | KeyMap.lookup "tag" o == Just (String "LogRowStructured") ->
         case KeyMap.lookup "contents" o of
           Just entry ->
             (\e -> Object (KeyMap.insert "contents" e o)) <$> redactLogEntry viewer entry
-          Nothing -> Just row
+          Nothing -> Nothing
   row -> Just row
 
 redactLogEntry :: Viewer -> Value -> Maybe Value
@@ -179,11 +202,11 @@ redactLogEntry viewer = \case
     | maybe False (audienceVisible viewer) (KeyMap.lookup "audience" entry) ->
         Just . Object $ adjust children "children" entry
     | otherwise -> Nothing
-  other -> Just other
+  _ -> Nothing
  where
   children = \case
     Array entries -> Array (V.mapMaybe (redactLogEntry viewer) entries)
-    other -> other
+    _ -> Array mempty
 
 audienceVisible :: Viewer -> Value -> Bool
 audienceVisible viewer audience =
