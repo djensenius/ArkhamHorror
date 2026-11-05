@@ -255,14 +255,15 @@ spec harness app seedUser = describe "Pending game join" do
     withConnection harness \holding -> withConnection harness \observer -> do
       (f, organizer, player) <- seedDeleteRace seedUser observer "join-delete-second"
       let target = min f.group0 f.group1
-      announcements <- watchEvent app f
       outcomes <-
         inOrderBehindGameLock holding observer target
           (pendingJoin app player target)
           (deleteEvent app organizer f.eventId)
+      -- The join committed its seat and membership first: had the delete run
+      -- first, the join would have answered Missing.
+      -- The broadcast is not asserted: the join's post-commit notification and
+      -- the delete's room teardown are unordered.
       outcomes `shouldBe` (Succeeded, Succeeded)
-      -- The join committed its seat and membership first.
-      announcements `shouldReturn` 1
       remaining observer f player `shouldReturn` (0, 0, 0, 0)
 
 -- The event delete handler locks the group games first
