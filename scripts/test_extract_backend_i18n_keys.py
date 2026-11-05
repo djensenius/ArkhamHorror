@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -2005,6 +2006,105 @@ run = campaignI18n $ labeled' "card.doTheThing" $ pure ()
         "changing an emitted key left the registry bytes or payloadSha256 unchanged",
     )
 
+    # Lines shifted above the emitting binding: blank lines, a comment and a
+    # new top-level definition that emits nothing.
+    shifted = {
+        **base,
+        "Test/Card.hs": card.replace(
+            "\nrun = ",
+            "\n\n\n-- a comment\n\nhelper :: Int -> Int\nhelper = (+ 1)\n\nrun = ",
+        ),
+    }
+    check(
+        extractor.canonical_bytes(registry_of(shifted)) == payload,
+        "shifting lines above an emitting key site changed the registry bytes",
+    )
+
+
+DYNAMIC_CARD = """module Test.Card where
+
+import Test.Helpers
+
+other k = campaignI18n $ do
+  labeled' (keyFor k) $ pure ()
+  labeled' (keyFor k) $ pure ()
+  labeled' "card.twice" $ pure ()
+  labeled' "card.twice" $ pure ()
+
+instance RunMessage   Foo where
+  runMessage msg a = campaignI18n $ labeled' "card.inInstance" $ pure a
+"""
+
+
+def test_dynamic_sites_are_line_independent() -> None:
+    base = {"Test/Helpers.hs": HELPERS, "Test/Card.hs": DYNAMIC_CARD}
+    payload = extractor.canonical_bytes(registry_of(base))
+    shifted = {
+        **base,
+        "Test/Card.hs": DYNAMIC_CARD.replace(
+            "\nother k = ",
+            "\n\n-- a comment\n\nhelper :: Int -> Int\nhelper = (+ 1)\n\n\nother k = ",
+        ),
+    }
+    check(
+        extractor.canonical_bytes(registry_of(shifted)) == payload,
+        "shifting lines above a dynamic site changed the registry bytes",
+    )
+
+
+def test_sites_are_named_by_file_and_top_level_binding() -> None:
+    artifact = registry_of({"Test/Helpers.hs": HELPERS, "Test/Card.hs": DYNAMIC_CARD})
+    by_key = {entry["key"]: entry for entry in artifact["keys"]}
+
+    twice = by_key.get("standalone.testCampaign.label.card.twice", {})
+    check(
+        twice.get("site") == "Test/Card.hs#other" and twice.get("sites") == 2,
+        f"the same key twice in one binding should be one site counted twice: {twice}",
+    )
+    instance = by_key.get("standalone.testCampaign.label.card.inInstance", {})
+    check(
+        instance.get("site") == "Test/Card.hs#instance RunMessage Foo",
+        f"an instance-method site should name the normalised instance head: {instance}",
+    )
+
+    dynamic = artifact["dynamicSites"]
+    check(
+        dynamic["sites"]
+        == [
+            {
+                "site": "Test/Card.hs#other",
+                "emitter": "labeled'",
+                "reason": "non-literal key",
+                "class": "runtime-key",
+                "count": 2,
+            }
+        ]
+        and dynamic["total"] == 2,
+        f"two dynamic sites in one binding should be one entry with count 2: {dynamic}",
+    )
+
+    line_site = re.compile(r"\.hs:\d+$")
+    for entry in [*artifact["keys"], *dynamic["sites"]]:
+        check(line_site.search(entry["site"]) is None, f"a registry site still names a line: {entry}")
+
+    with tempfile.TemporaryDirectory() as directory:
+        library = Path(directory) / "library"
+        for name, text in {"Test/Helpers.hs": HELPERS, "Test/Card.hs": DYNAMIC_CARD}.items():
+            path = library / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        report = Path(directory) / "dynamic.tsv"
+        extractor.build_artifact(dynamic_report=report, library=library)
+        lines = report.read_text(encoding="utf-8").splitlines()
+    check(
+        lines
+        == [
+            "Test/Card.hs:6\tother\tlabeled'\tnon-literal key",
+            "Test/Card.hs:7\tother\tlabeled'\tnon-literal key",
+        ],
+        f"--dynamic-report should keep exact file:line locations: {lines}",
+    )
+
 
 def test_committed_registry_properties() -> None:
     artifact = json.loads(ARTIFACT.read_text(encoding="utf-8"))
@@ -2086,6 +2186,14 @@ def test_committed_registry_properties() -> None:
     )
     for site in artifact["dynamicSites"]["sites"]:
         check("class" in site and "reason" in site, f"unclassified site {site}")
+    check(
+        sum(site.get("count", 0) for site in artifact["dynamicSites"]["sites"])
+        == artifact["dynamicSites"]["total"],
+        "dynamicSites.total is not the sum of the grouped site counts",
+    )
+    line_site = re.compile(r"\.hs:\d+$")
+    for entry in [*artifact["keys"], *artifact["dynamicSites"]["sites"]]:
+        check(line_site.search(entry["site"]) is None, f"a committed registry site names a line: {entry}")
 
 
 TESTS = (
@@ -2164,6 +2272,8 @@ TESTS = (
     test_only_known_caller_scope_alias_reasons_are_classified,
     test_a_heading_story_emits_its_title_and_body,
     test_the_registry_digest_covers_the_extracted_surface_not_the_input_files,
+    test_dynamic_sites_are_line_independent,
+    test_sites_are_named_by_file_and_top_level_binding,
     test_committed_registry_properties,
 )
 
