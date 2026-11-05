@@ -12,6 +12,7 @@ module Api.Handler.Arkham.Game.Bug (
   classifyErrorDiagnostic,
   classifyHeadObjectError,
   runBugUploadPolicy,
+  runBugUploadGuarded,
   runBugUploadWithEnvDiscovery,
   runBugUploadWithDiscovery,
   runHeadObjectAction,
@@ -102,6 +103,10 @@ data BugUploadFailure
   = CredentialDiscoveryFailed
   | HeadCheckFailed AwsErrorDiagnostic
   | PutObjectFailed AwsErrorDiagnostic
+  | -- | Any other synchronous exception while uploading after discovery: a
+    -- non-Amazonka exception from 'send', a lazily failing 'Env', or a
+    -- 'runResourceT' cleanup failure. The exception itself is dropped unseen.
+    UploadFailed
   deriving stock (Eq, Show)
 
 {- | Sequencing/policy seam for the protected upload.
@@ -146,6 +151,19 @@ still propagate.
 -}
 runBugUploadWithDiscovery :: MonadUnliftIO m => m env -> (env -> m BugUploadOutcome) -> m BugUploadOutcome
 runBugUploadWithDiscovery discoverEnv = runBugUploadWithEnvDiscovery (tryAny discoverEnv)
+
+{- | Run the upload after discovery so that any synchronous exception it
+throws -- not only Amazonka's 'Error', which the HeadObject\/PutObject actions
+already classify -- becomes 'UploadFailed'. The outcome is forced with
+'evaluate' inside the guard, so a lazy throw cannot escape it later. The
+exception itself is dropped unseen, so its text can reach neither the log nor
+the response. Asynchronous exceptions still propagate.
+-}
+runBugUploadGuarded :: MonadUnliftIO m => m BugUploadOutcome -> m BugUploadOutcome
+runBugUploadGuarded upload =
+  tryAny (upload >>= liftIO . evaluate) <&> \case
+    Left _ -> BugUploadFailed UploadFailed
+    Right outcome -> outcome
 
 {- | Classify a HeadObject failure using the exact Amazonka SDK error type.
 
@@ -225,6 +243,7 @@ describeBugUploadFailure subject = \case
   CredentialDiscoveryFailed -> "AWS credential discovery failed for " <> subject
   HeadCheckFailed diag -> "HeadObject failed for " <> subject <> ": " <> tshow diag
   PutObjectFailed diag -> "PutObject failed for " <> subject <> ": " <> tshow diag
+  UploadFailed -> "S3 upload failed for " <> subject
 
 {- | Stores one export under an S3 object key in the bug bucket. Production uses
 'awsBugUpload'; tests supply a stub built from the same policy seams so they
@@ -245,7 +264,7 @@ awsBugUploadWith :: IO Env -> BugUploadTransport
 awsBugUploadWith discoverEnv objectKey jsonBody =
   runBugUploadWithDiscovery
     discoverEnv
-    \env -> runResourceT do
+    \env -> runBugUploadGuarded $ runResourceT do
       result <-
         runBugUploadPolicy
           (runHeadObjectAction (try @_ @Error (send env (newHeadObject bucket key))))
