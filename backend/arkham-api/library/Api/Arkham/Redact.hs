@@ -20,7 +20,8 @@ What it does, for every investigator object in @investigators@,
     kept, which is what makes 'redactFor' idempotent.
   * Leaves investigators the viewer controls otherwise untouched. Control is
     the investigator's @playerId@ field matching one of the viewer's seats; an
-    investigator with no @playerId@ is controlled by nobody.
+    investigator with no @playerId@, or with the nil @playerId@ PublicGame
+    uses for seatless investigators, is controlled by nobody.
   * For every other investigator, empties the hidden zones listed in
     'hiddenZoneKeys' (array stays an array, object stays an object, @null@
     stays @null@). That includes @excludeFromMulligan@, which holds the card
@@ -40,7 +41,8 @@ map that is not an object becomes @{}@, and a map entry that is not an object
 is dropped.
 
 And for the @log@ tail: a structured row (or child entry) whose @audience@ is
-@OnlyPlayer p@ is dropped unless the viewer holds seat @p@; a spectator sees
+@OnlyPlayer p@ is dropped unless the viewer holds seat @p@ (the nil player
+id is never a seat); a spectator sees
 only @Everyone@ entries. A structured row with no @contents@, a structured
 entry that is not an object, and a structured entry with no readable audience
 are all dropped (fail closed), and a @log@ or @children@ that is not an
@@ -65,11 +67,12 @@ module Api.Arkham.Redact (
   investigatorMapKeys,
 ) where
 
-import Arkham.Id (PlayerId)
+import Arkham.Id (PlayerId (PlayerId))
 import Arkham.Log.Entry (LogAudience (Everyone, OnlyPlayer))
 import Arkham.Modifier (ModifierType (TopCardOfDeckIsRevealed))
 import Data.Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.UUID (nil)
 import Data.Vector qualified as V
 import Relude
 
@@ -83,14 +86,25 @@ data Viewer
   | ViewerSpectator
   deriving stock (Show, Eq)
 
+{- | The viewer's real seats. The nil player id is never a seat: PublicGame
+uses it as the sentinel for investigators nobody plays (killed ones and
+other-campaign ones rebuilt from deck lists), so it is dropped here.
+-}
 viewerSeats :: Viewer -> [PlayerId]
 viewerSeats = \case
-  ViewerSeats seats -> toList seats
+  ViewerSeats seats -> filter (/= nilPlayer) (toList seats)
   ViewerSpectator -> []
 
--- | Whether the viewer controls an investigator with this encoded @playerId@.
+nilPlayer :: PlayerId
+nilPlayer = PlayerId nil
+
+{- | Whether the viewer controls an investigator with this encoded @playerId@.
+An investigator whose @playerId@ is the nil sentinel is controlled by nobody,
+even a viewer whose seats include the nil player id.
+-}
 viewerControls :: Viewer -> Value -> Bool
-viewerControls viewer pid = any ((== pid) . toJSON) (viewerSeats viewer)
+viewerControls viewer pid =
+  pid /= toJSON nilPlayer && any ((== pid) . toJSON) (viewerSeats viewer)
 
 -- | The top-level PublicGame maps whose values are investigator objects.
 investigatorMapKeys :: [Key]

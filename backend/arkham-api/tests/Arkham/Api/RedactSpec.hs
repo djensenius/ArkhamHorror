@@ -32,7 +32,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
-import Data.UUID (nil)
+import Data.UUID (fromWords, nil)
 import TestImport
 
 {- | A running campaign scenario (Night of the Zealot, The Gathering) with:
@@ -424,6 +424,46 @@ spec = describe "Api.Arkham.Redact.redactFor" do
               ]
         , "otherInvestigators" .= Aeson.object []
         ]
+
+  it "treats the nil playerId sentinel as uncontrolled, even for a viewer seated as nil (l)" do
+    let nilSeat = PlayerId nil
+        realSeat = PlayerId (fromWords 0 0 0 1)
+        investigator pid =
+          Aeson.object ["playerId" .= pid, "hand" .= [1 :: Int, 2], "deck" .= [3 :: Int]]
+        hidden pid =
+          Aeson.object
+            [ "playerId" .= pid
+            , "hand" .= ([] :: [Int])
+            , "deck" .= ([] :: [Int])
+            , "handCount" .= (2 :: Int)
+            ]
+        shown pid =
+          Aeson.object
+            ["playerId" .= pid, "hand" .= [1 :: Int, 2], "deck" .= [3 :: Int], "handCount" .= (2 :: Int)]
+        onlyNil =
+          toJSON
+            (LogRowStructured (mkLogEntry Chat [LogText "only nil"]) {logEntryAudience = OnlyPlayer nilSeat})
+        game =
+          Aeson.object
+            [ "investigators"
+                .= Aeson.object ["seatless" .= investigator nilSeat, "seated" .= investigator realSeat]
+            , "killedInvestigators" .= Aeson.object ["killed" .= investigator nilSeat]
+            , "log" .= [onlyNil]
+            ]
+        expected seatedView =
+          Aeson.object
+            [ "investigators"
+                .= Aeson.object ["seatless" .= hidden nilSeat, "seated" .= seatedView realSeat]
+            , "killedInvestigators" .= Aeson.object ["killed" .= hidden nilSeat]
+            , "log" .= ([] :: [Aeson.Value])
+            ]
+    -- (a) A viewer whose only seat is the nil player id controls nothing.
+    redactFor (ViewerSeats (Set.singleton nilSeat)) game `shouldBe` expected hidden
+    -- (b) A viewer holding a real seat plus the nil id sees only the real seat's
+    -- zones; the same holds for an ordinary viewer and a spectator.
+    redactFor (ViewerSeats (Set.fromList [realSeat, nilSeat])) game `shouldBe` expected shown
+    redactFor (ViewerSeats (Set.singleton realSeat)) game `shouldBe` expected shown
+    redactFor ViewerSpectator game `shouldBe` expected hidden
 
   it "fails closed on malformed structured log rows (k)" do
     let everyone = Aeson.object ["tag" .= ("Everyone" :: Text)]
