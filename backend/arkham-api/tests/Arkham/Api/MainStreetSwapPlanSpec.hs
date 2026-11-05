@@ -13,6 +13,7 @@ import Api.Handler.Arkham.Games.Shared (
   swapInvestigatorState,
   validateSwapOrdinals,
  )
+import Arkham.Calculation (GameCalculation (Fixed))
 import Arkham.Card.Id (unsafeMakeCardId)
 import Arkham.Classes.Entity (attr, overAttrs)
 import Arkham.Difficulty (Difficulty (Easy))
@@ -26,13 +27,15 @@ import Arkham.Epic.Types (
 import Arkham.Game (Game, newScenario, setInitialScenarioMeta)
 import Arkham.Game qualified as Game
 import Arkham.Game.State (GameState (IsActive))
-import Arkham.Id (InvestigatorId, LocationId (..), PlayerId (..))
+import Arkham.Id (InvestigatorId, LocationId (..), PlayerId (..), SkillTestId (..))
 import Arkham.Investigator (lookupInvestigator)
 import Arkham.Investigator.Types (Investigator, investigatorPlacement)
 import Arkham.Location (lookupLocation)
 import Arkham.Phase (Phase (..))
 import Arkham.Placement (Placement (AtLocation, Unplaced))
 import Arkham.Question (Question (ChooseOne))
+import Arkham.SkillTest.Base (SkillTestDifficulty (..), initSkillTest)
+import Arkham.SkillType (SkillType (SkillIntellect))
 import Arkham.Prelude
 import Data.Map.Strict qualified as Map
 import Data.UUID qualified as UUID
@@ -102,6 +105,21 @@ swapGames firstGame secondGame = do
       (mainStreetSwapSide (GroupOrdinal 1) secondGame)
   let (firstGame', secondGame', _, _) = swapInvestigatorState plan firstGame secondGame
   pure (firstGame', secondGame')
+
+-- | The game with its investigator in the middle of a skill test.
+testingSkill :: InvestigatorId -> Game -> Game
+testingSkill iid game =
+  game
+    { Game.gameSkillTest =
+        Just
+          $ initSkillTest
+            (SkillTestId $ UUID.fromWords 0 0 4 0)
+            iid
+            iid
+            iid
+            SkillIntellect
+            (SkillTestDifficulty $ Fixed 2)
+    }
 
 placementIn :: InvestigatorId -> Game -> Maybe Placement
 placementIn iid game =
@@ -238,6 +256,23 @@ spec = do
         `shouldBe` [False, False, False]
       resumable playing {Game.gameRunWindows = False} `shouldBe` False
       resumable (newScenario "85001" 1 2 Easy False) `shouldBe` False
+
+    it "does not resume a game with a skill test in progress" do
+      -- The swap would drop the test's queued continuation, and the re-ask
+      -- would open a plain player window instead of finishing the test.
+      mainStreetSideResumable (mainStreetSwapSide (GroupOrdinal 0) (testingSkill roland (readyGame roland 0 mainStreetA)))
+        `shouldBe` False
+
+  describe "planMainStreetSwap on games" do
+    it "refuses either group while its game has a skill test in progress" do
+      let
+        firstGame = readyGame roland 0 mainStreetA
+        secondGame = readyGame daisy 1 mainStreetB
+      void (swapGames (testingSkill roland firstGame) secondGame)
+        `shouldBe` Left (SwapNotReady (GroupOrdinal 0))
+      void (swapGames firstGame (testingSkill daisy secondGame))
+        `shouldBe` Left (SwapNotReady (GroupOrdinal 1))
+      void (swapGames firstGame secondGame) `shouldBe` Right ()
 
   describe "swapInvestigatorState" do
     it "places each moved investigator at the Main Street of the game it moved into" do

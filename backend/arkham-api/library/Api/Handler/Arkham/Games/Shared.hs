@@ -1642,8 +1642,8 @@ data MainStreetSwapError
     SwapGameMissing ArkhamGameId
   | -- | The group's scenario has not readied an investigator at Main Street,
     -- the event's 'MainStreetReady' counter for the group is spent, or the
-    -- group's game is not playing its investigation phase (see
-    -- 'mainStreetSideResumable').
+    -- group's game is not playing its investigation phase or has a skill
+    -- test in progress (see 'mainStreetSideResumable').
     SwapNotReady GroupOrdinal
   | -- | The group's game has no Main Street.
     SwapNoMainStreet GroupOrdinal
@@ -1697,7 +1697,9 @@ data MainStreetSwapSide = MainStreetSwapSide
   -- empty queue the engine resumes by itself (it asks the turn investigator's
   -- PlayerWindow, or chooses the next turn). The swap empties the queue and
   -- drops the outgoing player's question, so a game anywhere else (e.g. at a
-  -- Mythos encounter draw) would be left unable to continue.
+  -- Mythos encounter draw) would be left unable to continue. Nor may a skill
+  -- test be in progress: the swap would discard its queued continuation while
+  -- the game kept the test, and the re-ask would open a plain player window.
   }
 
 mainStreetSwapSide :: GroupOrdinal -> Game -> MainStreetSwapSide
@@ -1713,7 +1715,10 @@ mainStreetSwapSide ordinal game =
           <$> find ((== CardCode "89006") . toCardCode) (toList $ entitiesLocations $ gameEntities game)
     , mainStreetSideInvestigators = entitiesInvestigators $ gameEntities game
     , mainStreetSideResumable =
-        gameGameState game == IsActive && gamePhase game == InvestigationPhase && gameRunWindows game
+        gameGameState game == IsActive
+          && gamePhase game == InvestigationPhase
+          && gameRunWindows game
+          && null (gameSkillTest game) -- no skill test in progress
     }
  where
   scenarioReady :: Scenario -> Maybe InvestigatorId
@@ -1732,7 +1737,7 @@ data MainStreetSwapPlan = MainStreetSwapPlan
 
 {- | Both groups must have readied an investigator who is still in their game
 and still at their Main Street, and both games must be playing their
-investigation phase. Neither game may already hold, besides its outgoing
+investigation phase with no skill test in progress. Neither game may already hold, besides its outgoing
 investigator, the investigator it would receive, in any printing. Two groups
 that readied the same investigator swap their copies.
 -}

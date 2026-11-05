@@ -12,6 +12,7 @@ module Postgres.MainStreetSwapSpec (spec) where
 import Api.Arkham.Epic (modifySharedStateLocked)
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (WithFriends))
 import Api.Handler.Arkham.Games.Shared (MainStreetSwapSide (..), mainStreetSwapSide)
+import Arkham.Calculation (GameCalculation (Fixed))
 import Arkham.Card.Id (unsafeMakeCardId)
 import Arkham.Classes.Entity (attr, overAttrs)
 import Arkham.Difficulty (Difficulty (Easy))
@@ -28,7 +29,7 @@ import Arkham.Epic.Types (
  )
 import Arkham.Game qualified as Game
 import Arkham.Game.State (GameState (IsActive, IsPending))
-import Arkham.Id (InvestigatorId, LocationId (..), PlayerId (..))
+import Arkham.Id (InvestigatorId, LocationId (..), PlayerId (..), SkillTestId (..))
 import Arkham.Investigator (lookupInvestigator)
 import Arkham.Investigator.Types (investigatorPlacement)
 import Arkham.Location (lookupLocation)
@@ -36,6 +37,8 @@ import Arkham.Message (Message (BeginRound))
 import Arkham.Phase (Phase (InvestigationPhase, MythosPhase))
 import Arkham.Placement (Placement (AtLocation, Unplaced))
 import Arkham.Question (Question (ChooseOne, PlayerWindowChooseOne))
+import Arkham.SkillTest.Base (SkillTestDifficulty (..), initSkillTest)
+import Arkham.SkillType (SkillType (SkillIntellect))
 import Control.Concurrent (threadDelay)
 import Data.Aeson (Value, decode, encode, object, toJSON, (.=))
 import Data.Map.Strict qualified as Map
@@ -158,6 +161,31 @@ spec harness app seedUser = describe "Main Street swap" do
       inactive <- rows connection f
       requestSwap app f.organizer f.eventId 0 1 `shouldReturn` notReady
       rows connection f `shouldReturn` inactive
+
+  it "refuses a group whose game has a skill test in progress with 409 and changes no row" $
+    withConnection harness \connection -> do
+      f <- seedFixture connection seedUser "swap-skill-test"
+      -- Group 1 is in its investigation phase, but a skill test is under way
+      -- (e.g. a teammate investigating). The swap would drop the test's
+      -- queued continuation while the game kept the test.
+      sid <- SkillTestId <$> nextRandom
+      askStale connection f.side1
+      updateGame connection f.side1 \g ->
+        g
+          { Game.gameSkillTest =
+              Just
+                $ initSkillTest
+                  sid
+                  f.side1.investigator
+                  f.side1.investigator
+                  f.side1.investigator
+                  SkillIntellect
+                  (SkillTestDifficulty $ Fixed 2)
+          }
+      original <- rows connection f
+      requestSwap app f.organizer f.eventId 0 1 `shouldReturn` notReady
+      requestSwap app f.organizer f.eventId 1 0 `shouldReturn` notReady
+      rows connection f `shouldReturn` original
 
   it "refuses a spent readiness with 409 and changes no row" $
     withConnection harness \connection -> do
