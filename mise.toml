@@ -42,11 +42,19 @@ run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/check-schema-revisio
 
 [tasks."contracts:openapi"]
 description = "Lint the REST OpenAPI document"
-run = "npx --yes @redocly/cli@2.49.0 lint contracts/openapi.yaml"
+# Installs the exact transitive tree from tools/contract-validators/openapi/package-lock.json.
+run = [
+  "npm --prefix tools/contract-validators/openapi ci --ignore-scripts --no-audit --no-fund --prefer-offline",
+  "tools/contract-validators/openapi/node_modules/.bin/redocly lint contracts/openapi.yaml",
+]
 
 [tasks."contracts:asyncapi"]
 description = "Validate the WebSocket AsyncAPI document"
-run = "npx --yes @asyncapi/cli@6.0.2 validate contracts/asyncapi.yaml"
+# Installs the exact transitive tree from tools/contract-validators/asyncapi/package-lock.json.
+run = [
+  "npm --prefix tools/contract-validators/asyncapi ci --ignore-scripts --no-audit --no-fund --prefer-offline",
+  "tools/contract-validators/asyncapi/node_modules/.bin/asyncapi validate contracts/asyncapi.yaml",
+]
 
 [tasks."contracts:routes"]
 description = "Validate the exact backend route inventory"

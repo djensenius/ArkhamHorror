@@ -1,0 +1,9 @@
+{
+  "name": "contract-validators-openapi",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Locked install of the OpenAPI linter used by mise run contracts:openapi",
+  "dependencies": {
+    "@redocly/cli": "2.49.0"
+  }
+}
