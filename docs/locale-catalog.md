@@ -237,10 +237,12 @@ anyway. Sites carry no line numbers either: each key's `keys[].site` is
 `<file>#<binding>`, where the binding is the enclosing top-level function or
 bind name, or the instance or class head without its context (`instance
 RunMessage Foo`), and `<top>` for anything else. When a key has several sites,
-the smallest by file, binding and emitter is named; `keys[].sites` still counts
-its distinct emitting locations. `dynamicSites.sites[]` is grouped the same way,
-by site, emitter, reason and class, with a `count`, and `dynamicSites.total` is
-the sum of those counts. Inserting or removing lines in a backend module
+the smallest by file, binding and emitter is named; `keys[].sites` counts its
+distinct (file, binding, emitter) triples, so two identical calls in one
+binding are one site whether or not a newline separates them.
+`dynamicSites.sites[]` is grouped the same way, by site, emitter, reason and
+class, with a `count` of unresolved occurrences (not distinct lines), and
+`dynamicSites.total` is the sum of those counts. Inserting or removing lines in a backend module
 therefore leaves the registry byte-identical unless the emitted keys or the
 set of unresolved sites change. For triage, `extract-backend-i18n-keys.py
 --dynamic-report <file>` still writes every unresolved site with its exact

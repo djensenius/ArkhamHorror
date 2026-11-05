@@ -41,8 +41,10 @@ the inputs. The locale catalog binds to this digest as `backend.sourceSha256`.
 
 For the same reason the artifact names sites as `<file>#<binding>` (the
 enclosing top-level function, bind, instance or class head), never by line:
-inserting or removing lines leaves it unchanged. `--dynamic-report` still
-writes exact `file:line` locations for triage.
+inserting or removing lines leaves it unchanged. A key's `sites` counts its
+distinct (file, binding, emitter) triples and a dynamic group's `count` its
+unresolved occurrences, so neither moves when a newline splits two calls.
+`--dynamic-report` still writes exact `file:line` locations for triage.
 """
 
 import argparse
@@ -3455,7 +3457,11 @@ def build_artifact(
     keys = []
     for key in sorted(emitted):
         entry = emitted[key]
-        sites = {(site["file"], site["line"], site["emitter"]) for site in entry["sites"]}
+        # A key's sites are its distinct (file, top-level binding, emitter)
+        # triples, the same identity `site` names, never its lines: counting
+        # by line would let a newline between two identical calls change
+        # `sites` (and so the bytes) without changing what is emitted.
+        sites = {(site["file"], site["binding"], site["emitter"]) for site in entry["sites"]}
         # One site per key: enough to trace a requirement back to the code
         # that emits it. It is named by file and top-level binding, never by
         # line, so an edit that only shifts lines leaves the artifact
@@ -3488,6 +3494,8 @@ def build_artifact(
 
     # Unresolved sites are grouped by file and top-level binding, not listed
     # by line, for the same reason as `keys[].site`; `count` keeps the total.
+    # It counts every unresolved occurrence, never distinct lines, so a
+    # newline between two unresolved calls leaves it unchanged.
     dynamic_groups: dict[tuple[str, str, str, str], int] = {}
     for site in dynamic:
         group = (

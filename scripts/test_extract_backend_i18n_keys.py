@@ -2058,8 +2058,8 @@ def test_sites_are_named_by_file_and_top_level_binding() -> None:
 
     twice = by_key.get("standalone.testCampaign.label.card.twice", {})
     check(
-        twice.get("site") == "Test/Card.hs#other" and twice.get("sites") == 2,
-        f"the same key twice in one binding should be one site counted twice: {twice}",
+        twice.get("site") == "Test/Card.hs#other" and twice.get("sites") == 1,
+        f"the same key twice from one emitter in one binding should be one site: {twice}",
     )
     instance = by_key.get("standalone.testCampaign.label.card.inInstance", {})
     check(
@@ -2103,6 +2103,50 @@ def test_sites_are_named_by_file_and_top_level_binding() -> None:
             "Test/Card.hs:7\tother\tlabeled'\tnon-literal key",
         ],
         f"--dynamic-report should keep exact file:line locations: {lines}",
+    )
+
+
+SAME_LINE_CARD = """module Test.Card where
+
+import Test.Helpers
+
+other k = campaignI18n $ do
+  (labeled' "card.twice" $ pure ()) >> (labeled' "card.twice" $ pure ())
+  (labeled' (keyFor k) $ pure ()) >> (labeled' (keyFor k) $ pure ())
+"""
+
+SPLIT_LINE_CARD = """module Test.Card where
+
+import Test.Helpers
+
+other k = campaignI18n $ do
+  (labeled' "card.twice" $ pure ()) >>
+    (labeled' "card.twice" $ pure ())
+  (labeled' (keyFor k) $ pure ()) >>
+    (labeled' (keyFor k) $ pure ())
+"""
+
+
+def test_splitting_identical_calls_across_lines_leaves_the_registry_unchanged() -> None:
+    same_line = registry_of({"Test/Helpers.hs": HELPERS, "Test/Card.hs": SAME_LINE_CARD})
+    split_line = registry_of({"Test/Helpers.hs": HELPERS, "Test/Card.hs": SPLIT_LINE_CARD})
+    check(
+        extractor.canonical_bytes(same_line) == extractor.canonical_bytes(split_line),
+        "a newline between two identical emitter calls changed the registry bytes: "
+        f"{same_line['keys']} {same_line['dynamicSites']} vs "
+        f"{split_line['keys']} {split_line['dynamicSites']}",
+    )
+    twice = {entry["key"]: entry for entry in split_line["keys"]}.get(
+        "standalone.testCampaign.label.card.twice", {}
+    )
+    check(
+        twice.get("sites") == 1,
+        f"two identical calls in one binding should be one (file, binding, emitter) site: {twice}",
+    )
+    groups = split_line["dynamicSites"]["sites"]
+    check(
+        [group.get("count") for group in groups] == [2] and split_line["dynamicSites"]["total"] == 2,
+        f"a dynamic group should count both unresolved calls, not distinct lines: {groups}",
     )
 
 
@@ -2325,6 +2369,7 @@ TESTS = (
     test_the_registry_digest_covers_the_extracted_surface_not_the_input_files,
     test_dynamic_sites_are_line_independent,
     test_sites_are_named_by_file_and_top_level_binding,
+    test_splitting_identical_calls_across_lines_leaves_the_registry_unchanged,
     test_sites_drop_instance_context_and_name_the_outer_binding,
     test_a_key_emitted_from_two_bindings_is_sited_at_the_least_binding,
     test_committed_registry_properties,
