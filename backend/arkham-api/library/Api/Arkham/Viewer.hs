@@ -39,6 +39,10 @@ data GameView = FullView | RedactedView Viewer
   * the caller owns every row (and there is at least one): 'FullView';
   * the caller owns some rows: 'ViewerSeats' with those seats;
   * the caller owns none (or the game has no rows): 'ViewerSpectator'.
+
+Known edges of 'FullView' (tracked for TASK-2.22.5): it can include imported
+seats nobody has claimed yet, and old replay steps from before a Main Street
+swap, whose investigators carried other seats.
 -}
 gameViewFor :: UserId -> [(UserId, PlayerId)] -> GameView
 gameViewFor userId rows
@@ -50,7 +54,7 @@ gameViewFor userId rows
   (own, others) = partition ((== userId) . fst) rows
 
 {- | The caller's 'GameView' of a game, from all of the game's
-@arkham_players@ rows (one indexed-by-game query; a game has a handful).
+@arkham_players@ rows (one query by game id; a game has a handful of rows).
 'selectList' rather than @getBy UniquePlayer@: that constraint is not in the
 database, and Solo games store one row per seat for the same user.
 -}
