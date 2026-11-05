@@ -50,6 +50,7 @@ import Control.Monad.Logger (liftLoc, runLoggingT)
 import Data.Bugsnag.Settings qualified as Bugsnag
 import Data.ByteString.Char8 qualified as BS8
 import Data.CaseInsensitive (foldCase, mk)
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.Default.Class (def)
 import Data.List (lookup, partition)
 import Data.Pool (destroyAllResources)
@@ -487,12 +488,17 @@ skipArkhamDBLogging logWare app req sendResponse
 -- Fail-closed backstop for skipArkhamDBLogging: skip logging an irregular path
 -- that mentions a credential route name anywhere, whatever a proxy would
 -- normalise it to. Irregular: a decoded segment other than a single trailing
--- empty one is "", "." or "..", or contains ';', '/', '\\' or '%'. Mentions:
--- after percent-decoding the raw path until it stops changing (at most 8
--- rounds, to catch double encoding), casefolding, splitting on '/' and '\\'
--- and cutting at ';', some piece is exactly a credential route name. Exact
--- pieces keep "arkhamdb-other" or "arkham-builder" logged. Such requests are
--- 404s or redirects, so over-excluding them never hides a handled request.
+-- empty one is "", "." or "..", or contains a character outside safePchar.
+-- That allowlist rejects '/', '\\', ';', '%' (a decoded '%' means double
+-- encoding), NUL, controls, spaces and every non-ASCII character, including
+-- U+FFFD (what lenient UTF-8 decoding leaves of an overlong separator such as
+-- "%C0%AF") and look-alike slashes such as U+FF0F, U+FF3C, U+2215 and U+2044.
+-- Mentions: after percent-decoding the raw path until it stops changing (at
+-- most 8 rounds, to catch double encoding) and casefolding, splitting on every
+-- character outside [a-z0-9-] leaves some piece that is exactly a credential
+-- route name. Exact pieces keep "arkhamdb-other" or "arkham-builder" logged.
+-- Accepted over-exclusion: a path with an irregular segment whose pieces
+-- include an exact credential name is dropped from the log but still served.
 isIrregularCredentialPath :: [Text] -> ByteString -> Bool
 isIrregularCredentialPath decodedSegments rawPath = irregular && mentionsCredentialName
  where
@@ -501,11 +507,14 @@ isIrregularCredentialPath decodedSegments rawPath = irregular && mentionsCredent
     _ -> decodedSegments
   irregular = any irregularSegment segments
   irregularSegment segment =
-    segment `elem` ["", ".", ".."] || T.any (`elem` [';', '/', '\\', '%']) segment
+    segment `elem` ["", ".", ".."] || T.any (not . safePchar) segment
+  -- RFC 3986 pchar without ';' (path parameters) and '%' (a decoded '%').
+  safePchar c =
+    isAsciiLower c || isAsciiUpper c || isDigit c || c `elem` ("-._~!$&'()*+,=:@" :: String)
+  isNameChar c = isAsciiLower c || isDigit c || c == '-'
   mentionsCredentialName =
     any (`elem` ["arkhamdb", "arkham-build"])
-      $ map (T.takeWhile (/= ';'))
-      $ T.split (`elem` ['/', '\\'])
+      $ T.split (not . isNameChar)
       $ T.toCaseFold (decodeUtf8 (fullyDecoded (8 :: Int) rawPath))
   fullyDecoded rounds path
     | rounds <= 0 || decoded == path = path

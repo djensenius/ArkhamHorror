@@ -1,6 +1,6 @@
 module Arkham.Api.GameBugUploadSpec (spec) where
 
-import Amazonka (Error (..))
+import Amazonka (Env, Error (..))
 import Amazonka.Error (serviceError)
 import Api.Handler.Arkham.Game.Bug (
   AwsErrorCategory (..),
@@ -8,13 +8,19 @@ import Api.Handler.Arkham.Game.Bug (
   BugUploadFailure (..),
   BugUploadOutcome (..),
   HeadObjectOutcome (..),
+  awsBugUploadWith,
   classifyHeadObjectError,
+  describeBugUploadFailure,
+  runBugUploadGuarded,
   runBugUploadPolicy,
+  runBugUploadWithDiscovery,
   runBugUploadWithEnvDiscovery,
   runHeadObjectAction,
   runPutObjectAction,
  )
 import Arkham.Prelude
+import Control.Exception (AsyncException (ThreadKilled), ErrorCall (..))
+import Control.Exception qualified as Base
 import Data.Text qualified as T
 import Network.HTTP.Client qualified as Client
 import Network.HTTP.Types.Status (Status, status403, status404, status429, status500)
@@ -55,6 +61,19 @@ transportFailure = TransportError httpExceptionFixture
 -- that cannot occur).
 httpExceptionFixture :: Client.HttpException
 httpExceptionFixture = Client.InvalidUrlException "https://arkham-horror-bugs.s3.amazonaws.com" "connection failure"
+
+-- | Text a failed credential discovery carries that must never surface.
+discoverySecret :: String
+discoverySecret = "aws-discovery-secret-must-never-leak-3c9e7"
+
+-- | Credential-discovery failures other than Amazonka's 'AuthError': an IO
+-- error (an unreadable credentials file) and a pure error (malformed config).
+discoveryFailures :: [IO a]
+discoveryFailures = [throwIO (userError discoverySecret), throwIO (ErrorCall discoverySecret)]
+
+-- | Text a failing upload after discovery carries that must never surface.
+sendSecret :: String
+sendSecret = "aws-send-secret-must-never-leak-8d41b"
 
 {- | Regression for #30: 'postApiV1ArkhamGameBugR' caught only 'Amazonka.Error'
 around HeadObject and treated *every* service error -- including
@@ -129,6 +148,59 @@ spec = describe "bug report upload" do
     it "sanitizes AWS credential discovery failures before the upload policy runs" do
       outcome <- runBugUploadWithEnvDiscovery (pure $ Left ()) (\() -> pure BugUploadSucceeded)
       outcome `shouldBe` BugUploadFailed CredentialDiscoveryFailed
+
+    it "sanitizes any synchronous credential discovery exception, not only AuthError, and never uploads" do
+      for_ discoveryFailures \failingDiscovery -> do
+        uploads <- newIORef (0 :: Int)
+        outcome <- runBugUploadWithDiscovery failingDiscovery \() -> modifyIORef' uploads (+ 1) >> pure BugUploadSucceeded
+        readIORef uploads `shouldReturn` 0
+        outcome `shouldBe` BugUploadFailed CredentialDiscoveryFailed
+        T.isInfixOf (pack discoverySecret) (tshow outcome) `shouldBe` False
+
+    -- base's throwIO: UnliftIO's would rewrap ThreadKilled as synchronous
+    it "lets an asynchronous exception during credential discovery propagate" do
+      runBugUploadWithDiscovery (Base.throwIO ThreadKilled) (\() -> pure BugUploadSucceeded)
+        `shouldThrow` (== ThreadKilled)
+
+    it "answers the production transport's failed credential discovery with the sanitized failure" do
+      for_ discoveryFailures \failingDiscovery ->
+        awsBugUploadWith failingDiscovery "exports/fixture.json" "{}"
+          `shouldReturn` BugUploadFailed CredentialDiscoveryFailed
+
+    it "answers a late, non-Amazonka exception from the production send path with the sanitized failure" do
+      -- discovery hands back an Env that only throws once send forces it
+      let lateEnv = Base.throw (userError sendSecret) :: Env
+      outcome <- awsBugUploadWith (pure lateEnv) "exports/fixture.json" "{}"
+      outcome `shouldBe` BugUploadFailed UploadFailed
+      let logged = case outcome of
+            BugUploadFailed failure -> describeBugUploadFailure "game fixture" failure
+            BugUploadSucceeded -> ""
+      logged `shouldBe` "S3 upload failed for game fixture"
+      T.isInfixOf (pack sendSecret) (tshow outcome) `shouldBe` False
+      T.isInfixOf (pack sendSecret) logged `shouldBe` False
+
+    it "sanitizes a synchronous upload exception, thrown or lazily returned, inside the guard" do
+      for_ [throwIO (ErrorCall sendSecret), pure (Base.throw (userError sendSecret))] \upload ->
+        runBugUploadGuarded upload `shouldReturn` BugUploadFailed UploadFailed
+
+    -- base's throwIO: UnliftIO's would rewrap ThreadKilled as synchronous
+    it "lets an asynchronous exception during the upload propagate" do
+      runBugUploadGuarded (Base.throwIO ThreadKilled) `shouldThrow` (== ThreadKilled)
+
+    -- the composition 'awsBugUploadWith' runs, with each send stubbed to throw
+    it "classifies a thrown Amazonka Error before the guard's catch-all, keeping its typed failure" do
+      let stubbed headSend putSend =
+            runBugUploadGuarded $
+              runBugUploadPolicy
+                (runHeadObjectAction (Base.try @Error headSend))
+                (runPutObjectAction (Base.try @Error putSend))
+          neverPut = Base.throwIO (ErrorCall "PutObject after a failed HeadObject") :: IO ()
+      stubbed (Base.throwIO (serviceErrorWithStatus status403) :: IO ()) neverPut
+        `shouldReturn` BugUploadFailed (HeadCheckFailed (AwsServiceFailure 403 AwsCategoryClientError))
+      stubbed (Base.throwIO transportFailure :: IO ()) neverPut
+        `shouldReturn` BugUploadFailed (HeadCheckFailed AwsTransportFailure)
+      stubbed (Base.throwIO (serviceErrorWithStatus status404) :: IO ()) (Base.throwIO (serviceErrorWithStatus status500) :: IO ())
+        `shouldReturn` BugUploadFailed (PutObjectFailed (AwsServiceFailure 500 AwsCategoryServerError))
 
     {- | Regression for the async-refresh/lazy-thunk audit: the diagnostic
     used to cross the 'runResourceT IO' -> 'Handler' boundary through a

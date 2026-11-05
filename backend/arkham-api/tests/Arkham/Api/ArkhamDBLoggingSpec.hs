@@ -3,7 +3,7 @@ module Arkham.Api.ArkhamDBLoggingSpec where
 import Application (makeLogWare)
 import Control.Exception (bracket)
 import Data.ByteString qualified as BS
-import Network.HTTP.Types (status200)
+import Network.HTTP.Types (decodePathSegments, parseQuery, status200)
 import Network.Wai qualified as Wai
 import Network.Wai.Test qualified as WaiTest
 import Relude
@@ -24,6 +24,15 @@ spec = for_ [True, False] \detailed ->
       it ("continues logging ordinary route " <> toString (decodeUtf8 path :: Text)) do
         output <- captureLog detailed path
         output `shouldSatisfy` BS.isInfixOf (loggedPath path)
+        when detailed $ output `shouldSatisfy` BS.isInfixOf "probe-completion-secret"
+    for_ rawProtectedPaths \path ->
+      it ("excludes OAuth query and completion body at raw " <> toString (decodeUtf8 path :: Text)) do
+        output <- captureRawLog detailed path
+        output `shouldBe` ""
+    for_ rawOrdinaryPaths \path ->
+      it ("continues logging ordinary raw route " <> toString (decodeUtf8 path :: Text)) do
+        output <- captureRawLog detailed path
+        output `shouldSatisfy` BS.isInfixOf path
         when detailed $ output `shouldSatisfy` BS.isInfixOf "probe-completion-secret"
 
 protectedPaths :: [ByteString]
@@ -185,6 +194,71 @@ irregularCredentialPaths =
   -- A regular non-credential ArkhamDB route stays excluded by its prefix.
   , "/api/v1/arkham/arkhamdb/status"
   ]
+    <> replacementCharPaths
+
+-- Overlong UTF-8 separators ("%C0%AF" and "%E0%80%AF" are '/', "%C0%AE" is
+-- '.') decode leniently to U+FFFD, which a proxy that wrongly decodes them
+-- would treat as a separator or dot. A segment with U+FFFD is irregular, and
+-- credential names are split on it.
+replacementCharPaths :: [ByteString]
+replacementCharPaths =
+  [ "/api/v1/arkham%C0%AFarkhamdb/callback"
+  , "/api/v1/arkham%E0%80%AFarkhamdb/callback"
+  , "/api/auth%C0%AFarkham-build/callback"
+  , "/api/auth%E0%80%AFarkham-build/callback"
+  , "/api/v1%C0%AFarkham-build/verify"
+  , "/api/v1%E0%80%AFarkham-build/authorize"
+  -- A literal U+FFFD between credential names.
+  , "/api/v1/arkham%EF%BF%BDarkhamdb/callback"
+  , "/api/v1/arkham%EF%BF%BDarkhamdb/link/complete"
+  , "/api/auth%EF%BF%BDarkham-build/callback"
+  , "/api/v1%EF%BF%BDarkham-build/verify"
+  , "/api/v1%EF%BF%BDarkham-build/authorize"
+  -- Only the irregular half matters: "arkhamdb" is already an exact piece.
+  , "/api/v1/arkham/x/%C0%AE%C0%AE/arkhamdb/callback"
+  , "/api/auth/x/%C0%AE%C0%AE/arkham-build/callback"
+  , "/api/v1/x/%C0%AE%C0%AE/arkham-build/verify"
+  -- Only the split half matters: the decoded segment already contains '%'.
+  , "/api/v1/arkham%25C0%25AFarkhamdb/callback"
+  , "/api/auth%25C0%25AFarkham-build/callback"
+  , "/api/v1%25C0%25AFarkham-build/verify"
+  ]
+    <> unsafeCharPaths
+
+-- A segment with any character outside RFC 3986 pchar (minus ';' and '%') is
+-- irregular: NUL, controls, a trailing space and look-alike slashes (U+FF0F,
+-- U+FF3C, U+2215, U+2044) decode to valid text that is no credential prefix,
+-- so only the allowlist keeps these out of the log.
+unsafeCharPaths :: [ByteString]
+unsafeCharPaths = concatMap unsafeCharProbes credentialPrefixes
+
+-- (parent, credential name, a route below it) for each credential prefix.
+credentialPrefixes :: [(ByteString, ByteString, ByteString)]
+credentialPrefixes =
+  [ ("/api/v1/arkham", "arkhamdb", "callback")
+  , ("/api/auth", "arkham-build", "callback")
+  , ("/api/v1", "arkham-build", "verify")
+  ]
+
+unsafeCharProbes :: (ByteString, ByteString, ByteString) -> [ByteString]
+unsafeCharProbes (parent, name, route) =
+  concat
+    [ [ parent <> "/" <> name <> c <> "/" <> route
+      , parent <> "/" <> name <> c
+      , parent <> "/" <> c <> name <> "/" <> route
+      ]
+    | c <- ["%00", "%09", "%0A", "%20"]
+    ]
+    <> concat
+      [ [ parent <> c <> name <> "/" <> route
+        , parent <> "/" <> name <> c <> route
+        ]
+      | c <- lookalikeSlashes
+      ]
+
+-- U+FF0F, U+FF3C, U+2215 and U+2044.
+lookalikeSlashes :: [ByteString]
+lookalikeSlashes = ["%EF%BC%8F", "%EF%BC%BC", "%E2%88%95", "%E2%81%84"]
 
 -- Empty segments must not suppress logging of ordinary routes.
 ordinaryPaths :: [ByteString]
@@ -220,29 +294,115 @@ ordinaryPaths =
   , "/api/auth/q%2Fr/../arkham-build-other/callback"
   -- An irregular path that names no credential route is still logged.
   , "/api/v1/arkham/x/../decks;y"
+  -- A U+FFFD or non-ASCII segment that names no exact credential route is
+  -- still logged.
+  , "/api/v1/arkham/decks%EF%BF%BD"
+  , "/api/v1/arkham/arkhamdb-other%EF%BF%BD"
+  , "/api/v1/arkham/card/%C3%A9"
   ]
+    <> unsafeCharOrdinaryPaths
+
+-- Unsafe characters next to a name that is not exactly a credential route
+-- name, or on a route that names none, do not suppress logging. Both setPath
+-- and Warp keep these in canonical form, so they log verbatim either way.
+unsafeCharOrdinaryPaths :: [ByteString]
+unsafeCharOrdinaryPaths =
+  [ "/api/v1/arkham/arkhamdb-other%00"
+  , "/api/v1/arkham/arkhamdb-other%09/x"
+  , "/api/v1/arkham/arkhamdb2%0A"
+  , "/api/v1/arkham/arkhamdb2%20"
+  , "/api/v1/arkham/arkhamdb-other%EF%BC%8Fx"
+  , "/api/v1/arkham/arkhamdb2%E2%88%95x"
+  , "/api/auth/arkham-build-other%00/callback"
+  , "/api/v1/arkham-builder%EF%BC%BCverify"
+  , "/api/v1/arkham/decks%09"
+  , "/api/v1/arkham/decks%00"
+  , "/api/v1/arkham/card/%C3%A9%20x"
+  , "/api/v1/arkham/shared-card-sets/%EF%BC%8F"
+  , "/api/v1/arkham/shared-card-sets/%E2%81%84"
+  , "/api/v1/arkham/shared-card-sets/my%20set"
+  ]
+
+-- Raw paths exactly as a client sent them, which Warp keeps in rawPathInfo
+-- (see captureRawLog), so an overlong "%C0%AF" is not re-encoded.
+rawProtectedPaths :: [ByteString]
+rawProtectedPaths =
+  [ "/api/v1/arkham%C0%AFarkhamdb/callback"
+  , "/api/v1/arkham%c0%afarkhamdb/link/complete"
+  , "/api/auth%C0%AFarkham-build/callback"
+  , "/api/v1%C0%AFarkham-build/verify"
+  , "/api/v1/arkham/x/%C0%AE%C0%AE/arkhamdb/callback"
+  -- 3- and 4-byte overlong '/' and a double-encoded overlong '/'.
+  , "/api/v1/arkham%E0%80%AFarkhamdb/callback"
+  , "/api/v1/arkham%F0%80%80%AFarkhamdb/link/complete"
+  , "/api/v1/arkham%25C0%25AFarkhamdb/callback"
+  , "/api/auth%E0%80%AFarkham-build/callback"
+  , "/api/auth%F0%80%80%AFarkham-build/callback"
+  , "/api/auth%25C0%25AFarkham-build/callback"
+  , "/api/v1%E0%80%AFarkham-build/verify"
+  , "/api/v1%F0%80%80%AFarkham-build/verify"
+  , "/api/v1%25C0%25AFarkham-build/verify"
+  ]
+    <> unsafeCharPaths
+    -- Lowercase hex and Warp-shaped requests reach the same guard.
+    <> [ "/api/v1/arkham/arkhamdb%0a/callback"
+       , "/api/v1/arkham%ef%bc%8farkhamdb/callback"
+       , "/api/auth/arkham-build%0d/callback"
+       , "/api/v1%e2%88%95arkham-build/verify"
+       ]
+
+rawOrdinaryPaths :: [ByteString]
+rawOrdinaryPaths =
+  [ "/api/v1/arkham/decks%C0%AF"
+  , "/api/v1/arkham/arkhamdb-other%C0%AF"
+  , "/api/v1/arkham/card/%C3%A9"
+  , "/api/v1/arkham/arkhamdb-other%0a"
+  ]
+    <> unsafeCharOrdinaryPaths
 
 -- WaiTest.setPath re-encodes the decoded segments into rawPathInfo, which the
 -- logger prints, so a literal ';' in a probe path is logged as "%3B". This
 -- relies on ordinary probe paths avoiding any other character setPath re-encodes.
+-- It also re-encodes raw paths that are not canonical: an overlong "%C0%AF"
+-- decodes to two U+FFFD and is logged as "%EF%BF%BD%EF%BF%BD". Those probes
+-- still reach the guard, but captureRawLog keeps the raw bytes as Warp does.
 loggedPath :: ByteString -> ByteString
 loggedPath = BS.intercalate "%3B" . BS.split 59
 
+probeQuery :: ByteString
+probeQuery = "?code=probe-oauth-code&state=probe-oauth-state"
+
+probeRequest :: Wai.Request
+probeRequest =
+  WaiTest.defaultRequest
+    { Wai.requestMethod = "POST"
+    , Wai.requestHeaders = [("Content-Type", "application/json")]
+    }
+
+captureLog :: Bool -> ByteString -> IO ByteString
+captureLog detailed path = captureLogRequest detailed $ WaiTest.setPath probeRequest (path <> probeQuery)
+
+-- Like Warp: rawPathInfo is the path as received and pathInfo is decoded from
+-- it with lenient UTF-8. WaiTest.srequest leaves these fields unchanged.
+captureRawLog :: Bool -> ByteString -> IO ByteString
+captureRawLog detailed raw =
+  captureLogRequest detailed probeRequest
+    { Wai.rawPathInfo = raw
+    , Wai.pathInfo = decodePathSegments raw
+    , Wai.rawQueryString = probeQuery
+    , Wai.queryString = parseQuery probeQuery
+    }
+
 -- Use the production middleware, including its body-capture path, for both
 -- formats. No separately implemented exclusion predicate participates here.
-captureLog :: Bool -> ByteString -> IO ByteString
-captureLog detailed path = do
+captureLogRequest :: Bool -> Wai.Request -> IO ByteString
+captureLogRequest detailed probe = do
   directory <- lookupEnv "ARKHAM_TEST_LOG_DIR" >>= maybe getTemporaryDirectory pure
   bracket (openTempFile directory "arkhamdb-variants.log") (removeFile . fst) \(file, handle) -> do
     hClose handle
     bracket (newFileLoggerSet defaultBufSize file) rmLoggerSet \logger -> do
       middleware <- makeLogWare compileTimeAppSettings {appDetailedRequestLogging = detailed} logger
-      let request = WaiTest.SRequest
-            (WaiTest.setPath WaiTest.defaultRequest
-              { Wai.requestMethod = "POST"
-              , Wai.requestHeaders = [("Content-Type", "application/json")]
-              } $ path <> "?code=probe-oauth-code&state=probe-oauth-state")
-            "{\"completion\":\"probe-completion-secret\"}"
+      let request = WaiTest.SRequest probe "{\"completion\":\"probe-completion-secret\"}"
           application req respond = do
             Wai.strictRequestBody req `shouldReturn` WaiTest.simpleRequestBody request
             respond $ Wai.responseLBS status200 [] "ok"
