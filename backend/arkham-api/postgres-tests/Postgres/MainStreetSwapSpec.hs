@@ -260,6 +260,11 @@ assertSwapped connection f = do
   for_ [(0, f.side0, f.side1), (1, f.side1, f.side0)] \(ordinal, side, other) -> do
     game <- gameData connection side.gameId
     Map.keys (entitiesInvestigators $ Game.gameEntities game) `shouldBe` [other.investigator]
+    -- It stands at this game's Main Street, not the one of the game it left.
+    ( attr investigatorPlacement
+        <$> Map.lookup other.investigator (entitiesInvestigators $ Game.gameEntities game)
+      )
+      `shouldBe` Just (AtLocation side.mainStreet)
     (mainStreetSwapSide (GroupOrdinal ordinal) game).mainStreetSideReady `shouldBe` Nothing
 
 spendRow :: ArkhamEpicStep -> (Int, Maybe ArkhamGameId, Maybe Int, SharedKey, Int)

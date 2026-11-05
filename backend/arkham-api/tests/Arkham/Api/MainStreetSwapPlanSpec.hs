@@ -10,32 +10,37 @@ import Api.Handler.Arkham.Games.Shared (
   planMainStreetSwap,
   requireMainStreetReady,
   resolveSwapGames,
+  swapInvestigatorState,
   validateSwapOrdinals,
  )
+import Arkham.Card.Id (unsafeMakeCardId)
 import Arkham.Classes.Entity (attr, overAttrs)
 import Arkham.Difficulty (Difficulty (Easy))
+import Arkham.Entities (Entities (..))
 import Arkham.Epic.Types (
   GroupOrdinal (..),
   SharedKey (MainStreetReady),
   emptySharedEventState,
   setSharedCounter,
  )
-import Arkham.Game (newScenario, setInitialScenarioMeta)
+import Arkham.Game (Game, newScenario, setInitialScenarioMeta)
+import Arkham.Game qualified as Game
 import Arkham.Id (InvestigatorId, LocationId (..), PlayerId (..))
 import Arkham.Investigator (lookupInvestigator)
 import Arkham.Investigator.Types (Investigator, investigatorPlacement)
+import Arkham.Location (lookupLocation)
 import Arkham.Placement (Placement (AtLocation, Unplaced))
 import Arkham.Prelude
 import Data.Map.Strict qualified as Map
 import Data.UUID qualified as UUID
 import Data.Word (Word32)
-import Entity.Arkham.Game qualified as Game
+import Entity.Arkham.Game qualified as GameRow
 import Network.HTTP.Types.Status qualified as Status
 import Test.Hspec
 
-gameA, gameB :: Game.ArkhamGameId
-gameA = Game.ArkhamGameKey $ UUID.fromWords 0 0 0 1
-gameB = Game.ArkhamGameKey $ UUID.fromWords 0 0 0 2
+gameA, gameB :: GameRow.ArkhamGameId
+gameA = GameRow.ArkhamGameKey $ UUID.fromWords 0 0 0 1
+gameB = GameRow.ArkhamGameKey $ UUID.fromWords 0 0 0 2
 
 mainStreetA, mainStreetB, elsewhere :: LocationId
 mainStreetA = LocationId $ UUID.fromWords 0 0 1 1
@@ -61,6 +66,40 @@ readySide ordinal iid mainStreet =
     , mainStreetSideInvestigators =
         Map.singleton iid (investigatorAt iid (fromIntegral ordinal) (AtLocation mainStreet))
     }
+
+{- | A group's game: its Main Street, and @iid@ (seated by @player@) readied
+there by the scenario.
+-}
+readyGame :: InvestigatorId -> Word32 -> LocationId -> Game
+readyGame iid player mainStreet =
+  initial
+    { Game.gamePlayers = [PlayerId $ UUID.fromWords 0 0 2 player]
+    , Game.gamePlayerOrder = [iid]
+    , Game.gameEntities =
+        (Game.gameEntities initial)
+          { entitiesInvestigators =
+              Map.singleton iid (investigatorAt iid player (AtLocation mainStreet))
+          , entitiesLocations =
+              Map.singleton mainStreet
+                $ lookupLocation "89006" mainStreet (unsafeMakeCardId $ UUID.fromWords 0 0 3 player)
+          }
+    }
+ where
+  initial = setInitialScenarioMeta "mainStreetReady" iid $ newScenario "85001" 1 2 Easy False
+
+-- | Plan and run the swap of two groups' games.
+swapGames :: Game -> Game -> Either MainStreetSwapError (Game, Game)
+swapGames first second = do
+  plan <-
+    planMainStreetSwap
+      (mainStreetSwapSide (GroupOrdinal 0) first)
+      (mainStreetSwapSide (GroupOrdinal 1) second)
+  let (first', second', _, _) = swapInvestigatorState plan first second
+  pure (first', second')
+
+placementIn :: InvestigatorId -> Game -> Maybe Placement
+placementIn iid game =
+  attr investigatorPlacement <$> Map.lookup iid (entitiesInvestigators $ Game.gameEntities game)
 
 firstSide, secondSide :: MainStreetSwapSide
 firstSide = readySide 0 roland mainStreetA
@@ -137,6 +176,13 @@ spec = do
         `shouldBe` Left (SwapInvestigatorMoved (GroupOrdinal 1))
       planMainStreetSwap firstSide (movedTo Unplaced)
         `shouldBe` Left (SwapInvestigatorMoved (GroupOrdinal 1))
+
+  describe "swapInvestigatorState" do
+    it "places each moved investigator at the Main Street of the game it moved into" do
+      let swapped = swapGames (readyGame roland 0 mainStreetA) (readyGame daisy 1 mainStreetB)
+      -- Daisy moved into the first game, Roland into the second.
+      (placementIn daisy . fst <$> swapped) `shouldBe` Right (Just (AtLocation mainStreetA))
+      (placementIn roland . snd <$> swapped) `shouldBe` Right (Just (AtLocation mainStreetB))
 
   describe "requireMainStreetReady" do
     let ready ordinals =
