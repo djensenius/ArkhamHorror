@@ -10146,6 +10146,7 @@ test-suite spec
       Arkham.Enemy.Cards.TonysQuarrySpec
       Arkham.Enemy.Cards.WatcherFromAnotherDimensionSpec
       Arkham.Enemy.EngagementSpec
+      Arkham.Enemy.RegistrySpec
       Arkham.EnemyLocation.EnemyLocationSpec
       Arkham.Epic.EpicMultiplayerSpec
       Arkham.Event.Events.ActOfDesperationSpec
