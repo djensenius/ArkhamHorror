@@ -3,11 +3,13 @@ locale-catalog v1 schemas actually use.
 
 This exists so the locale-catalog fixture generator has *no* third-party
 executable dependency. A validator installed from an index is code the
-generator executes but cannot hash, which would leave the claim "every
-executable byte of this generator is pinned by
-`scripts/locale_catalog_tooling_lock.json`" false; a module in `scripts/` is
-part of the generator's import closure, so its bytes are pinned by that
-non-governed lock exactly as the generator's own are.
+generator executes but cannot hash. A module in `scripts/` is part of the
+generator's import closure, so its bytes are sha256-pinned by the non-governed
+`scripts/locale_catalog_tooling_lock.json` exactly as the generator's own are.
+The runtime profile `scripts/locale_catalog_python_runtime.json`, whose bytes
+that lock also pins, sha256-pins the uv and Node binaries; the Python
+interpreter itself is pinned only by path identity (see the profile's
+`has_path_identity` check), not by its bytes.
 
 The subset is deliberately tiny and deliberately __fail-closed__: every
 keyword, every `$ref` spelling and every `$schema` dialect this module does not

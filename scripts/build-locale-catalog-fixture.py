@@ -558,7 +558,7 @@ def scan_generator_sources(read_source=locale_catalog_python_boundary.read_sourc
     """Every repository-local module this generator actually executes.
 
     Hashing only the entry module would leave behavior-bearing source out of
-    the provenance: the derivation runs `strict_json`'s readers and parsers too,
+    the tooling lock: the derivation runs `strict_json`'s readers and parsers too,
     and a future helper would join them silently. So the set is the import
     closure of the entry module, resolved statically against the repository and
     confined to a closed implementation boundary -- the `scripts/` tree, plain
@@ -587,8 +587,11 @@ def generator_sources() -> tuple[str, ...]:
 
 
 def read_repository_files(relative_paths: tuple[str, ...]) -> list[tuple[str, bytes]]:
-    """Read real repository files as provenance inputs, by their repo-relative
-    path, so a rename counts as a change just as much as an edit does.
+    """Read real repository files by their repo-relative path, so a rename
+    counts as a change just as much as an edit does.
+
+    Callers pass either the generator sources, whose bytes feed the tooling
+    lock, or the v1 schemas, whose bytes feed provenance `schemasSha256`.
     """
     entries: list[tuple[str, bytes]] = []
     for relative_path in relative_paths:
