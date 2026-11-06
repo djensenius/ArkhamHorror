@@ -9,8 +9,9 @@ entitled to see.
 It works on the encoded 'Value', not on 'Arkham.Game.Game', on purpose: both
 encoders ('toJSON' and the hand-written 'toEncoding') produce the same JSON,
 so redacting after encoding covers both, and the function stays pure and
-independent of the engine monads. Nothing calls it yet; wiring it into REST,
-the websocket and the contracts are later slices of TASK-2.22.
+independent of the engine monads. 'Api.Arkham.Viewer' applies it to the REST
+game, spectate and replay responses; the websocket and the contracts are later
+slices of TASK-2.22.
 
 What it does, for every investigator object in @investigators@,
 @otherInvestigators@, @killedInvestigators@ and @retiredInvestigators@:
@@ -72,9 +73,11 @@ the cards held by the investigators the viewer controls (their @modifiers@,
 and any string in the viewer's own @question@ entries. Those ids are then removed from:
 
   * the top-level @cards@ registry (the entry is dropped; cards in play stay);
-  * top-level @focusedCards@ and each zone list of top-level @foundCards@
-    (zone keys are kept), and the scenario-level @search@ of another seat has
-    its @searchFoundCards@ lists and @searchDrawnCards@ emptied (zone keys kept);
+  * top-level @focusedCards@, @highlightedCards@ and each zone list of
+    top-level @foundCards@ (zone keys are kept), and the @searchFoundCards@
+    lists and @searchDrawnCards@ of another seat's scenario-level @search@
+    (zone keys kept; a card that is visible to the viewer, e.g. named in their
+    own question, stays; a value that is not an array becomes empty);
   * every @modifiers@ list: top-level @modifiers@ (pairs whose target names a
     hidden id are dropped) and the @modifiers@ of each investigator, location,
     enemy, asset, act, agenda, treachery, event, story and skill, of the skill
@@ -85,6 +88,10 @@ and any string in the viewer's own @question@ entries. Those ids are then remove
     hidden card or id inside an array is removed, as an object value it becomes
     @null@, and an object key that is a hidden id is dropped. Everything else
     (@revealedCards@, a class choice and so on) stays;
+  * @playProhibitions@ and @commitProhibitions@ of every investigator the
+    viewer does not control (@[cardId, refs]@ pairs for cards in hand): an
+    entry naming a hidden id anywhere is dropped (an array stays an array, an
+    object stays an object);
   * the campaign's @meta.otherCampaignPlayers@ (full investigator data for the
     other half of a split campaign): each entry the viewer does not control
     gets the same zone clearing as above (no @handCount@ is added, so the shape
@@ -95,15 +102,19 @@ Surfaces justified as public:
   * campaign @decks@ and scenario @playerDecks@: the deck lists chosen at
     setup. They are not the live deck: the investigator's deck is shuffled from
     them at @SetupInvestigator@, so they reveal composition (public at the
-    table) and not order or which cards are in hand.
+    table), not order. They do map every card id to its card, though, so any
+    channel that still carries another seat's hidden id reveals that card
+    through them: every such channel must be closed, which is what the
+    hidden-id filters above are for.
 
 Known leak surfaces deliberately not touched here (follow-ups):
 
   * @question@ and @questionPresentation@ (a prompt can name hand or deck
     cards of the player it is for; TASK-2.22.5 P4);
   * the encounter deck order (P5) and shared scenario decks (TASK-2.22.6);
-  * investigator @playProhibitions@\/@commitProhibitions@, keyed by the card
-    ids of cards in hand.
+  * other id channels: @usedAbilities@ sources, entity and scenario @meta@,
+    @searchFoundStrategy@, the campaign's @otherCampaignAttrs@, the viewer's
+    own @meta@, and the websocket (TASK-2.22.2).
 -}
 module Api.Arkham.Redact (
   Viewer (..),
@@ -363,7 +374,8 @@ hiddenZoneIds investigator =
 
 {- | The id of an encoded card: a 'Arkham.Card.Card' (@{tag, contents}@,
 vengeance cards nesting another) or bare card contents (a @PlayerCard@ or
-@EncounterCard@, which have both @id@ and @cardCode@).
+@EncounterCard@, which have both @id@ and @cardCode@). Any other object with
+both keys is taken for a card too; that can only over-redact.
 -}
 cardIdOf :: Value -> Maybe Text
 cardIdOf = \case
@@ -406,17 +418,11 @@ redactHiddenIds viewer hidden game =
   adjust (redactMode viewer ownIds hidden) "mode" $ if Set.null hidden then game else filtered
  where
   ownIds =
-    Set.fromList
-      [ i
-      | k <- investigatorMapKeys
-      , Object invs <- [game `at` k]
-      , Object inv <- KeyMap.elems invs
-      , controls viewer inv
-      , String i <- [inv `at` "id"]
-      ]
+    Set.fromList [i | inv <- allInvestigators game, controls viewer inv, String i <- [inv `at` "id"]]
   filtered =
     adjust (onObject (KeyMap.filterWithKey (\k _ -> not (Key.toText k `Set.member` hidden)))) "cards"
       . adjust dropCards "focusedCards"
+      . adjust (onArray (V.filter (not . mentions hidden))) "highlightedCards"
       . adjust (onObject (KeyMap.map dropCards)) "foundCards"
       . adjust (redactModifierMap hidden) "modifiers"
       . adjust withModifiers "skillTest"
@@ -439,8 +445,13 @@ redactMode viewer ownIds hidden =
     if searchedBy ownIds search
       then search
       else
-        adjust emptied "searchDrawnCards"
-          $ adjust (onObject (KeyMap.map emptied)) "searchFoundCards" search
+        adjust searchCards "searchDrawnCards"
+          $ adjust (onObject (KeyMap.map searchCards)) "searchFoundCards" search
+  -- Another seat's search results: every card it found is in @hidden@ unless
+  -- the viewer may see it anyway (e.g. their own question names it).
+  searchCards = \case
+    Array cards -> Array (V.filter (not . mentions hidden) cards)
+    other -> emptied other
 
 {- | Top-level @modifiers@ (a @Map Target [Modifier]@, encoded as an array of
 @[target, modifiers]@ pairs; an object keyed by target is handled too).
@@ -481,10 +492,29 @@ redactModifiers hidden = onArray (V.mapMaybe modifier)
       | mentions hidden other -> Nothing
       | otherwise -> Just other
 
+{- | The hidden-id scrub of an investigator the viewer does not control: its
+@meta@ and @formMeta@ (see 'scrub') and its play and commit prohibitions.
+-}
 scrubMetas :: Set Text -> Object -> Object
 scrubMetas hidden
   | Set.null hidden = id
-  | otherwise = adjust (scrub hidden) "meta" . adjust (scrub hidden) "formMeta"
+  | otherwise =
+      adjust (scrub hidden) "meta"
+        . adjust (scrub hidden) "formMeta"
+        . adjust prohibitions "playProhibitions"
+        . adjust prohibitions "commitProhibitions"
+ where
+  -- @[cardId, refs]@ pairs (an object keyed by card id is handled too): an
+  -- entry naming a hidden id anywhere goes.
+  prohibitions = \case
+    Array entries -> Array (V.filter (not . mentions hidden) entries)
+    Object o ->
+      Object
+        . KeyMap.filter (not . mentions hidden)
+        $ KeyMap.filterWithKey (\k _ -> not (Key.toText k `Set.member` hidden)) o
+    other
+      | mentions hidden other -> Null
+      | otherwise -> other
 
 {- | Remove hidden cards and ids from free-form JSON: from arrays they are
 removed, as object values they become @null@, and object keys that are hidden

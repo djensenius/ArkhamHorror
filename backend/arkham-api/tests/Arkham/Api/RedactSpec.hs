@@ -26,7 +26,7 @@ import Arkham.Log.Entry (
   mkLogEntry,
  )
 import Arkham.Matcher.Card (CardMatcher (AnyCard), ExtendedCardMatcher (BasicCardMatch))
-import Arkham.Modifier (Modifier (..), ModifierType (AsIfInHand, CannotBeFlipped, TopCardOfDeckIsRevealed))
+import Arkham.Modifier (Modifier (..), ModifierType (AsIfInHand, CannotBeFlipped, CannotPlay, TopCardOfDeckIsRevealed))
 import Arkham.Scenario.Types (ScenarioAttrs (..))
 import Arkham.Search (Search (..), SearchType (Searching), mkSearch)
 import Data.Aeson qualified as Aeson
@@ -475,6 +475,37 @@ agnesStored key v = case topKey "mode" v of
         agnes
   _ -> error "no otherCampaignPlayers entry"
 
+-- | The object key a player id encodes to.
+playerKey :: PlayerId -> Aeson.Key
+playerKey pid = case toJSON pid of
+  Aeson.String t -> Key.fromText t
+  _ -> error "player id is not a string"
+
+-- | Replace a top-level field of the game value.
+setTop :: Aeson.Key -> Aeson.Value -> Aeson.Value -> Aeson.Value
+setTop k v = \case
+  Aeson.Object o -> Aeson.Object (KeyMap.insert k v o)
+  _ -> error "setTop: not an object"
+
+-- | Change the seated investigator of a player in @investigators@.
+overSeat :: PlayerId -> (Aeson.Object -> Aeson.Object) -> Aeson.Value -> Aeson.Value
+overSeat pid f = \case
+  Aeson.Object top
+    | Just (Aeson.Object invs) <- KeyMap.lookup "investigators" top ->
+        Aeson.Object
+          $ KeyMap.insert "investigators" (Aeson.Object (KeyMap.map seat invs)) top
+  _ -> error "overSeat: no investigators"
+ where
+  seat = \case
+    Aeson.Object inv | KeyMap.lookup "playerId" inv == Just (toJSON pid) -> Aeson.Object (f inv)
+    other -> other
+
+-- | The card ids that key a list of @[cardId, refs]@ prohibition pairs.
+prohibitionIds :: Aeson.Value -> [Text]
+prohibitionIds = \case
+  Aeson.Array entries -> [i | Aeson.Array e <- toList entries, Aeson.String i : _ <- [toList e]]
+  _ -> error "prohibitions are not an array"
+
 spec :: Spec
 spec = describe "Api.Arkham.Redact.redactFor" do
   it "adds no handCount by default, and otherwise redacts the same way" $ withTable \table@Table {..} -> liftIO do
@@ -779,3 +810,82 @@ spec = describe "Api.Arkham.Redact.redactFor" do
     Planted {..} <- plantHidden table
     liftIO $ for_ (allViewers table) \v ->
       redactFor v (redactFor v plantedGame) `shouldBe` redactFor v plantedGame
+
+  it "drops prohibition entries for seat B's hidden cards from seat A's view (p)" $ withTable \table -> do
+    Planted {..} <- plantHidden table
+    let Table {..} = table
+    game <- getGame
+    let daisy =
+          fromJustNote "no investigator for seat B"
+            $ find ((== tableB) . investigatorPlayerId . toAttrs) (toList $ game ^. entitiesL . investigatorsL)
+        cannotPlay = Modifier (toSource daisy) (CannotPlay AnyCard) False Nothing Nothing
+    overTest \g -> g {gameModifiers = Map.insertWith (<>) (toTarget daisy) [cannotPlay] (gameModifiers g)}
+    game' <- getGame
+    liftIO do
+      -- commitProhibitions only fill during a skill test, so plant one there.
+      let noRefs = [] :: [Text]
+          original =
+            overSeat
+              tableB
+              (KeyMap.insert "commitProhibitions" (toJSON [(h1, noRefs), (pub, noRefs)]))
+              (toJSON (PublicGame ("game" :: Text) "Redact" (logRows tableA tableB) game'))
+          asA = redactFor (ViewerSeats (Set.singleton tableA)) original
+          asB = redactFor (ViewerSeats (Set.singleton tableB)) original
+          daisyOf = investigatorFor tableB
+      -- The engine really reports B's whole hand as prohibited.
+      Set.fromList (prohibitionIds (field' "playProhibitions" (daisyOf original))) `shouldBe` Set.fromList [h0, h1, h2]
+      -- A keeps only the revealed card's entry, and the public commit entry.
+      prohibitionIds (field' "playProhibitions" (daisyOf asA)) `shouldBe` [h0]
+      prohibitionIds (field' "commitProhibitions" (daisyOf asA)) `shouldBe` [pub]
+      filter (`elem` [h1, h2, d0]) (stringsIn asA) `shouldBe` []
+      -- B's own view keeps every entry.
+      for_ ["playProhibitions", "commitProhibitions"] \k ->
+        (k, field' k (daisyOf asB)) `shouldBe` (k, field' k (daisyOf original))
+
+  it "keeps a hidden id visible to the viewer whose own question names it (q)" $ withTable \table -> do
+    Planted {..} <- plantHidden table
+    let Table {..} = table
+    liftIO do
+      -- A's prompt names h2 (in B's hand and B's search); B's names h1.
+      let names i =
+            Aeson.object
+              [ "tag" .= ("ChooseOne" :: Text)
+              , "contents"
+                  .= [ Aeson.object
+                         [ "tag" .= ("TargetLabel" :: Text)
+                         , "target" .= Aeson.object ["tag" .= ("CardIdTarget" :: Text), "contents" .= i]
+                         , "messages" .= ([] :: [Aeson.Value])
+                         ]
+                     ]
+              ]
+          original = setTop "question" (Aeson.object [playerKey tableA .= names h2, playerKey tableB .= names h1]) plantedGame
+          asA = redactFor (ViewerSeats (Set.singleton tableA)) original
+          asSpectator = redactFor ViewerSpectator original
+      (h2 `elem` registryKeys asA) `shouldBe` True
+      zoneCards (field' "searchFoundCards" (scenarioSearchOf asA)) `shouldBe` [[h2]]
+      -- B's question does not make h1 visible to A, nor A's question h2 to a spectator.
+      (h1 `elem` registryKeys asA) `shouldBe` False
+      filter (`elem` [h1, h2]) (registryKeys asSpectator) `shouldBe` []
+      zoneCards (field' "searchFoundCards" (scenarioSearchOf asSpectator)) `shouldBe` [[]]
+
+  it "keeps a revealed top card, an in-play card and a discarded card visible (r)" $ withTable \table -> do
+    Planted {..} <- plantHidden table
+    let Table {..} = table
+    revealed <- withTopCardRevealed table tableB
+    liftIO do
+      let asA = redactFor (ViewerSeats (Set.singleton tableA))
+      -- B's revealed top card (d0) keeps its registry entry; the rest stay hidden.
+      (d0 `elem` registryKeys (asA revealed)) `shouldBe` True
+      (d0 `elem` registryKeys (asA plantedGame)) `shouldBe` False
+      filter (`elem` [h1, h2]) (registryKeys (asA revealed)) `shouldBe` []
+      -- An entity in play with h1's card id, and h2 in B's discard pile.
+      let card i = fromJustNote "card not in registry" $ case topKey "cards" plantedGame of
+            Aeson.Object cards -> KeyMap.lookup (Key.fromText i) cards
+            _ -> Nothing
+          inPlay =
+            setTop "assets" (Aeson.object ["planted-asset" .= Aeson.object ["cardId" .= h1]])
+              . overSeat tableB (KeyMap.insert "discard" (toJSON [card h2]))
+              $ plantedGame
+      (h1 `elem` registryKeys (asA inPlay)) `shouldBe` True
+      (h2 `elem` registryKeys (asA inPlay)) `shouldBe` True
+      (d0 `elem` registryKeys (asA inPlay)) `shouldBe` False
