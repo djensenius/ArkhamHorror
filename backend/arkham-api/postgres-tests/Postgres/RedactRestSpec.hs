@@ -25,6 +25,7 @@ import Arkham.Investigator.Types (InvestigatorAttrs (..))
 import Data.Aeson (Value (..), decode, encode, object, toJSON, (.=))
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Map.Strict qualified as Map
+import Data.Text qualified as T
 import Data.UUID (UUID)
 import Data.UUID qualified as UUID
 import Database.Persist (toPersistValue)
@@ -122,14 +123,18 @@ spec harness app seedUser = describe "REST game reads are redacted per viewer" d
         maybe (expectationFailure "bad game id" >> error "bad game id") pure
           $ fromPathPiece @ArkhamGameId (UUID.toText $ UUID.fromWords 0x2292 0 0 0)
       authorization <- authorizationFor app admin
-      let adminGet target headers =
-            fst <$> routeRequest app "GET" (adminGamePath target) (authorization : headers) ""
-      -- WaiTest cannot hand a socket to a raw response, so an attempted
-      -- upgrade answers yesod's 500 fallback rather than switching protocols:
-      -- the existing game shows the handshake still reaches the upgrade, and
-      -- the unknown id that the existence check refuses it first.
+      let adminRequest target headers =
+            routeRequest app "GET" (adminGamePath target) (authorization : headers) ""
+          adminGet target headers = fst <$> adminRequest target headers
+      -- Network.Wai.Test cannot hand a socket to a raw response, so an
+      -- attempted upgrade answers yesod-core's raw-response fallback (a 500)
+      -- rather than switching protocols: the existing game shows the
+      -- handshake still reaches the upgrade, and the unknown id shows the
+      -- existence check refuses it first.
       adminGet gameId [] `shouldReturn` status200
-      adminGet gameId webSocketHandshake `shouldReturn` status500
+      (upgradeStatus, upgradeBody) <- adminRequest gameId webSocketHandshake
+      upgradeStatus `shouldBe` status500
+      upgradeBody `shouldSatisfy` isRawResponseFallback
       adminGet missing [] `shouldReturn` status404
       adminGet missing webSocketHandshake `shouldReturn` status404
 
@@ -282,6 +287,13 @@ webSocketHandshake =
   , ("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
   , ("Sec-WebSocket-Version", "13")
   ]
+
+-- | Whether a body is yesod-core's raw-response fallback, "sendRawResponse:
+-- backend does not support raw responses" (Yesod.Core.Handler), with
+-- whitespace collapsed so only the wording is pinned.
+isRawResponseFallback :: LByteString -> Bool
+isRawResponseFallback body =
+  "does not support raw responses" `T.isInfixOf` T.unwords (T.words $ decodeUtf8 body)
 
 -- | Take a seat whose arkham_players id is the investigator's playerId.
 seat :: SqlBackend -> Word32 -> ArkhamGameId -> UserId -> Word32 -> IO ()
