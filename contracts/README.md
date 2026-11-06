@@ -1802,9 +1802,10 @@ id is nobody's seat):
 - `search.searchFoundCards` and `search.searchDrawnCards` are emptied; the
   rest of `search` stays.
 
-Structured `log` rows (and child entries) whose `audience` is `OnlyPlayer`
-for a seat the viewer does not hold are dropped; spectators see only
-`Everyone` entries.
+In the snapshot's `log` tail only, structured rows (and child entries)
+whose `audience` is `OnlyPlayer` for a seat the viewer does not hold are
+dropped; spectators see only `Everyone` entries there. The separate log
+routes listed below are not filtered this way.
 
 Current status:
 
@@ -1818,9 +1819,11 @@ Current status:
 - Not redacted: the game export routes under `/arkham/games/{gameId}`
   (`/export`, `/scenario-export` and `/full-export`), which return the stored
   game rather than a `PublicGame` snapshot (`/export` and `/scenario-export`
-  also serve administrators for any game), and the log export
-  (`/log/export`). The `/admin` routes return game summaries and room data,
-  not game snapshots.
+  also serve administrators for any game; `/full-export` is admin-only).
+  The log routes `GET /arkham/games/{gameId}/log/before/{seq}` (scrollback)
+  and `/log/export` check game membership only and return structured rows
+  with no audience filter, until TASK-2.22.5 P1 filters them. The `/admin`
+  routes return game summaries and room data, not game snapshots.
 - WebSocket `GameUpdate` frames remain unredacted until TASK-2.22.2.
 - The server does not emit `handCount` yet (`defaultRedactOptions` keeps
   `includeHandCount = False`); a follow-up of TASK-2.22.3 turns it on for
