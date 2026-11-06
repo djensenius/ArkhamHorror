@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/get-game.schema.json",
   "title": "GetGame",
-  "description": "Participant or spectator view of a game.",
+  "description": "Participant or spectator view of a game. The game snapshot may be redacted for the caller's seat(s); see public-game.schema.json.",
   "type": "object",
   "additionalProperties": false,
   "required": [

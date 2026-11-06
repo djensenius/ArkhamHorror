@@ -1756,6 +1756,84 @@ locale-catalog files), so no client needs to repin.
 `nativeClientMinimumRevision` stays `0.1.57`; clients pinned to `0.1.57`
 through `0.1.63` are unaffected and need not repin.
 
+#### Redacted game views and `handCount` (revision 0.1.65)
+
+Revision `0.1.65` documents per-viewer redaction of game snapshots
+(TASK-2.22) and teaches the closed investigator schema its one new field
+before the server emits it. No route, capability or existing field changes.
+
+- `investigator.schema.json` gains an optional `handCount` (integer,
+  minimum 0) in `properties` only, not in `required`. A redacted snapshot can
+  carry it on every investigator, controlled or not, so a client can show how
+  many cards another player holds after their `hand` was emptied. Clients use
+  `handCount` when it is present and otherwise the length of `hand`.
+- The schema descriptions (investigator, public-game, get-game,
+  server-message), the OpenAPI create, import, `getGame`, pending `GET`/`PUT
+  /join` and spectate operations, and the AsyncAPI game and spectator channels
+  now say in general terms that a snapshot may be redacted for the caller's
+  seat(s), that other seats' hidden zones may be empty, and that `handCount`
+  may be absent. The OpenAPI import description no longer promises the
+  complete `PublicGame`. OpenAPI `info.version` moves to `0.1.10` and AsyncAPI
+  to `0.1.11`.
+- The new fixture `fixtures/investigator-redacted.json` is the real
+  `PublicGame` investigator for Roland holding three cards in hand, run
+  through `Api.Arkham.Redact.redactWith RedactOptions {includeHandCount =
+  True}` for a viewer holding a different seat: the hidden zones are empty and
+  `handCount` is `3`. `JsonContractsSpec` binds it to both the `toJSON` and the
+  wire-encoding paths, and the manifest's negative fixtures reject a negative
+  or string `handCount`. `fixtures/get-game.json` stays the unredacted
+  (full-view) shape.
+
+The exact redaction today, from `backend/arkham-api/library/Api/Arkham/Redact.hs`
+(not governed: later slices may hide more without a revision bump, because
+the schemas only promise that hidden zones may be empty). For every
+investigator in `investigators`, `otherInvestigators`, `killedInvestigators`
+and `retiredInvestigators` that the viewer does not control (control is the
+investigator's `playerId` matching one of the viewer's seats; the nil player
+id is nobody's seat):
+
+- `hand`, `sideDeck`, `decks`, `drawnCards`, `cardsUnderneath` and
+  `excludeFromMulligan` are emptied in place (an array becomes `[]`, an
+  object `{}`, `null` stays `null`);
+- `deck` is emptied, except that only its top card is kept when the
+  investigator's `modifiers` include `TopCardOfDeckIsRevealed`; `deckSize`
+  keeps the full count;
+- `drawing` and `discarding` become `null`;
+- `search.searchFoundCards` and `search.searchDrawnCards` are emptied; the
+  rest of `search` stays.
+
+In the snapshot's `log` tail only, structured rows (and child entries)
+whose `audience` is `OnlyPlayer` for a seat the viewer does not hold are
+dropped; spectators see only `Everyone` entries there. The separate log
+routes listed below are not filtered this way.
+
+Current status:
+
+- REST game responses have been redacted per viewer since TASK-2.22.1:
+  `getGame`, the replay step route (`GET /arkham/games/{gameId}/replay/{step}`),
+  spectate (as a spectator), the pending `GET`/`PUT /join`, create and
+  import. A caller holding every seat of the game (Solo, or one account
+  playing all seats) gets the full view, which is never redacted and never
+  carries `handCount`. An administrator who holds no seat in the game gets
+  the spectator view from the replay route.
+- Not redacted: the game export routes under `/arkham/games/{gameId}`
+  (`/export`, `/scenario-export` and `/full-export`), which return the stored
+  game rather than a `PublicGame` snapshot (`/export` and `/scenario-export`
+  also serve administrators for any game; `/full-export` is admin-only).
+  The log routes `GET /arkham/games/{gameId}/log/before/{seq}` (scrollback)
+  and `/log/export` check game membership only and return structured rows
+  with no audience filter, until TASK-2.22.5 P1 filters them. The `/admin`
+  routes return game summaries and room data, not game snapshots.
+- WebSocket `GameUpdate` frames remain unredacted until TASK-2.22.2.
+- The server does not emit `handCount` yet (`defaultRedactOptions` keeps
+  `includeHandCount = False`); a follow-up of TASK-2.22.3 turns it on for
+  redacted views without another revision bump.
+
+`nativeClientMinimumRevision` stays `0.1.57`; `handCount` is optional and no
+existing field changes, so clients pinned to `0.1.57` through `0.1.64` keep
+decoding today's payloads. A client with a closed investigator decoder must
+repin to `0.1.65` before the server starts emitting `handCount`.
+
 ### Locale catalog discovery
 
 `GET /capabilities` advertises a catalog with the `i18n.locale-catalog.v1`
