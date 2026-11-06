@@ -4,9 +4,10 @@ locale-catalog v1 schemas actually use.
 This exists so the locale-catalog fixture generator has *no* third-party
 executable dependency. A validator installed from an index is code the
 generator executes but cannot hash, which would leave the claim "every
-executable byte of this generator is covered by `generatorSha256`" false; a
-module in `scripts/` is hashed by the generator's own import closure, so it is
-covered by exactly the same digest as the generator itself.
+executable byte of this generator is pinned by
+`scripts/locale_catalog_tooling_lock.json`" false; a module in `scripts/` is
+part of the generator's import closure, so its bytes are pinned by that
+non-governed lock exactly as the generator's own are.
 
 The subset is deliberately tiny and deliberately __fail-closed__: every
 keyword, every `$ref` spelling and every `$schema` dialect this module does not
