@@ -3,7 +3,9 @@
 module Api.Arkham.Helpers where
 
 import Api.Arkham.Maintenance
+import Api.Arkham.Redact (Viewer, logRowFor, viewerSeats)
 import Api.Arkham.RoomOps
+import Api.Arkham.Viewer (GameView (..))
 import Arkham.Card
 import Arkham.Classes hiding (Entity (..), select)
 import Arkham.Classes.HasGame
@@ -37,6 +39,7 @@ import Database.Esqueleto.Experimental
 
 -- Aliased for '<.', which Control.Lens and persistent also define.
 import Database.Esqueleto.Experimental qualified as E
+import Database.Esqueleto.Internal.Internal (unsafeSqlBinOp, unsafeSqlValue)
 import Database.Redis (
   Connection,
   PubSubController,
@@ -195,19 +198,72 @@ are strictly older than every structured one, so they sort before this window
 and this cannot reach them. They are a transitional artifact and will age out of
 any game still being played; the alternative is a second, messier cursor over
 @(step, id)@ for history nobody is adding to.
+
+__Per viewer.__ A redacted viewer's rows are filtered by 'logRowVisibleSql'
+in the query, before the LIMIT: a page filtered afterwards could come back
+short, or empty with older rows still to read, and the client takes an empty
+page as the start of the game. Children are then pruned by 'logRowsForView'.
 -}
-getGameLogBefore :: ArkhamGameId -> Int -> Int -> DB GameLog
-getGameLogBefore gameId before n = do
+getGameLogBefore :: GameView -> ArkhamGameId -> Int -> Int -> DB GameLog
+getGameLogBefore gameView gameId before n = do
   rows <- select $ do
     entries <- from $ table @ArkhamLogEntry
     where_ $ entries.arkhamGameId ==. val gameId
     where_ $ entries.seq E.<. just (val before)
+    for_ (redactedLogViewer gameView) \viewer -> where_ $ logRowVisibleSql viewer entries
     -- By seq, not (step, id): a retraction can leave a gap, and an undo can
     -- move a chat row's step, so seq is the only monotonic thing here.
     orderBy [desc entries.seq]
     limit (fromIntegral n)
     pure entries
-  pure $ GameLog $ reverse $ map (toLogRow . entityVal) rows
+  pure $ GameLog $ logRowsForView gameView $ reverse $ map (toLogRow . entityVal) rows
+
+-- | The viewer a log read filters for; 'Nothing' for the full view.
+redactedLogViewer :: GameView -> Maybe Viewer
+redactedLogViewer = \case
+  FullView -> Nothing
+  RedactedView viewer -> Just viewer
+
+{- | A row of a log read as a viewer sees it: the @log@ tail's rule
+('logRowFor'), which also prunes children addressed to other seats.
+-}
+logRowForView :: GameView -> LogRow -> Maybe LogRow
+logRowForView gameView = maybe Just logRowFor (redactedLogViewer gameView)
+
+-- | 'logRowForView' over a page of rows.
+logRowsForView :: GameView -> [LogRow] -> [LogRow]
+logRowsForView = mapMaybe . logRowForView
+
+{- | Whether a stored row's own audience lets the viewer read it, as SQL, so a
+read can filter before its LIMIT.
+
+The same rule as the game payload's @log@ tail (see 'Api.Arkham.Redact'): a
+row with a NULL @payload@ (legacy text), or a payload with no @audience@, is
+for everyone; @Everyone@ is for everyone; @OnlyPlayer p@ only for a viewer
+holding seat @p@ (never the nil player id, which 'viewerSeats' drops). Any
+other audience is dropped, so a payload the server can no longer decode cannot
+reach another seat through the legacy fallback of 'toLogRow'. Children are not
+visible to SQL and are pruned afterwards by 'logRowsForView'.
+
+@#>>@ on the jsonb column: NULL for a NULL payload, a missing key or a JSON
+null alike. The game-and-seq (or game-and-step) index still drives the scan;
+this is a per-row filter on rows it already reads.
+-}
+logRowVisibleSql :: Viewer -> SqlExpr (Entity ArkhamLogEntry) -> SqlExpr (E.Value Bool)
+logRowVisibleSql viewer entries =
+  isNothing_ (audienceAt "'{audience}'")
+    E.||. audienceAt "'{audience,tag}'" ==. just (val "Everyone")
+    E.||. ownSeat
+ where
+  -- The paths are literals: unsafeSqlValue splices them into the query text.
+  audienceAt path =
+    unsafeSqlBinOp "#>>" entries.payload (unsafeSqlValue path) :: SqlExpr (E.Value (Maybe Text))
+  seats = [UUID.toText uuid | PlayerId uuid <- viewerSeats viewer]
+  ownSeat
+    | null seats = val False
+    | otherwise =
+        audienceAt "'{audience,tag}'" ==. just (val "OnlyPlayer")
+          E.&&. audienceAt "'{audience,contents}'" `in_` valList (map Just seats)
 
 toPublicGame :: Entity ArkhamGame -> GameLog -> PublicGame ArkhamGameId
 toPublicGame (Entity gId ArkhamGame {..}) gameLog =
