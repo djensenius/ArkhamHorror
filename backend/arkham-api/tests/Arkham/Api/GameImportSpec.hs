@@ -428,6 +428,14 @@ spec = describe "selectUploadedExportFile" do
       position
         "replayImportResponseHeaders serverBuildIdentity importReceipt"
     publicGamePosition <- position "$ toPublicGame importedGame"
+    -- The body is redacted for the importer's seats, read after the import
+    -- committed its seat rows.
+    viewerPosition <-
+      position
+        "gameView <- runDB $ viewerForUser userId (entityKey importedGame)"
+    redactedGamePosition <-
+      position
+        "$ RedactedGame gameView $ toPublicGame importedGame"
     decodePosition `shouldSatisfy` (< transactionPosition)
     checkpointBindingPosition `shouldSatisfy` (< transactionPosition)
     case checkpointPlayerBindingPositions of
@@ -441,6 +449,8 @@ spec = describe "selectUploadedExportFile" do
     actionDiffRemapPosition `shouldSatisfy` (< queueRemapPosition)
     queueRemapPosition `shouldSatisfy` (< stepInsertPosition)
     headerPosition `shouldSatisfy` (< publicGamePosition)
+    headerPosition `shouldSatisfy` (< viewerPosition)
+    viewerPosition `shouldSatisfy` (< redactedGamePosition)
     importHandler
       `shouldSatisfy` T.isInfixOf
         "for_ importReceipt \\receipt -> do"
