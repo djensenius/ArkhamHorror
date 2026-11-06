@@ -139,9 +139,9 @@ spec harness app seedUser = describe "REST game reads are redacted per viewer" d
 
   it "redacts the join response for the caller's seats as they stand after the join" $
     withConnection harness \connection -> do
-      -- A first joiner holds every seat row once the join commits, so a
-      -- lookup that missed the new row would wrongly answer the spectator
-      -- view here.
+      -- A first joiner holds every seat row once the join inserts its seat,
+      -- so a lookup that missed the new row would wrongly answer the
+      -- spectator view here.
       lobby <- seedGame connection 7 "redact-join-first" WithFriends
       dave <- seedUser connection "redact-join-first-dave"
       gameZonesOf <$> joinAs dave lobby `shouldReturn` (status200, seededZones 7)

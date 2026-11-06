@@ -73,7 +73,8 @@ data PendingJoinRefused
   deriving anyclass Exception
 
 {- | Join, then answer with the game redacted for the caller's seats as they
-stand after the join committed, so a new player sees their own seat's zones.
+stand at the end of the join, read under the same game lock as the game, so a
+new player sees their own seat's zones.
 -}
 putApiV1ArkhamPendingGameR :: ArkhamGameId -> Handler (RedactedGame (PublicGame ArkhamGameId))
 putApiV1ArkhamPendingGameR gameId = do
@@ -125,7 +126,7 @@ putApiV1ArkhamPendingGameR gameId = do
       unchanged = do
         requireNoOtherGroup
         pure (original, Nothing, Nothing)
-    case gameGameState arkhamGameCurrentData of
+    result <- case gameGameState arkhamGameCurrentData of
       -- Between scenarios a campaign is open to new players (Rules Reference,
       -- "Joining or Leaving a Campaign"). The seat is added to the live game and
       -- picks a deck from the investigators nobody has used yet.
@@ -253,8 +254,12 @@ putApiV1ArkhamPendingGameR gameId = do
 
             pure (game', mShared, entityKey . fst <$> mLockedCtx)
       _ -> unchanged
+    -- Last, still under the game lock: the caller's seats, including any row
+    -- this join inserted, match the game the response carries.
+    gameView <- viewerForUser userId gameId
+    pure (result, gameView)
 
-  (game@ArkhamGame {..}, mShared, mChangedEvent) <- case joined of
+  ((game@ArkhamGame {..}, mShared, mChangedEvent), gameView) <- case joined of
     Left SeatedInAnotherGroup ->
       permissionDenied "You already occupy a seat in another group in this event"
     Left EpicEventGone -> notFound
@@ -264,7 +269,4 @@ putApiV1ArkhamPendingGameR gameId = do
   publishToRoom gameId
     $ GameUpdate
     $ PublicGame gameId arkhamGameName [] arkhamGameCurrentData
-  -- A fresh read after the join's transaction committed, so it sees the
-  -- seat row the join inserted.
-  gameView <- runDB $ viewerForUser userId gameId
   pure $ RedactedGame gameView $ toPublicGame (Entity gameId game) mempty
