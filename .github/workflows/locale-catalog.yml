@@ -164,9 +164,10 @@ jobs:
           set -eu
           docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
           if [ -z "$docker_root" ] || [ ! -d "$docker_root" ]; then
+            echo "::notice::Docker root dir unavailable; measuring / instead"
             docker_root=/
           fi
-          free_gib="$(sudo df -BG --output=avail "$docker_root" | tail -1 | tr -dc 0-9)"
+          free_gib="$(sudo df -BG --output=avail "$docker_root" | tail -1 | tr -dc 0-9 || true)"
           if [ -z "$free_gib" ]; then
             echo "::error::Could not read free space for $docker_root"
             exit 1
