@@ -10,7 +10,7 @@
 -- the re-ask raises in its own transaction, which never moves down.
 module Postgres.MainStreetSwapSpec (spec) where
 
-import Api.Arkham.Epic (modifySharedStateLocked)
+import Api.Arkham.Epic (modifySharedStateLocked, upsertUndoFloorMonotonic)
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (WithFriends))
 import Api.Handler.Arkham.Games.Shared (
   GroupRunUndoFloor (RaiseUndoFloorToNewStep),
@@ -183,27 +183,53 @@ spec harness app seedUser = describe "Main Street swap" do
     withConnection harness \holding -> withConnection harness \observer -> do
       f <- seedFixture observer seedUser "swap-reask-monotonic"
       let gameId = f.side0.gameId
-      -- An earlier floor: raising it updates the floor row alone. (A first
-      -- floor's insert would wait on the game row for its foreign key.)
-      transaction observer $ P.insert_ $ ArkhamGameUndoFloor gameId 1
       held <- newBarrier
       holderPid <- backendPid holding
-      withAsync (transaction holding (lockGameRow gameId >> liftIO (pauseAt held))) \holder -> do
-        link holder
-        awaitBarrier held
-        withAsync (reaskGame app gameId) \reasking -> do
-          awaitBlockedSessions observer holderPid 1
-          -- An organizer settlement takes only the floor row, so it commits
-          -- its higher floor while the re-ask waits on the game row.
-          within "settlement floor" $ unsafeHandler app $ setGameUndoFloor gameId 10
-          stepAndFloor observer gameId `shouldReturn` (Just 1, Just 10)
-          releaseBarrier held
-          within "game holder commit" $ wait holder
-          within "re-ask" (wait reasking) `shouldReturn` Just 2
+      -- An organizer settlement's floor write (the game's first): it takes
+      -- KEY SHARE on the game row, then the floor row, and holds both.
+      withAsync
+        (transaction holding (upsertUndoFloorMonotonic gameId 10 >> liftIO (pauseAt held)))
+        \holder -> do
+          link holder
+          awaitBarrier held
+          withAsync (reaskGame app gameId) \reasking -> do
+            -- The re-ask waits on the game row, then commits after the
+            -- settlement's higher floor and keeps it.
+            awaitBlockedSessions observer holderPid 1
+            releaseBarrier held
+            within "settlement commit" $ wait holder
+            within "re-ask" (wait reasking) `shouldReturn` Just 2
       stepAndFloor observer gameId `shouldReturn` (Just 2, Just 10)
       -- A stale settlement write arriving after a higher floor keeps it too.
       unsafeHandler app $ setGameUndoFloor gameId 4
       stepAndFloor observer gameId `shouldReturn` (Just 2, Just 10)
+
+  it "orders a settlement's first floor insert after a game-locked floor write" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      f <- seedFixture observer seedUser "swap-floor-lock-order"
+      let gameId = f.side0.gameId
+      stepAndFloor observer gameId `shouldReturn` (Just 1, Nothing)
+      held <- newBarrier
+      holderPid <- backendPid holding
+      -- An act advance (or re-ask): the game row FOR UPDATE, then the floor.
+      withAsync
+        ( transaction holding do
+            lockGameRow gameId
+            liftIO $ pauseAt held
+            upsertUndoFloorMonotonic gameId 5
+        )
+        \holder -> do
+          link holder
+          awaitBarrier held
+          -- The settlement's first floor insert for this game. It must wait on
+          -- the game row before it locks the new floor row, or the holder's
+          -- upsert would wait on that row in turn: a deadlock.
+          withAsync (unsafeHandler app $ setGameUndoFloor gameId 3) \settling -> do
+            awaitBlockedSessions observer holderPid 1
+            releaseBarrier held
+            within "game-locked floor write" $ wait holder
+            within "settlement floor" $ wait settling
+      stepAndFloor observer gameId `shouldReturn` (Just 1, Just 5)
 
   it "never lowers a higher undo floor through the swap or its re-ask" $
     withConnection harness \connection -> do

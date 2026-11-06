@@ -355,11 +355,23 @@ GREATER of itself and @step@. Floor writers do not run in step order (an
 organizer settlement floors every group at its current step, a Main Street
 re-ask floors at its own new step, and either may commit first), so an
 unconditional set could lower a floor another writer already raised and let
-undo cross a consumed act advance. Takes the floor row's lock; a caller that
-also holds the game row must take that first.
+undo cross a consumed act advance.
+
+Lock order: the game row, then the floor row. The helper enforces it itself by
+taking FOR KEY SHARE on the game row before it touches the floor row, also for
+callers that do not already hold the game row (an organizer settlement's
+'Api.Handler.Arkham.Games.Shared.setGameUndoFloor'). Without it, a game's first
+floor insert would lock the new floor row and only then take KEY SHARE on the
+game row for its foreign key, the reverse of an act advance or re-ask that
+holds the game row FOR UPDATE and then upserts the floor, and the two would
+deadlock. A caller that already holds the game row FOR UPDATE loses nothing.
 -}
 upsertUndoFloorMonotonic :: MonadIO m => ArkhamGameId -> Int -> ReaderT SqlBackend m ()
-upsertUndoFloorMonotonic gameId step =
+upsertUndoFloorMonotonic gameId step = do
+  _locked :: [Single Int64] <-
+    rawSql
+      "SELECT 1::bigint FROM arkham_games WHERE id = ? FOR KEY SHARE"
+      [toPersistValue gameId]
   void
     $ rawExecuteCount
       "INSERT INTO arkham_game_undo_floors (arkham_game_id, floor_step) \
