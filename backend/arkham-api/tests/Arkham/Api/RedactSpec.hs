@@ -1,6 +1,7 @@
 module Arkham.Api.RedactSpec (spec) where
 
-import Api.Arkham.Redact (Viewer (..), investigatorMapKeys, redactFor)
+import Api.Arkham.Redact (RedactOptions (..), Viewer (..), defaultRedactOptions, investigatorMapKeys, redactWith)
+import Api.Arkham.Redact qualified as Redact
 import Arkham.Campaign (lookupCampaign)
 import Arkham.Campaign.Types (CampaignAttrs (..))
 import Arkham.CampaignLog (setCampaignLogRecorded)
@@ -265,6 +266,20 @@ shouldHideZones inv = do
   searchField "searchFoundCards" inv `shouldBe` Aeson.Object mempty
   searchField "searchDrawnCards" inv `shouldBe` Aeson.Array mempty
 
+-- | Drop @handCount@ from every investigator in every investigator map.
+stripHandCount :: Aeson.Value -> Aeson.Value
+stripHandCount = \case
+  Aeson.Object top ->
+    Aeson.Object $ KeyMap.mapWithKey (\k v -> if k `elem` investigatorMapKeys then strip v else v) top
+  other -> other
+ where
+  strip = \case
+    Aeson.Object invs -> Aeson.Object (KeyMap.map dropCount invs)
+    other -> other
+  dropCount = \case
+    Aeson.Object inv -> Aeson.Object (KeyMap.delete "handCount" inv)
+    other -> other
+
 allViewers :: Table -> [Viewer]
 allViewers Table {..} =
   [ ViewerSpectator
@@ -287,8 +302,24 @@ withTopCardRevealed Table {..} pid = do
   game' <- getGame
   pure $ toJSON (PublicGame ("game" :: Text) "Redact" (logRows tableA tableB) game')
 
+{- | The cases below pin the @handCount@ shape TASK-2.22.3 will ship, so they
+run with it on; the last case pins that the default leaves it out.
+-}
+redactFor :: Viewer -> Aeson.Value -> Aeson.Value
+redactFor = redactWith RedactOptions {includeHandCount = True}
+
 spec :: Spec
 spec = describe "Api.Arkham.Redact.redactFor" do
+  it "adds no handCount by default, and otherwise redacts the same way" $ withTable \table@Table {..} -> liftIO do
+    defaultRedactOptions `shouldBe` RedactOptions {includeHandCount = False}
+    let original = toJSON tableGame
+    for_ (allViewers table) \v -> do
+      let plain = Redact.redactFor v original
+      for_ [tableA, tableB] \pid ->
+        KeyMap.member "handCount" (investigatorFor pid plain) `shouldBe` False
+      plain `shouldBe` stripHandCount (redactFor v original)
+      Redact.redactFor v plain `shouldBe` plain
+
   it "keeps the viewer's own zones in order and empties the other seat's (a)" $ withTable \Table {..} -> liftIO do
     let original = toJSON tableGame
         redacted = redactFor (ViewerSeats (Set.singleton tableA)) original
