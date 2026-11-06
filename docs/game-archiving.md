@@ -16,11 +16,11 @@ is offered the history back.
 | Where | What |
 |---|---|
 | `backend/arkham-api/library/Api/Arkham/Archive.hs` | All of the machinery: the sweep, one game's archive and restore, and the workers. |
-| `backend/arkham-api/library/Api/Handler/Arkham/Archive.hs` | `GET /games/#/archive`, `PUT /games/#/unarchive`, and `requireUnarchived`, which every undo endpoint calls. |
-| `backend/arkham-api/library/Api/Handler/Arkham/Admin/Archives.hs` | `GET /admin/archives`, `POST /admin/archives/run`. |
+| `backend/arkham-api/library/Api/Handler/Arkham/Archive.hs` | `GET /games/#/archive`, `PUT /games/#/unarchive`, and `checkArchiveSeam`, which the undo endpoints call. |
+| `backend/arkham-api/library/Api/Handler/Arkham/Admin/Archives.hs` | `GET /admin/archives`, `POST /admin/archives/run`, `POST /admin/archives/#gameId`. |
 | `backend/arkham-api/library/Entity/Arkham/GameArchive.hs` | One row per game: where its history is and what state it is in. |
 | `migrations/deploy/arkham_game_archives.sql` | The table, and the trigger exemption that lets the archiver delete steps. |
-| `frontend/src/components/admin/Archives.vue` | The panel on `/admin`. |
+| `frontend/src/views/AdminArchives.vue` | The panel on `/admin`. |
 
 ## Configuration
 
@@ -47,7 +47,7 @@ age.
 
 ### Setting it up in production
 
-**The migration goes first, before the image.** `requireUnarchived` runs on every
+**The migration goes first, before the image.** `checkArchiveSeam` runs on every
 undo and queries `arkham_game_archives` whether or not a bucket is configured, so
 new code against an old schema is a failed undo for everyone. The migration
 itself is additive and the old code ignores it, so there is no window where the
@@ -171,13 +171,61 @@ the table as `GameUnarchived` or `GameUnarchiveFailed` over the game's websocket
 — which is also how it reaches a player whose socket is on a different replica
 than the request was.
 
+Both endpoints answer only an admin or a player seated at the game (the archives
+panel uses the unarchive endpoint too); anyone else gets the same 404 as a game
+that does not exist. A failed restore tells clients one fixed sentence, "The
+archived steps could not be restored.", in the status `error`, the undo refusal
+and `GameUnarchiveFailed`. The row's `error_message`, which the admin panel shows,
+holds only a category (`restore failed: storage`, `database`, `integrity` or
+`unknown`).
+A failed admin hand-archive (`POST /admin/archives/#gameId`) likewise answers
+a 500 whose `error` is a fixed sentence ("The game could not be archived. The
+server log has the details.").
+
+The server log does not have the exception's text either. Archive, restore,
+sweep and hand-archive failures log what kind of failure it was and nothing
+that came from the request or the response — never headers (an
+`X-Amz-Security-Token` from an instance role among them), URLs or query
+strings, response bodies, AWS error messages, file paths or SQL. What a line
+does say, by failure:
+
+| Failure | Logged |
+| --- | --- |
+| AWS service error | `aws service error (status 404, code NoSuchKey, request id 4442587FB7D0A2F9)` |
+| AWS response that would not parse | `aws serialize error (status 500)` |
+| Network or HTTP failure | `aws transport error (StatusCodeException, status 403)`, `(ConnectionFailure)`, `(invalid-url)` |
+| Credentials | `aws credentials error (RetrievalError)` |
+| SQL | `sql error (state 23505)` |
+| I/O | `io error (does not exist)` |
+| Anything else | `exception (ErrorCall)` — the exception's type |
+
+A throw that would otherwise go nowhere — out of a forked restore, or out of a
+tick of the restore worker or the sweeper — is logged the same way, with the
+failure's kind alone, as
+`archive: restore of game <id> FAILED (database): sql error (state 57014)`
+(or `restore worker tick` / `sweeper tick`). A forked restore then simply
+ends; the worker and the sweeper carry on with their next tick, even if writing
+the line itself fails. The thread being killed is not caught.
+
+The AWS error code and request id are there because an operator needs them
+to look a failure up; neither is a credential. Each is logged only if it is
+1–64 characters of `[A-Za-z0-9._-]`, and is otherwise replaced by
+`<filtered>` whole, so text that is not shaped like an identifier never
+reaches the log even in part.
+
 A game is only a candidate again once it is fully `restored`. Not merely "not
 archived": a game whose restore *failed* has its old steps only in the object
 and its newer ones in the database, so archiving it would write a second object
 holding the tail of the history and then delete the one holding its beginning.
 
 A restore that dies with its replica is picked up by `restoreWorker` after ten
-minutes. A restore that *fails* goes to `failed` rather than back to `archived`:
+minutes. The restart claims the row by bumping `requested_at`, and that value is
+the attempt's token: a restore only records a failure while the row is still
+`restoring` *and* still carries its own `requested_at`. So if the original
+attempt was merely slow and fails while the restart is running, the row stays
+`restoring`, nobody is told, and the log says `late restore failure ignored ...
+a newer restore attempt owns the archive`; the restart's own outcome is what
+lands. A restore that *fails* goes to `failed` rather than back to `archived`:
 the object is still there, but something about it did not work, and retrying on a
 loop would just fail on a loop. Pressing the button again retries it.
 

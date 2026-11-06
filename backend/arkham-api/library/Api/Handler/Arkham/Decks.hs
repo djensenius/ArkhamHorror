@@ -31,7 +31,7 @@ import Api.Arkham.ArkhamDBWriteBack (queueCampaignWriteBack, dispatchCampaignWri
 import Api.Arkham.Deck (DeckError (..), toDeckErrors, validateDeckUpgrade)
 import Api.Arkham.Helpers
 import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
-import Api.Handler.Arkham.Games.Shared (publishToRoom, requireGameAccess)
+import Api.Handler.Arkham.Games.Shared (publishToRoom, requireGameAccess, sameInvestigatorCard)
 import Arkham.Campaign.Types (campaignLog)
 import Arkham.ArkhamDB.Campaign (withCampaignWriteBackBoundary, campaignWriteBackKey)
 import Arkham.ArkhamDB.WriteBack (selectSavedDeckUpgradeTargets, savedDeckUpgradeUpdates)
@@ -48,7 +48,6 @@ import Arkham.Custom.Overlay (
   decklistCustomCards,
   investigatorOverlay,
   needsOverlayInvestigator,
-  samePrintedInvestigator,
  )
 import Arkham.Decklist
 import Arkham.Game
@@ -109,7 +108,7 @@ requireGameDecksAccess = requireGameAccess
 -- | True when the decklist upgrades the SAME investigator (an alternate art of them counts)
 -- rather than replacing them with a different one.
 sameInvestigator :: InvestigatorId -> ArkhamDBDecklist -> Bool
-sameInvestigator iid decklist = samePrintedInvestigator iid decklist.investigator
+sameInvestigator iid decklist = sameInvestigatorCard iid decklist.investigator
 
 killedOrInsaneInvestigatorIdsFromCampaignLog :: CampaignLog -> Set InvestigatorId
 killedOrInsaneInvestigatorIdsFromCampaignLog campaignLog' =

@@ -5,7 +5,6 @@ import Arkham.Asset.Cards qualified as Cards
 import Arkham.Asset.Import.Lifted
 import Arkham.Campaigns.TheScarletKeys.Concealed.Helpers
 import Arkham.Campaigns.TheScarletKeys.Concealed.Matcher
-import Arkham.Campaigns.TheScarletKeys.Helpers
 import Arkham.Capability
 import Arkham.Helpers.Location (getLocationOf)
 import Arkham.I18n

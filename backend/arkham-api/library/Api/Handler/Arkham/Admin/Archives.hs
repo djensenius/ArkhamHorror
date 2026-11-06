@@ -301,8 +301,13 @@ postApiV1AdminArchiveGameR gameId = do
           , "key" .= archiveOutcomeKey outcome
           ]
     -- Nothing was deleted: 'archiveGame' only deletes after the upload has been
-    -- read back and checked. The message is the operational detail -- usually
-    -- the bucket or the credentials -- and it is what the panel shows.
-    Left err ->
+    -- read back and checked. 'archiveOne' has already written the failure kind
+    -- to the server log -- an HTTP status, a filtered AWS error code and request
+    -- id, a SQL state or an exception type, never the exception text; the
+    -- response says only that it failed.
+    Left _ ->
       sendStatusJSON Status.status500
-        $ object ["archived" .= False, "game" .= name, "error" .= err]
+        $ object ["archived" .= False, "game" .= name, "error" .= archiveFailedMessage]
+ where
+  archiveFailedMessage :: Text
+  archiveFailedMessage = "The game could not be archived. The server log has the details."

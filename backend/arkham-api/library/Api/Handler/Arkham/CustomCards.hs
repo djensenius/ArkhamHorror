@@ -24,6 +24,18 @@ module Api.Handler.Arkham.CustomCards (
   hostArt,
   portableArt,
   setDeclarationsFromCards,
+
+  -- * The guarded art upload, exposed for regression tests
+  ArtUploadFailure (..),
+  ArtUploadOutcome (..),
+  ArtUploadTransport,
+  artUploadPolicy,
+  awsArtUpload,
+  awsArtUploadWith,
+  describeArtUploadFailure,
+  runArtUploadGuarded,
+  runArtUploadWith,
+  storeArtWith,
 ) where
 
 import Amazonka
@@ -43,6 +55,9 @@ import Arkham.Card.CustomCard (
 import Arkham.Custom.SetDefs qualified as SetDefs
 import Arkham.Name (toTitle)
 import Auth.ApiKey qualified as ApiKey
+import Conduit (ResourceT)
+import Control.Exception (evaluate)
+import Control.Monad.Logger (logWarnN)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (encode)
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -59,9 +74,10 @@ import Database.Persist qualified as DB
 import Database.Persist.Sql (Single (..), SqlPersistT, rawSql)
 import Import hiding ((==.))
 import Import qualified as P
+import Network.HTTP.Types.Status qualified as Status
 import System.Directory (createDirectoryIfMissing)
 import System.IO.Unsafe (unsafePerformIO)
-import UnliftIO.Exception (catch)
+import UnliftIO.Exception (catch, tryAny)
 
 {- | The requesting user's card library.
 
@@ -552,9 +568,93 @@ those bytes could write over it. The prefix keeps each library's images its own.
 artPrefixFor :: UserId -> Text
 artPrefixFor userId = artPrefix <> toPathPiece userId <> "/"
 
+-- | Why an art upload failed. Fieldless on purpose: the exception behind it is
+-- dropped unseen, so its text can reach neither the log nor the response.
+data ArtUploadFailure
+  = ArtDiscoveryFailed
+  | -- | Any synchronous exception after discovery: a non-Amazonka exception
+    -- from 'send', a failing PutObject, a lazily failing 'Env', or a
+    -- 'runResourceT' cleanup failure.
+    ArtUploadFailed
+  deriving stock (Eq, Show)
+
+data ArtUploadOutcome
+  = ArtStored
+  | ArtUploadFailedWith ArtUploadFailure
+  deriving stock (Eq, Show)
+
+-- | The constant log line for a failed art upload. Never carries request data.
+describeArtUploadFailure :: ArtUploadFailure -> Text
+describeArtUploadFailure = \case
+  ArtDiscoveryFailed -> "custom card art upload: AWS credential discovery failed"
+  ArtUploadFailed -> "custom card art upload: S3 upload failed"
+
+{- | Stores image bytes under an object key with a content type. Production uses
+'awsArtUpload'; tests supply a stub or 'awsArtUploadWith' with a stubbed
+discovery, so they never reach AWS or the machine's credentials.
+-}
+type ArtUploadTransport = Text -> Text -> BSL.ByteString -> IO ArtUploadOutcome
+
+{- | HeadObject, then PutObject only if needed. Any Amazonka 'Error' from
+HeadObject means the object is treated as absent and uploaded: an IAM role
+without ListBucket gets 403, not 404, for a missing key, so only a successful
+HeadObject may skip the PUT. Any other exception propagates to
+'runArtUploadGuarded'.
+-}
+artUploadPolicy :: MonadUnliftIO m => m () -> m () -> m ArtUploadOutcome
+artUploadPolicy headAction putAction = do
+  present <- catch @_ @Error (headAction $> True) (\_ -> pure False)
+  unless present putAction
+  pure ArtStored
+
+{- | Run the upload so that any synchronous exception it throws becomes
+'ArtUploadFailed'. The outcome is forced with 'evaluate' inside the guard, so a
+lazy throw cannot escape it later. Asynchronous exceptions still propagate.
+-}
+runArtUploadGuarded :: IO ArtUploadOutcome -> IO ArtUploadOutcome
+runArtUploadGuarded upload =
+  tryAny (upload >>= evaluate) <&> \case
+    Left _ -> ArtUploadFailedWith ArtUploadFailed
+    Right outcome -> outcome
+
+{- | Credential discovery, then 'artUploadPolicy' with the environment it found.
+Any synchronous exception from discovery becomes 'ArtDiscoveryFailed' and
+nothing is sent; anything after it is guarded by 'runArtUploadGuarded'.
+-}
+runArtUploadWith
+  :: IO env -> (env -> ResourceT IO ()) -> (env -> ResourceT IO ()) -> IO ArtUploadOutcome
+runArtUploadWith discoverEnv headAction putAction =
+  tryAny discoverEnv >>= \case
+    Left _ -> pure $ ArtUploadFailedWith ArtDiscoveryFailed
+    Right env ->
+      runArtUploadGuarded $ runResourceT $ artUploadPolicy (headAction env) (putAction env)
+
+awsArtUpload :: ArtUploadTransport
+awsArtUpload = awsArtUploadWith (newEnv discover)
+
+-- | 'awsArtUpload' with the credential discovery supplied, so tests can make
+-- discovery fail without touching AWS or this machine's credentials.
+awsArtUploadWith :: IO Env -> ArtUploadTransport
+awsArtUploadWith discoverEnv objectKey contentType bytes =
+  runArtUploadWith
+    discoverEnv
+    (\env -> void $ send env (newHeadObject artBucket key))
+    ( \env ->
+        void
+          . send env
+          $ newPutObject artBucket key (toBody bytes)
+          & (putObject_acl ?~ ObjectCannedACL_Public_read)
+          & (putObject_contentType ?~ contentType)
+    )
+ where
+  key = ObjectKey objectKey
+
 -- | Put image bytes where they are served from, and say where that is.
 storeArt :: UserId -> Text -> BSL.ByteString -> Handler Text
-storeArt userId contentType bytes = do
+storeArt = storeArtWith awsArtUpload
+
+storeArtWith :: ArtUploadTransport -> UserId -> Text -> BSL.ByteString -> Handler Text
+storeArtWith transport userId contentType bytes = do
   unless ("image/" `T.isPrefixOf` contentType) $ invalidArgs ["Not an image"]
   -- The browser downscales before uploading; this is the backstop.
   when (BSL.length bytes > maxArtBytes) $ invalidArgs ["Image is larger than 1MB"]
@@ -563,7 +663,6 @@ storeArt userId contentType bytes = do
     prefix = artPrefixFor userId
     filename =
       decodeUtf8 (B16.encode $ SHA256.hashlazy bytes) <> "." <> extensionFor (Just contentType)
-    key = ObjectKey $ prefix <> filename
 
   getsApp (appCustomCardArtDir . appSettings) >>= \case
     -- Development: keep art on disk in the frontend's public directory, so
@@ -573,21 +672,16 @@ storeArt userId contentType bytes = do
       createDirectoryIfMissing True userDir
       BSL.writeFile (userDir <> "/" <> T.unpack filename) bytes
       pure $ "/" <> prefix <> filename
-    Nothing -> do
-      liftIO do
-        env <- newEnv discover
-        runResourceT do
-          mExisting <-
-            catch @_ @Error (Just <$> send env (newHeadObject artBucket key)) (\_ -> pure Nothing)
-          whenNothing_ mExisting do
-            void
-              . send env
-              $ newPutObject artBucket key (toBody bytes)
-              & (putObject_acl ?~ ObjectCannedACL_Public_read)
-              & (putObject_contentType ?~ contentType)
-
-      assetHost <- getsApp (appAssetHost . appSettings)
-      pure $ fromMaybe "https://assets.arkhamhorror.app" assetHost <> "/" <> prefix <> filename
+    Nothing ->
+      -- The failure is answered outside the guard: the guard never wraps
+      -- Handler code, whose responses are themselves exceptions.
+      liftIO (transport (prefix <> filename) contentType bytes) >>= \case
+        ArtStored -> do
+          assetHost <- getsApp (appAssetHost . appSettings)
+          pure $ fromMaybe "https://assets.arkhamhorror.app" assetHost <> "/" <> prefix <> filename
+        ArtUploadFailedWith failure -> do
+          logWarnN $ describeArtUploadFailure failure
+          sendStatusJSON Status.status502 $ object ["message" .= ("Failed to upload image" :: Text)]
 
 postApiV1ArkhamCustomCardsArtR :: Handler Text
 postApiV1ArkhamCustomCardsArtR = do

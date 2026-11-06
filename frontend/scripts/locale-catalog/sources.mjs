@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, posix, relative as relative_, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { cardSourcePath } from './card-names.mjs'
 import { createOwnedBuildDirectory, releaseOwnedBuildDirectory } from './owned-build-dir.mjs'
 
 const VIRTUAL_ENTRY = '\0locale-catalog-entry'
@@ -68,12 +69,18 @@ function homebrewSourceFiles(frontendDir) {
   return files
 }
 
-/** Every committed file the generated catalog is derived from, path-sorted. */
-export function collectSourceFiles(frontendDir) {
+/**
+ * Every committed file the generated catalog is derived from, path-sorted.
+ *
+ * `cardLocales` adds each catalog locale's card file (`cardSourcePath`), the
+ * card data the `cardNames` pack is resolved from (see card-names.mjs).
+ */
+export function collectSourceFiles(frontendDir, cardLocales = []) {
   const files = []
   for (const directory of SOURCE_DIRECTORIES) files.push(...walkFiles(join(frontendDir, directory)))
   files.push(...homebrewSourceFiles(frontendDir))
   for (const source of SEMANTIC_SOURCES) files.push(join(frontendDir, source))
+  for (const locale of cardLocales) files.push(join(frontendDir, cardSourcePath(locale)))
 
   return files
     .map((file) => {

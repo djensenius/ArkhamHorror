@@ -7,6 +7,8 @@
 module Postgres.Production where
 
 import Api.Arkham.ArkhamDBStore (persistentStoreWith)
+-- The YesodDispatch App instance (an orphan generated in Application).
+import Application ()
 import Arkham.ArkhamDB.Service (ArkhamDBStore)
 import Arkham.ArkhamDB.WriteBack (newArkhamDBExecutor)
 import Arkham.Decklist (ArkhamDBDecklist)
@@ -18,17 +20,22 @@ import Data.Bugsnag.Settings qualified as Bugsnag
 import Data.Time.Clock (getCurrentTime)
 import Database.Persist.Postgresql (pgConnStr, pgPoolSize)
 import Database.Persist.Sql (SqlBackend, runSqlConn)
-import Foundation (App (..), Handler, MessageBroker (..), unsafeHandler)
+import Entity.Arkham.Deck (ArkhamDeckId)
+import Entity.User (UserId)
+import Foundation (App (..), Handler, MessageBroker (..), unsafeHandler, userIdToToken)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
-import Network.HTTP.Types (Status, status401)
-import Network.Wai (Request)
+import Network.HTTP.Types (Header, Method, Status, status401)
+import Network.Wai (Application, Request, requestHeaders, requestMethod)
+import Network.Wai.Test qualified as WaiTest
 import Postgres.Harness
 import Relude
 import Settings (AppSettings (..), compileTimeAppSettings)
 import System.Log.FastLogger (defaultBufSize, newStderrLoggerSet, rmLoggerSet)
 import ThirdEdition.Store qualified as ThirdEdition
 import UnliftIO.Exception qualified as Exception
-import Yesod.Core.Types (Content (ContentBuilder), ErrorResponse (NotAuthenticated), HandlerContents (..), HandlerFor (..), HandlerData (..), TypedContent (..), YesodRequest (..))
+import Yesod.Core (makeLogger, toPathPiece)
+import Yesod.Core.Dispatch (defaultGen, getGetMaxExpires, toWaiAppYre)
+import Yesod.Core.Types (Content (ContentBuilder), ErrorResponse (NotAuthenticated), HandlerContents (..), HandlerFor (..), HandlerData (..), TypedContent (..), YesodRequest (..), YesodRunnerEnv (..))
 
 withProductionApp :: Harness -> (App -> IO a) -> IO a
 withProductionApp harness action =
@@ -57,8 +64,17 @@ withProductionApp harness action =
         appArchiveThreads = []
         appPodId = "arkhamdb-postgres-tests"
         appArkhamDBClient = Nothing
-        appBugsnag = Bugsnag.defaultSettings ""
+        appBugsnag = quietBugsnag
     action App {..}
+
+-- WAI-dispatched requests run bugsnagYesodMiddleware. No release stage is
+-- enabled and every exception is ignored, so an unexpected 500 in a test is
+-- never reported over the network (the API key is also empty).
+quietBugsnag :: Bugsnag.Settings
+quietBugsnag = (Bugsnag.defaultSettings "")
+  { Bugsnag.settings_enabledReleaseStages = []
+  , Bugsnag.settings_ignoreException = const True
+  }
 
 -- Match normal runDB boundaries: each store action commits independently,
 -- except withRefreshLock, whose production callback reuses its locked backend.
@@ -111,3 +127,39 @@ withRequest :: Request -> Handler a -> Handler a
 withRequest request action = HandlerFor \environment ->
   unHandlerFor action environment
     {handlerRequest = (handlerRequest environment) {reqWaiRequest = request}}
+
+-- The production WAI application as Yesod.Core.toWaiAppPlain builds it: route
+-- dispatch (404/405), yesodMiddleware (maintenance, Bugsnag and
+-- defaultYesodMiddleware) and isAuthorized. Unlike toWaiAppPlain there is no
+-- session backend: the API authenticates with JWT headers only, and the
+-- client-session backend would read (or create) config/client_session_key.aes
+-- relative to the working directory. Application's outer gzip, request-logging
+-- and CORS middleware are not applied.
+productionApplication :: App -> IO Application
+productionApplication app = do
+  yreLogger <- makeLogger app
+  yreGetMaxExpires <- getGetMaxExpires
+  pure $ toWaiAppYre YesodRunnerEnv
+    {yreLogger, yreSite = app, yreSessionBackend = Nothing, yreGen = defaultGen, yreGetMaxExpires}
+
+-- One request through productionApplication: method, path (with any query),
+-- headers and body in; the response status and body out.
+routeRequest :: App -> Method -> ByteString -> [Header] -> LByteString -> IO (Status, LByteString)
+routeRequest app method path headers body = do
+  application <- productionApplication app
+  response <- WaiTest.runSession
+    (WaiTest.srequest $ WaiTest.SRequest
+      (WaiTest.setPath WaiTest.defaultRequest path) {requestMethod = method, requestHeaders = headers}
+      body)
+    application
+  pure (WaiTest.simpleStatus response, WaiTest.simpleBody response)
+
+-- The production JWT Authorization header for a user.
+authorizationFor :: App -> UserId -> IO Header
+authorizationFor app uid = do
+  token <- unsafeHandler app $ userIdToToken uid
+  pure ("Authorization", "Token " <> encodeUtf8 token)
+
+-- A saved deck's API path, e.g. deckPath deckId "/overlay".
+deckPath :: ArkhamDeckId -> Text -> ByteString
+deckPath deckId suffix = encodeUtf8 $ "/api/v1/arkham/decks/" <> toPathPiece deckId <> suffix
