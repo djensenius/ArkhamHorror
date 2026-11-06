@@ -33,12 +33,14 @@ library
       Api.Arkham.Export
       Api.Arkham.Helpers
       Api.Arkham.Maintenance
+      Api.Arkham.Redact
       Api.Arkham.RoomOps
       Api.Arkham.Types.Achievement
       Api.Arkham.Types.Deck
       Api.Arkham.Types.Game
       Api.Arkham.Types.GameStep
       Api.Arkham.Types.MultiplayerVariant
+      Api.Arkham.Viewer
       Api.Handler.ApiKeys
       Api.Handler.Arkham.Achievements
       Api.Handler.Arkham.Admin.Archives
@@ -9843,16 +9845,19 @@ test-suite arkhamdb-postgres
       Postgres.ArchiveSpec
       Postgres.ClaimSeatSpec
       Postgres.ConcurrencySpec
+      Postgres.CustomCardArtSpec
       Postgres.DeleteSpec
       Postgres.DispatchSpec
       Postgres.EndToEndSpec
       Postgres.EventDeleteSpec
+      Postgres.EventReplicateSpec
       Postgres.Harness
       Postgres.HarnessSpec
       Postgres.MainStreetSwapSpec
       Postgres.PayloadSpec
       Postgres.PendingJoinSpec
       Postgres.Production
+      Postgres.RedactRestSpec
       Postgres.Remote
       Postgres.ThirdEditionSpec
       Postgres.WriteBackSpec
@@ -9951,6 +9956,7 @@ test-suite spec
       Arkham.Api.ArkhamDBSpec
       Arkham.Api.ArkhamDBWriteBackSpec
       Arkham.Api.CampaignCatalogSpec
+      Arkham.Api.CustomCardArtUploadSpec
       Arkham.Api.Events.EventCreationSpec
       Arkham.Api.Events.EventDeletionSpec
       Arkham.Api.Events.EventListSpec
@@ -9966,6 +9972,8 @@ test-suite spec
       Arkham.Api.LocaleCatalogCapabilitySpec
       Arkham.Api.LocaleCatalogSettingsPreflightSpec
       Arkham.Api.MainStreetSwapPlanSpec
+      Arkham.Api.RedactSpec
+      Arkham.Api.ViewerSpec
       Arkham.Asset.Assets.AncientAnkhSpec
       Arkham.Asset.Assets.Aquinnah1Spec
       Arkham.Asset.Assets.Aquinnah3Spec

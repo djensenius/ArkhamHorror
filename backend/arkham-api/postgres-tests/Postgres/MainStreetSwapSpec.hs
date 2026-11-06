@@ -12,6 +12,7 @@ module Postgres.MainStreetSwapSpec (spec) where
 import Api.Arkham.Epic (modifySharedStateLocked)
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (WithFriends))
 import Api.Handler.Arkham.Games.Shared (MainStreetSwapSide (..), mainStreetSwapSide)
+import Arkham.Calculation (GameCalculation (Fixed))
 import Arkham.Card.Id (unsafeMakeCardId)
 import Arkham.Classes.Entity (attr, overAttrs)
 import Arkham.Difficulty (Difficulty (Easy))
@@ -27,20 +28,23 @@ import Arkham.Epic.Types (
   sharedCounter,
  )
 import Arkham.Game qualified as Game
-import Arkham.Id (InvestigatorId, LocationId (..), PlayerId (..))
+import Arkham.Game.State (GameState (IsActive, IsPending))
+import Arkham.Id (InvestigatorId, LocationId (..), PlayerId (..), SkillTestId (..))
 import Arkham.Investigator (lookupInvestigator)
 import Arkham.Investigator.Types (investigatorPlacement)
 import Arkham.Location (lookupLocation)
 import Arkham.Message (Message (BeginRound))
+import Arkham.Phase (Phase (InvestigationPhase, MythosPhase))
 import Arkham.Placement (Placement (AtLocation, Unplaced))
-import Control.Concurrent (threadDelay)
+import Arkham.Question (Question (ChooseOne, PlayerWindowChooseOne))
+import Arkham.SkillTest.Base (SkillTestDifficulty (..), initSkillTest)
+import Arkham.SkillType (SkillType (SkillIntellect))
 import Data.Aeson (Value, decode, encode, object, toJSON, (.=))
 import Data.Map.Strict qualified as Map
 import Data.UUID.V4 (nextRandom)
 import Database.Persist (Entity (..), SelectOpt (..), toPersistValue)
 import Database.Persist qualified as P
 import Database.Persist.Sql (Single (..), SqlBackend, rawSql)
-import Database.Persist.Types (PersistValue (..))
 import Entity.Arkham.Epic
 import Entity.Arkham.Game
 import Entity.Arkham.Player
@@ -69,6 +73,7 @@ data Side = Side
   , user :: UserId
   , investigator :: InvestigatorId
   , mainStreet :: LocationId
+  , player :: PlayerId
   }
 
 data Fixture = Fixture
@@ -90,9 +95,10 @@ data Rows = Rows
   }
   deriving stock (Eq, Show)
 
-notReady, stale :: Outcome
+notReady, stale, conflict :: Outcome
 notReady = Refused 409 (Just "main-street-not-ready")
 stale = Refused 409 (Just "main-street-stale")
+conflict = Refused 409 (Just "main-street-conflict")
 
 spec :: Harness -> App -> SeedUser -> Spec
 spec harness app seedUser = describe "Main Street swap" do
@@ -121,6 +127,64 @@ spec harness app seedUser = describe "Main Street swap" do
       requestSwap app f.organizer f.eventId 1 0 `shouldReturn` notReady
       rows connection f `shouldReturn` original
 
+  it "re-asks each active game, at a new floored step, for the investigator it received" $
+    withConnection harness \connection -> do
+      f <- seedFixture connection seedUser "swap-reask"
+      for_ [f.side0, f.side1] \side -> askStale connection side
+      requestSwap app f.organizer f.eventId 0 1 `shouldReturn` Succeeded
+      -- The swap step (2), then the re-asked step (3), which the floor moved to.
+      assertSwapped connection f
+      -- Each incoming player is asked afresh, by this game, to take a turn;
+      -- the stale question it was given in the game it left is gone.
+      for_ [(f.side0, f.side1), (f.side1, f.side0)] \(side, other) -> do
+        game <- gameData connection side.gameId
+        Map.keys (Game.gameQuestion game) `shouldBe` [other.player]
+        (isPlayerWindow <$> Map.lookup other.player (Game.gameQuestion game)) `shouldBe` Just True
+
+  it "refuses a group whose game left its investigation phase with 409 and changes no row" $
+    withConnection harness \connection -> do
+      f <- seedFixture connection seedUser "swap-not-investigating"
+      -- Group 1 readied at Main Street, then play moved on to the Mythos phase
+      -- (e.g. its player is asked about an encounter draw). Its empty queue
+      -- could not resume Mythos, so the swap must not drop it.
+      askStale connection f.side1
+      updateGame connection f.side1 \g -> g {Game.gamePhase = MythosPhase}
+      original <- rows connection f
+      requestSwap app f.organizer f.eventId 0 1 `shouldReturn` notReady
+      requestSwap app f.organizer f.eventId 1 0 `shouldReturn` notReady
+      rows connection f `shouldReturn` original
+      -- A game that is not active at all is refused the same way.
+      updateGame connection f.side1 \g ->
+        g {Game.gamePhase = InvestigationPhase, Game.gameGameState = IsPending []}
+      inactive <- rows connection f
+      requestSwap app f.organizer f.eventId 0 1 `shouldReturn` notReady
+      rows connection f `shouldReturn` inactive
+
+  it "refuses a group whose game has a skill test in progress with 409 and changes no row" $
+    withConnection harness \connection -> do
+      f <- seedFixture connection seedUser "swap-skill-test"
+      -- Group 1 is in its investigation phase, but a skill test is under way
+      -- (e.g. a teammate investigating). The swap would drop the test's
+      -- queued continuation while the game kept the test.
+      sid <- SkillTestId <$> nextRandom
+      askStale connection f.side1
+      updateGame connection f.side1 \g ->
+        g
+          { Game.gameSkillTest =
+              Just
+                $ initSkillTest
+                  sid
+                  f.side1.investigator
+                  f.side1.investigator
+                  f.side1.investigator
+                  SkillIntellect
+                  (SkillTestDifficulty $ Fixed 2)
+          }
+      original <- rows connection f
+      requestSwap app f.organizer f.eventId 0 1 `shouldReturn` notReady
+      requestSwap app f.organizer f.eventId 1 0 `shouldReturn` notReady
+      rows connection f `shouldReturn` original
+
   it "refuses a spent readiness with 409 and changes no row" $
     withConnection harness \connection -> do
       f <- seedFixture connection seedUser "swap-spent"
@@ -137,6 +201,32 @@ spec harness app seedUser = describe "Main Street swap" do
       original <- rows connection f
       requestSwap app f.organizer f.eventId 0 1 `shouldReturn` stale
       rows connection f `shouldReturn` original
+
+  it "refuses a game that already holds the incoming investigator with 409 and changes no row" $
+    withConnection harness \connection -> do
+      f <- seedFixture connection seedUser "swap-conflict"
+      -- Group 0's game also seats a Daisy (group 1's readied investigator)
+      -- away from Main Street.
+      addBystander connection f.side0 f.side1.investigator
+      original <- rows connection f
+      requestSwap app f.organizer f.eventId 0 1 `shouldReturn` conflict
+      requestSwap app f.organizer f.eventId 1 0 `shouldReturn` conflict
+      rows connection f `shouldReturn` original
+
+  it "refuses a game that holds another printing of the incoming investigator with 409" $
+    withConnection harness \connection -> do
+      f <- seedFixtureWith connection seedUser "swap-conflict-printing" "01002" "01001"
+      -- Group 0 sends Daisy but keeps a Roland (01501); group 1 sends Roland (01001).
+      addBystander connection f.side0 "01501"
+      original <- rows connection f
+      requestSwap app f.organizer f.eventId 0 1 `shouldReturn` conflict
+      rows connection f `shouldReturn` original
+
+  it "swaps two groups that readied the same investigator" $
+    withConnection harness \connection -> do
+      f <- seedFixtureWith connection seedUser "swap-same-investigator" "01001" "01001"
+      requestSwap app f.organizer f.eventId 0 1 `shouldReturn` Succeeded
+      assertSwapped connection f
 
   it "refuses invalid and unauthorized requests and changes no row" $
     withConnection harness \connection -> do
@@ -232,20 +322,16 @@ spec harness app seedUser = describe "Main Street swap" do
       outcomes `shouldBe` [Succeeded, Succeeded]
       remaining observer f `shouldReturn` (0, 0, 0)
 
--- The committed swap: each game one step on and floored there, each seat and
--- membership moved with its investigator, both readinesses spent exactly once.
+-- The committed swap: each game at its swap step (2) and the re-asked step
+-- after it (3), floored there, each seat and membership moved with its
+-- investigator, both readinesses spent exactly once.
 assertSwapped :: SqlBackend -> Fixture -> IO ()
 assertSwapped connection f = do
   r <- rows connection f
-  map (fmap fst) r.games `shouldBe` [Just 2, Just 2]
+  map (fmap fst) r.games `shouldBe` [Just 3, Just 3]
   r.steps
-    `shouldBe` sort
-      [ (f.side0.gameId, 1)
-      , (f.side0.gameId, 2)
-      , (f.side1.gameId, 1)
-      , (f.side1.gameId, 2)
-      ]
-  r.floors `shouldBe` sort [(f.side0.gameId, 2), (f.side1.gameId, 2)]
+    `shouldBe` sort [(side.gameId, step) | side <- [f.side0, f.side1], step <- [1, 2, 3]]
+  r.floors `shouldBe` sort [(f.side0.gameId, 3), (f.side1.gameId, 3)]
   r.seats `shouldBe` sort [(f.side0.user, f.side1.gameId), (f.side1.user, f.side0.gameId)]
   r.memberships
     `shouldBe` sort
@@ -260,6 +346,11 @@ assertSwapped connection f = do
   for_ [(0, f.side0, f.side1), (1, f.side1, f.side0)] \(ordinal, side, other) -> do
     game <- gameData connection side.gameId
     Map.keys (entitiesInvestigators $ Game.gameEntities game) `shouldBe` [other.investigator]
+    -- It stands at this game's Main Street, not the one of the game it left.
+    ( attr investigatorPlacement
+        <$> Map.lookup other.investigator (entitiesInvestigators $ Game.gameEntities game)
+      )
+      `shouldBe` Just (AtLocation side.mainStreet)
     (mainStreetSwapSide (GroupOrdinal ordinal) game).mainStreetSideReady `shouldBe` Nothing
 
 spendRow :: ArkhamEpicStep -> (Int, Maybe ArkhamGameId, Maybe Int, SharedKey, Int)
@@ -312,7 +403,8 @@ lockEventRow eventId =
         :: ReaderT SqlBackend IO [Single Int64]
     )
 
--- A Blob group game at step 1 with a pending queue, whose one investigator
+-- A Blob group game at step 1 with a pending queue, playing its investigation
+-- phase with its one investigator taking a turn. That investigator
 -- stands at its Main Street, readied there by the scenario. @uid@ holds the seat.
 seedSide :: SqlBackend -> Text -> UserId -> InvestigatorId -> IO Side
 seedSide connection label user investigator = do
@@ -322,12 +414,19 @@ seedSide connection label user investigator = do
   cardId <- unsafeMakeCardId <$> nextRandom
   let
     playerId = PlayerId playerUuid
+    player = playerId
     initial =
       Game.setInitialScenarioMeta "mainStreetReady" investigator
         $ Game.newScenario "85001" 1 2 Easy False
     game =
       initial
-        { Game.gamePlayers = [playerId]
+        { Game.gameGameState = IsActive
+        , Game.gamePhase = InvestigationPhase
+        , Game.gameTurnPlayerInvestigatorId = Just investigator
+        , Game.gameActiveInvestigatorId = investigator
+        , Game.gameLeadInvestigatorId = investigator
+        , Game.gameActivePlayerId = playerId
+        , Game.gamePlayers = [playerId]
         , Game.gamePlayerOrder = [investigator]
         , Game.gameEntities =
             (Game.gameEntities initial)
@@ -346,13 +445,18 @@ seedSide connection label user investigator = do
     pure Side {..}
 
 seedFixture :: SqlBackend -> SeedUser -> Text -> IO Fixture
-seedFixture connection seedUser label = do
+seedFixture connection seedUser label = seedFixtureWith connection seedUser label "01001" "01002"
+
+-- Two groups that readied @investigator0@ and @investigator1@.
+seedFixtureWith
+  :: SqlBackend -> SeedUser -> Text -> InvestigatorId -> InvestigatorId -> IO Fixture
+seedFixtureWith connection seedUser label investigator0 investigator1 = do
   now <- currentTimeMicros
   organizer <- seedUser connection (label <> "-organizer")
   alice <- seedUser connection (label <> "-alice")
   bob <- seedUser connection (label <> "-bob")
-  side0 <- seedSide connection (label <> "-group-0") alice "01001"
-  side1 <- seedSide connection (label <> "-group-1") bob "01002"
+  side0 <- seedSide connection (label <> "-group-0") alice investigator0
+  side1 <- seedSide connection (label <> "-group-1") bob investigator1
   let shared =
         setSharedCounter (MainStreetReady (GroupOrdinal 0)) 1
           $ setSharedCounter (MainStreetReady (GroupOrdinal 1)) 1
@@ -367,6 +471,40 @@ seedFixture connection seedUser label = do
     for_ [(0 :: Int, side0), (1, side1)] \(ordinal, side) ->
       P.insert_ $ ArkhamEpicGroup eventId ordinal (Just side.gameId) ("Group " <> show ordinal) 1
     pure Fixture {..}
+
+-- The side's player holds a question the swap must not carry into the other
+-- game.
+askStale :: SqlBackend -> Side -> IO ()
+askStale connection side =
+  updateGame connection side \g -> g {Game.gameQuestion = Map.singleton side.player (ChooseOne [])}
+
+updateGame :: SqlBackend -> Side -> (Game.Game -> Game.Game) -> IO ()
+updateGame connection side f = do
+  game <- gameData connection side.gameId
+  transaction connection $ P.update side.gameId [ArkhamGameCurrentData P.=. f game]
+
+isPlayerWindow :: Question msg -> Bool
+isPlayerWindow = \case
+  PlayerWindowChooseOne {} -> True
+  _ -> False
+
+-- The side's game also seats @investigator@, away from Main Street.
+addBystander :: SqlBackend -> Side -> InvestigatorId -> IO ()
+addBystander connection side investigator = do
+  game <- gameData connection side.gameId
+  playerId <- PlayerId <$> nextRandom
+  let joined =
+        game
+          { Game.gamePlayers = Game.gamePlayers game <> [playerId]
+          , Game.gamePlayerOrder = Game.gamePlayerOrder game <> [investigator]
+          , Game.gameEntities =
+              (Game.gameEntities game)
+                { entitiesInvestigators =
+                    Map.insert investigator (lookupInvestigator investigator playerId)
+                      $ entitiesInvestigators (Game.gameEntities game)
+                }
+          }
+  transaction connection $ P.update side.gameId [ArkhamGameCurrentData P.=. joined]
 
 -- The investigator walked away from Main Street after readying there.
 relocate :: SqlBackend -> Side -> Placement -> IO ()
@@ -460,21 +598,3 @@ route app uid method path body = do
       | code `elem` [400, 409] ->
           Refused code $ Map.lookup ("error" :: Text) =<< decode @(Map Text Text) response
       | otherwise -> Failed code (decodeUtf8 response)
-
--- Pool sessions have no PID the test can name up front, so wait until the
--- expected number of sessions are blocked, directly or behind each other, on
--- the holder's lock.
-awaitBlockedSessions :: SqlBackend -> Int64 -> Int64 -> IO ()
-awaitBlockedSessions observer holder expected = within "requests queued behind the held lock" loop
- where
-  loop = do
-    rows' <- transaction observer $
-      rawSql
-        "SELECT count(*)::bigint FROM pg_stat_activity \
-        \WHERE datname = current_database() AND pid <> ?::integer \
-        \AND cardinality(pg_blocking_pids(pid)) > 0"
-        [PersistInt64 holder]
-    case rows' of
-      [Single n] | n >= expected -> pure ()
-      [Single _] -> threadDelay 10000 >> loop
-      _ -> fail "Expected one PostgreSQL lock observation"

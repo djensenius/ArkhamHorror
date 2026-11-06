@@ -20,6 +20,7 @@ import System.Directory (canonicalizePath)
 import System.Environment (getEnv)
 import System.FilePath ((</>))
 import System.Timeout (timeout)
+import UnliftIO.Async (link, wait, withAsync)
 
 data Harness = Harness
   { connectionString :: ConnectionString
@@ -108,3 +109,44 @@ awaitBlockedBy observer blocker waiter = within "PostgreSQL lock dependency" loo
       [Single True] -> pure ()
       [Single False] -> threadDelay 10000 >> loop
       _ -> fail "Expected one PostgreSQL lock observation"
+
+-- Pool sessions have no PID the test can name up front, so wait until the
+-- expected number of sessions are blocked by the holder. Waiters on one row
+-- queue behind each other: PostgreSQL reports the second as blocked by the
+-- first waiter (which holds the tuple lock), not by the holder. So a session
+-- counts when the holder blocks it directly or through a chain of such
+-- waiters, which holds for waiters on different rows and on the same row alike.
+awaitBlockedSessions :: SqlBackend -> Int64 -> Int64 -> IO ()
+awaitBlockedSessions observer holder expected = within "sessions queued behind the holder's lock" loop
+ where
+  loop = do
+    rows <- transaction observer $
+      rawSql
+        "WITH RECURSIVE waiting(pid) AS ( \
+        \  SELECT pid FROM pg_stat_activity \
+        \  WHERE datname = current_database() AND ?::integer = ANY(pg_blocking_pids(pid)) \
+        \  UNION \
+        \  SELECT a.pid FROM pg_stat_activity a JOIN waiting w \
+        \    ON w.pid = ANY(pg_blocking_pids(a.pid)) \
+        \  WHERE a.datname = current_database() \
+        \) SELECT count(*)::bigint FROM waiting"
+        [PersistInt64 holder]
+    case rows of
+      [Single n] | n >= expected -> pure ()
+      [Single _] -> threadDelay 10000 >> loop
+      _ -> fail "Expected one PostgreSQL lock observation"
+
+-- Take the locks @hold@ takes in the holding session, start @action@, and
+-- commit the holder only once PostgreSQL shows the action waiting behind it.
+behindHeldLock :: SqlBackend -> SqlBackend -> ReaderT SqlBackend IO () -> IO a -> IO a
+behindHeldLock holding observer hold action = do
+  held <- newBarrier
+  holderPid <- backendPid holding
+  withAsync (transaction holding (hold >> liftIO (pauseAt held))) \holder -> do
+    link holder
+    awaitBarrier held
+    withAsync action \acting -> do
+      awaitBlockedSessions observer holderPid 1
+      releaseBarrier held
+      within "lock holder commit" $ wait holder
+      within "action queued behind the lock" $ wait acting

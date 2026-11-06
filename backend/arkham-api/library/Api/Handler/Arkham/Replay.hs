@@ -3,6 +3,7 @@
 module Api.Handler.Arkham.Replay (getApiV1ArkhamGameReplayR) where
 
 import Api.Arkham.Helpers
+import Api.Arkham.Viewer (Redacted (..), viewerForUser)
 import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Arkham.Game
 import Database.Esqueleto.Experimental
@@ -29,7 +30,10 @@ newtype ReplayError = ReplayError {message :: Text}
   deriving stock (Show, Generic)
   deriving anyclass ToJSON
 
-getApiV1ArkhamGameReplayR :: ArkhamGameId -> Int -> Handler GetReplayJson
+{- | A replay step, redacted to the caller's seats ('viewerForUser'). An
+administrator without a seat gets the spectator view.
+-}
+getApiV1ArkhamGameReplayR :: ArkhamGameId -> Int -> Handler (Redacted GetReplayJson)
 getApiV1ArkhamGameReplayR gameId step = do
   Entity userId user <- getRequestUser
   withGameAccess
@@ -37,8 +41,9 @@ getApiV1ArkhamGameReplayR gameId step = do
     (isJust <$> runDB (getBy $ UniquePlayer userId gameId))
     notFound
     $ do
-      (ge, allChoices, gameLog) <- runDB do
+      (ge, allChoices, gameLog, gameView) <- runDB do
         ge <- get404 gameId
+        gameView <- viewerForUser userId gameId
         allChoices <- select do
           steps <- from $ table @ArkhamStep
           where_ $ steps.arkhamGameId ==. val gameId
@@ -54,7 +59,7 @@ getApiV1ArkhamGameReplayR gameId step = do
             where_ $ entries.step <. val replayStep
             orderBy [asc entries.step, asc entries.id]
             pure entries
-        pure (ge, allChoices, gameLog)
+        pure (ge, allChoices, gameLog, gameView)
       let gameJson = arkhamGameCurrentData ge
       let choices = map (arkhamStepChoice . entityVal) $ reverse $ drop step allChoices
       case replayChoices gameJson [mconcat $ map choicePatchDown choices] of
@@ -71,6 +76,7 @@ getApiV1ArkhamGameReplayR gameId step = do
           sendStatusJSON Status.status422 $ ReplayError "Unable to reconstruct replay from stored data"
         Right gameJson' ->
           pure
+            $ Redacted gameView
             $ GetReplayJson (length allChoices)
             $ toPublicGame
               ( Entity gameId

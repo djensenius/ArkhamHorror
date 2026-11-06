@@ -210,10 +210,15 @@ Three fail-closed rules keep the registry honest:
   only, never inside a string literal, and without moving an offset — and there
   is no waiver: skipping a module rests on a lexical guess about what an
   unreadable file contains, which is the reasoning this registry replaces;
-* every site that cannot be resolved is committed in full in `dynamicSites`
-  with a reason from a **closed vocabulary** (`runtime-key`, `runtime-scope`,
-  `caller-scope`, `partial-key`, `scope-underflow`); an unclassifiable reason
-  fails the run, and the drift gate fails when the set moves;
+* every site that cannot be resolved is committed in `dynamicSites`, grouped
+  by file#binding, emitter, reason and class with a `count`. The `reason` is
+  descriptive text (it can name the alias or scope involved); the `class` is
+  the **closed vocabulary** (`runtime-key`, `runtime-scope`, `caller-scope`,
+  `partial-key`, `scope-underflow`), which `classify_dynamic` derives from the
+  reason by exact, prefix or suffix match. A reason that maps to no class
+  fails the run, and the drift gate fails when that grouped inventory changes.
+  A dynamic site that moves within the same binding is intentionally not
+  detected;
 * the extractor has its own tests (`mise run locale-catalog:backend-keys-test`)
   that feed synthetic Haskell modules to the production code path, one rule at
   a time.
@@ -228,10 +233,20 @@ top-level `payloadSha256`: the sha256 of the registry's own canonical bytes
 extracted keys, variable types and dynamic-site inventory alone also leaves the
 file byte-identical, and unrelated backend PRs do not all conflict on one
 digest line. Nothing is lost: `--check` re-derives every byte of the registry
-anyway. Sites are still line-sensitive: each key's `keys[].site` (the first
-`file:line` that emits it) and each dynamic site are recorded as `file:line`,
-so an edit that moves an emitting line still changes the registry. Making those
-sites line-stable is tracked as follow-up TASK-2.95. The catalog generator
+anyway. Sites carry no line numbers either: each key's `keys[].site` is
+`<file>#<binding>`, where the binding is the enclosing top-level function or
+bind name, or the instance or class head without its context (`instance
+RunMessage Foo`), and `<top>` for anything else. When a key has several sites,
+the smallest by file, binding and emitter is named; `keys[].sites` counts its
+distinct (file, binding, emitter) triples, so two identical calls in one
+binding are one site whether or not a newline separates them.
+`dynamicSites.sites[]` is grouped the same way, by site, emitter, reason and
+class, with a `count` of unresolved occurrences (not distinct lines), and
+`dynamicSites.total` is the sum of those counts. Inserting or removing lines in a backend module
+therefore leaves the registry byte-identical unless the emitted keys or the
+set of unresolved sites change. For triage, `extract-backend-i18n-keys.py
+--dynamic-report <file>` still writes every unresolved site with its exact
+location, one `file:line<TAB>binding<TAB>emitter<TAB>reason` line each. The catalog generator
 records `payloadSha256` as `backend.sourceSha256` in both the manifest and the
 provenance. `validate-locale-catalog` requires the manifest's
 `backend.sourceSha256` to equal the committed registry's `payloadSha256` and
@@ -328,6 +343,15 @@ therefore always produce identical bytes, and any input change is a new
 revision. The manifest's `provenance` block republishes those digests, and the
 manifest pins every chunk's size and SHA-256, so a client can verify what it
 downloaded against what it was promised.
+
+That describes the production catalog, whose revision is deployment
+configuration rather than a contract artifact. The governed synthetic fixture
+(see "Contract fixture versus production catalog" below) differs on purpose: since revision
+`0.1.64` its `generatorSha256` is derived from the generator name and version,
+and the per-file tooling digests live in the committed, non-governed
+`scripts/locale_catalog_tooling_lock.json`. A tooling edit therefore needs a
+reviewed lock update, which `contracts:catalog-fixture` enforces, but no
+`schemaRevision` bump. A change to public generator output still needs one.
 
 The Python contract commands have an equally narrow, enforceable boundary.
 
@@ -594,9 +618,13 @@ outright. Modules that exist only as deserialization or archive-extraction
 surfaces are not in the shared allowlist at all. The grant tables live in
 `scripts/locale_catalog_python_boundary.py`, which is both a declared source
 and part of the trusted computing base: it is capability-scanned like any other
-*and* digest-pinned before it runs, and its bytes are folded into
-`generatorSha256`, so a grant cannot be widened without moving a governed
-contract hash.
+*and* digest-pinned before it runs, and its bytes are recorded in the
+committed, non-governed `scripts/locale_catalog_tooling_lock.json`, so a grant
+cannot be widened without moving that reviewed lock, which CI checks through
+`contracts:catalog-fixture` and the python-boundary tamper tests. Since
+revision `0.1.64` such an edit no longer moves a governed contract hash or
+needs a `schemaRevision` bump; public generator output (chunks, sources,
+manifest, schemas) still does.
 
 **Dependency boundary.** uv resolves, downloads, unpacks and *can build*
 distributions, and a PEP 517 backend is arbitrary code that would run before
@@ -766,10 +794,14 @@ Path spellings are normalised (`./`, `..`, duplicate separators, quoting)
 before comparison, and a mention the grammar cannot resolve fails closed. This
 is reproducibility and centralisation over trusted code, not containment.
 
-The synthetic fixture hashes all declared executable sources, both launcher
-stages, the lockfile, and the toolchain lock through `generatorSha256`, so the
-catalog revision moves with every such governed input without adding a
-Python-only field to the Node-produced public manifest.
+The synthetic fixture's `--check` pins all declared executable sources, both
+launcher stages, the lockfile, the toolchain lock, `mise.toml`, the
+`Dockerfile`, `frontend/package.json` and the workflows in the non-governed
+`scripts/locale_catalog_tooling_lock.json`, so every such tooling edit is a
+reviewed lock update. Its `generatorSha256` is derived from the generator name
+and version only, so those edits do not move the catalog revision or need a
+contract bump, and no Python-only field is added to the Node-produced public
+manifest.
 
 Before any of that, the sources themselves are checked for content that would
 be lost silently:
@@ -1107,16 +1139,19 @@ narrative text. Nothing in it is asserted — every digest, count, path,
 authorities (`locale-catalog-source-*.json`, `-backend-registry.json`,
 `-chunk-*.json`) by `scripts/build-locale-catalog-fixture.py`, whose `--check`
 mode rebuilds the whole set and whose self-tests mutate each claimed field to
-prove the check bites. `generatorSha256` and `schemasSha256` are digests of the
-real inputs — the generator's whole `scripts/` import closure (computed from
-each module's AST, so `strict_json` is covered and a later helper cannot be
+prove the check bites. `schemasSha256` is the digest of the real published v1
+schemas, and `generatorSha256` the SHA-256 of `<generator name>@<version>`
+(revision `0.1.64`). The generator's whole `scripts/` import closure (computed
+from each module's AST, so `strict_json` is covered and a later helper cannot be
 omitted; the boundary is fail-closed — symlinks, relative imports, packages or
 repo-local modules outside `scripts/`, dynamic `importlib`/`__import__`,
 `exec`/`eval`, `sys.path` machinery and any import it cannot classify as
 generator-local, standard-library or a pinned dependency are all refusals, each
-proven by injecting it into the real sources' own AST) and the published v1 schemas — so editing, adding, dropping or
-renaming any of them moves the synthetic revision exactly as it would in
-production, and every value those
+proven by injecting it into the real sources' own AST) is pinned by the
+non-governed `scripts/locale_catalog_tooling_lock.json` instead. So editing,
+adding, dropping or renaming a schema moves the synthetic revision, while the
+same change to a generator source fails the lock check until the lock is
+updated, with no revision bump, and every value those
 schemas already pin as a `const` is read from them rather than re-typed. It is never generated from `frontend/src/locales/**`. The governed
 capabilities fixture derives every advertised value from its exact bytes, which
 is what lets the published contract stay still while catalog content moves: a

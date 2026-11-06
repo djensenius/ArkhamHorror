@@ -1734,6 +1734,28 @@ card-only `pl` locale with the Night of the Zealot names.
 `nativeClientMinimumRevision` stays `0.1.57`; clients pinned to `0.1.57`
 through `0.1.62` are unaffected and need not repin.
 
+#### Tooling provenance lock (revision 0.1.64)
+
+Revision `0.1.64` changes no public JSON shape, route or capability. It is a
+one-time re-derivation so that tooling edits stop forcing revision bumps
+(revisions `0.1.58`, `0.1.59` and `0.1.61` bumped only for one). The synthetic
+catalog manifest's `provenance.generatorSha256` is now derived from the
+generator's identity alone: the SHA-256 of `arkham-locale-catalog@<version>`,
+the schema-pinned generator name and `GENERATOR_VERSION` in
+`scripts/build-locale-catalog-fixture.py`. It keeps its key, type and
+position. The per-file digests it used to fold in (every `scripts/*.py`, both
+launcher stages, the runtime profile, `mise.toml`, `pyproject.toml`,
+`uv.lock`, `frontend/package.json`, the `Dockerfile` and the contracts,
+locale-catalog and Haskell workflows) now live in the non-governed, committed
+`scripts/locale_catalog_tooling_lock.json`. `contracts:catalog-fixture` and the
+python-boundary tamper tests check that lock. This changes `generatorSha256`,
+`provenance.sha256`, `catalogRevision`/`revisionManifestPath` and the
+capabilities fixture's `manifestSha256` once. No client verifies that digest
+value (Apple checks only the provenance block's shape; Linux vendors no
+locale-catalog files), so no client needs to repin.
+`nativeClientMinimumRevision` stays `0.1.57`; clients pinned to `0.1.57`
+through `0.1.63` are unaffected and need not repin.
+
 ### Locale catalog discovery
 
 `GET /capabilities` advertises a catalog with the `i18n.locale-catalog.v1`
@@ -1843,21 +1865,26 @@ computed from committed sibling authorities:
     fixtures/locale-catalog-chunk-<sha256>.json    the rendered chunks
     fixtures/locale-catalog-manifest.json          derived from all of the above
 
-`provenance.generatorSha256` and `schemasSha256` are digests of the *real*
-inputs — every repository-local module the generator executes and the published
-`frontend/schemas/locale-catalog/v1/` schemas — not of a committed description
-of them, which is what those fields mean in production. The generator's source
-set is its own `scripts/` **import closure**, computed from each module's AST,
+`provenance.schemasSha256` is the digest of the *real* published
+`frontend/schemas/locale-catalog/v1/` schemas, not of a committed description
+of them, so a schema edit moves the synthetic catalog revision.
+`provenance.generatorSha256` is the SHA-256 of `<generator name>@<version>`
+(revision `0.1.64`): reproducible, derived, never hand-frozen, and moved only
+by a deliberate `GENERATOR_VERSION` bump. The generator's own source set,
+its `scripts/` **import closure**, is still computed from each module's AST,
 so `strict_json` is included and a helper added later cannot be left out by
-forgetting to list it; a dropped or renamed module changes the digest too,
-because it is bound to the path as well as the bytes. The boundary is
+forgetting to list it. Its digests, bound to path as well as bytes, plus the
+execution environment's, are pinned in the non-governed
+`scripts/locale_catalog_tooling_lock.json` instead of governed bytes. The
+boundary is
 fail-closed: sources must be plain non-symlink files inside `scripts/`, and a
 relative import, a package or repo-local module outside that tree, a dynamic
 `importlib`/`__import__`, an `exec`/`eval`, `sys.path`/`meta_path`/`path_hooks`
 machinery, or any import that is neither generator-local, standard-library nor
 one of the pinned dependencies is a refusal — each proven by injecting it into
-the real generator and helper sources' own AST. Editing any of them
-therefore moves the synthetic catalog revision, and every fixed value
+the real generator and helper sources' own AST. Editing, adding, dropping or
+renaming any of them therefore fails the tooling lock check, which names the
+lock and prints its expected bytes, and every fixed value
 the v1 schemas already pin (`schemaVersion`, `basePath`, `manifestPath`,
 `chunkPathPrefix`, `digestAlgorithm`, the generator name) is read from their
 own `const` declarations rather than re-typed.
@@ -1873,10 +1900,13 @@ own `const` declarations rather than re-typed.
   `schemasSha256`, `generatorSha256`, `localeSourceFiles`, `fixtureKeys`,
   `provenance.sha256`, `catalogRevision` and `revisionManifestPath`. Its
   self-tests mutate each of those in turn — and separately perturb every
-  provenance *input*: an edited generator source or helper, a newly imported
-  local helper, a dropped or renamed helper, an edited, renamed or dropped v1
-  schema, a different generator name or version — and require the result to
-  change or the check to fail.
+  provenance *input*: an edited, renamed or dropped v1 schema, an edited
+  locale source, a different generator name or version, a different contract
+  revision — and require the result to change or the check to fail. The same
+  run checks `scripts/locale_catalog_tooling_lock.json`, and its self-tests
+  require an edited workflow, launcher, `mise.toml`, `Dockerfile`, generator
+  source or helper, or an added, dropped or renamed tooling file, as well as a
+  mutated, reordered, extended or truncated lock, to fail that check by name.
 - It is schema-valid against the published
   `frontend/schemas/locale-catalog/v1/` manifest *and* chunk schemas, is
   narrative-free (identifier-shaped values only), and is never regenerated from
@@ -2035,6 +2065,21 @@ enforces the actual bump rule: it recomputes the current governed-artifact
 hash set, recomputes the same hash set as of a resolved base ref, and
 requires `schemaRevision` to have strictly, numerically increased whenever
 that diff is non-empty.
+
+Only governed artifacts count. Tooling is not a contract artifact: the
+locale-catalog tooling (the generator and its `scripts/` closure, the
+launchers, `mise.toml`, `pyproject.toml`, `uv.lock`, `frontend/package.json`,
+the `Dockerfile` and the workflows) is pinned by the committed, non-governed
+`scripts/locale_catalog_tooling_lock.json`. Editing tooling or widening a
+capability-lint grant moves that lock, which `contracts:catalog-fixture` and
+the python-boundary tamper tests check in CI. It needs a reviewed lock update
+(the failing check prints the exact expected bytes) but no revision bump. A
+change to public generator output (the synthetic chunks, sources, backend
+registry, manifest, the v1 schemas through `schemasSha256`, or the generator
+version) still changes governed bytes and still requires a bump. The drift
+gate's own self-tests prove both halves: a non-governed change passes at the
+same revision, and a governed fixture change at the same revision fails even
+with `artifactHashes` recomputed.
 
 Base-ref resolution is deterministic and fails closed. The authoritative
 route takes the base **positionally**, wired by the workflow from the

@@ -62,12 +62,13 @@ import Arkham.Game.Utils (gameOutcomeOf)
 import Arkham.GameEnv
 import Arkham.Id
 import Arkham.Investigator (lookupInvestigator)
+import Arkham.Investigator.Cards (allInvestigatorCards)
 import Arkham.Investigator.Types (Investigator, investigatorPlacement, investigatorPlayerId)
 import Arkham.Location.CardDefs.TheBlobThatAteEverythingELSE qualified as Locations
 import Arkham.Log.Entry
 import Arkham.Log.Narrator (emptyNarrator, flushNarrator)
 import Arkham.Message
-import Arkham.Phase (Phase)
+import Arkham.Phase (Phase (InvestigationPhase))
 import Arkham.Placement (
   Placement (AtLocation, AttachedToInvestigator, InPlayArea, InThreatArea, StillInHand),
  )
@@ -430,6 +431,8 @@ data SubscriberStopped
     SlowSubscriber
   | -- | The room was deleted out from under it.
     RoomWasClosed
+  | -- | Its feed refused a message (see 'runSubscriberSenderWhile').
+    NoLongerAdmitted
   deriving stock Show
   deriving anyclass Exception
 
@@ -440,7 +443,15 @@ A closed subscriber drains what is already queued before it stops, so the
 the client receives rather than a casualty of the teardown.
 -}
 runSubscriberSender :: Subscriber -> WebSocketsT Handler ()
-runSubscriberSender Subscriber {subQueue, subOverflow, subClosed} =
+runSubscriberSender = runSubscriberSenderWhile (const (pure True))
+
+{- | 'runSubscriberSender', asking @admit@ about each message before it is sent.
+The first message refused is not sent, and the socket ends there, as an
+evicted one does.
+-}
+runSubscriberSenderWhile
+  :: (BSL.ByteString -> Handler Bool) -> Subscriber -> WebSocketsT Handler ()
+runSubscriberSenderWhile admit Subscriber {subQueue, subOverflow, subClosed} =
   forever
     ( do
         msg <- atomically do
@@ -451,6 +462,8 @@ runSubscriberSender Subscriber {subQueue, subOverflow, subClosed} =
             Nothing -> do
               closed <- readTVar subClosed
               if closed then throwSTM RoomWasClosed else retry
+        admitted <- lift (admit msg)
+        unless admitted $ throwIO NoLongerAdmitted
         sendTextData msg
     )
     `catch` (\(_ :: SubscriberStopped) -> pure ())
@@ -473,13 +486,21 @@ happen under the rooms lock, so it can't be decided out here.
 -}
 streamRoom
   :: Handler (Room, Int, Subscriber) -> Handler () -> WebSocketsT Handler ()
-streamRoom joinRoom onLeave = catchingConnectionException $ withKeepAlive do
+streamRoom = streamRoomWhile (const (pure True))
+
+-- | 'streamRoom', sending only what @admit@ allows ('runSubscriberSenderWhile').
+streamRoomWhile
+  :: (BSL.ByteString -> Handler Bool)
+  -> Handler (Room, Int, Subscriber)
+  -> Handler ()
+  -> WebSocketsT Handler ()
+streamRoomWhile admit joinRoom onLeave = catchingConnectionException $ withKeepAlive do
   let cleanup room subId = do
         unsubscribeFromRoom room subId
         lift onLeave
   bracket (lift joinRoom) (\(room, subId, _) -> cleanup room subId) \(_room, _subId, sub) ->
     race_
-      (runSubscriberSender sub)
+      (runSubscriberSenderWhile admit sub)
       (runConduit $ sourceWS .| mapM_C (\(_ :: ByteString) -> pure ()))
 
 {- | A broadcast callback. Used to fan out log lines and game-state updates
@@ -525,10 +546,18 @@ while still preventing one poison game from monopolising a worker.
 runMessagesTimeoutMicros :: Int
 runMessagesTimeoutMicros = 30 * 1000000
 
-{- | Thrown by updateGame when 'runMessages' exceeds 'runMessagesTimeoutMicros'.
-The Yesod handler turns this into a 500; the important effect is that the
-exception propagates out of runDB, rolls back the transaction, and frees
-the worker. Search Honeycomb / logs for this to find poison games.
+{- | Thrown when one engine run (the whole 'runGameApp' block, which may call
+'runMessages' more than once) outlasts 'runMessagesTimeoutMicros'. updateGame,
+the pending-game join and 'runMessagesInGroupCore' each time their run this
+way, inside the transaction that holds the game lock. The exception
+propagates out of runDB, so the transaction rolls back (nothing from the run
+is written) and the game lock and worker are freed. A request handler answers
+it as a 500; callers that catch per group and log (the Epic shared-state sync
+and time-up forcing) skip that group. The post-swap re-ask in
+'swapMainStreetInvestigators' also runs under it, through
+'runMessagesInGroupCore', after the swap has committed: on expiry only the
+re-ask's transaction rolls back, its catch-all logs a warning, and the
+committed swap stays. Search Honeycomb / logs for this to find poison games.
 -}
 data RunMessagesTimeout = RunMessagesTimeout ArkhamGameId Int
   deriving stock Show
@@ -1337,8 +1366,11 @@ runMessagesInGroupCore p msgs gid = do
         queueRef <- liftIO $ newQueue msgs
         genRef <- liftIO $ newIORef (mkStdGen (gameSeed arkhamGameCurrentData))
         liftIO
-          $ runGameApp (GameApp gameRef queueRef genRef (pure . const ()) Nothing)
-          $ runMessages (gameIdToText gid) noRunObservers
+          $ maybe (throwIO $ RunMessagesTimeout gid runMessagesTimeoutMicros) pure
+          =<< timeout runMessagesTimeoutMicros
+            ( runGameApp (GameApp gameRef queueRef genRef (pure . const ()) Nothing)
+                $ runMessages (gameIdToText gid) noRunObservers
+            )
         updatedGame <- liftIO $ readIORef gameRef
         -- The queue left after the run: empty for a pure board sync (it drains to
         -- empty), or the continuation of a question the run parked (e.g. the
@@ -1387,7 +1419,8 @@ monotonic.
 investigator's deck, hand, discard, resources, damage, trauma, logs, and
 other personal state. We additionally move every controlled/play-area asset,
 threat-area treachery, controlled event, per-investigator entity cache,
-history, question, and player authorization row. Enemy cards stay behind
+history, and player authorization row. A pending question is not moved: it
+was built from the game the investigator left. Enemy cards stay behind
 because the printed ability disengages them before publishing readiness.
 
 One transaction does the whole swap under 'canonicalEpicGameLockOrder' (the
@@ -1399,7 +1432,8 @@ clears the scenarios' readiness, writes both games with a step row each, moves
 the seats and the players' event memberships, and places an undo floor at each
 new step, so ordinary undo can never cross the swap. A refused request
 ('MainStreetSwapError') writes nothing. Only the committed games and shared
-state are published, after the commit.
+state are published, after the commit. Each swapped game is then re-asked
+(see @reask@).
 -}
 swapMainStreetInvestigators
   :: ArkhamEpicEventId -> Int -> Int -> Handler (Either MainStreetSwapError ())
@@ -1486,8 +1520,23 @@ swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
         $ PublicGame gameId (arkhamGameName raw) [] (arkhamGameCurrentData raw)
     broadcastSharedToEvent eventId shared
     broadcastEventChanged eventId
+    for_ swapped \(gameId, _) -> reask gameId
   pure $ void committed
  where
+  -- After the commit, outside its locks: run each swapped game's empty queue
+  -- so the engine asks its question afresh (in the investigation phase, the
+  -- turn investigator's PlayerWindow) for the investigators now in it; the
+  -- incoming player brought no question from the game it left. The undo
+  -- floor moves up to the re-asked step, so undo cannot return to the
+  -- question-less swap step. A game that is not active is left as the swap
+  -- wrote it. A failure is logged and never undoes the committed swap.
+  reask gameId =
+    ( runMessagesInGroupCore (const True) [] gameId
+        >>= traverse_ (setGameUndoFloor gameId . arkhamGameStep)
+    )
+      `catch` \(e :: SomeException) ->
+        $(logWarn) $ "Main Street swap re-ask failed for " <> tshow gameId <> ": " <> tshow e
+
   mainStreetSpend ordinal = do
     deltaId <- UUID.toText <$> liftIO nextRandom
     pure
@@ -1541,8 +1590,8 @@ swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
 
 swapInvestigatorState :: MainStreetSwapPlan -> Game -> Game -> (Game, Game, PlayerId, PlayerId)
 swapInvestigatorState plan firstGame secondGame =
-  ( install secondIid secondMoved secondOwned secondPid (remove firstIid firstPid firstGame)
-  , install firstIid firstMoved firstOwned firstPid (remove secondIid secondPid secondGame)
+  ( install secondIid secondMoved secondOwned secondPid secondGame (remove firstIid firstPid firstGame)
+  , install firstIid firstMoved firstOwned firstPid firstGame (remove secondIid secondPid secondGame)
   , firstPid
   , secondPid
   )
@@ -1555,12 +1604,11 @@ swapInvestigatorState plan firstGame secondGame =
   secondDestination = mainStreetSecondDestination plan
   firstPid = attr investigatorPlayerId firstInvestigator
   secondPid = attr investigatorPlayerId secondInvestigator
-  -- Keeps the existing placement: each investigator is placed at the Main
-  -- Street of the game it leaves (firstMoved gets secondDestination, the first
-  -- game's Main Street), not the plan's destination in its new game.
-  -- TASK-2.103 tracks this known location-id mismatch.
-  firstMoved = overAttrs (\a -> a {investigatorPlacement = AtLocation secondDestination}) firstInvestigator
-  secondMoved = overAttrs (\a -> a {investigatorPlacement = AtLocation firstDestination}) secondInvestigator
+  -- Each investigator stands at the Main Street of the game it moves into:
+  -- firstMoved joins the second game at the plan's firstDestination (the
+  -- second game's Main Street), and vice versa.
+  firstMoved = overAttrs (\a -> a {investigatorPlacement = AtLocation firstDestination}) firstInvestigator
+  secondMoved = overAttrs (\a -> a {investigatorPlacement = AtLocation secondDestination}) secondInvestigator
   firstOwned = ownedEntities firstIid (gameEntities firstGame)
   secondOwned = ownedEntities secondIid (gameEntities secondGame)
 
@@ -1579,51 +1627,22 @@ swapInvestigatorState plan firstGame secondGame =
       , gameCardUses = Map.map (filter (/= iid)) (gameCardUses game)
       }
 
-  install iid investigator owned pid game =
+  -- @source@ is the game the investigator leaves. It is chosen by side, not by
+  -- id: both groups may have readied the same investigator (each its own copy).
+  install iid investigator owned pid source game =
     game
       { gameEntities = addOwned investigator owned (gameEntities game)
       , gamePlayers = gamePlayers game <> [pid]
       , gamePlayerOrder = gamePlayerOrder game <> [iid]
-      , gameInHandEntities =
-          copyMapEntry
-            iid
-            (if iid == firstIid then gameInHandEntities firstGame else gameInHandEntities secondGame)
-            (gameInHandEntities game)
+      , gameInHandEntities = copyMapEntry iid (gameInHandEntities source) (gameInHandEntities game)
       , gameInDiscardEntities =
-          copyMapEntry
-            iid
-            (if iid == firstIid then gameInDiscardEntities firstGame else gameInDiscardEntities secondGame)
-            (gameInDiscardEntities game)
-      , gamePhaseHistory =
-          copyMapEntry
-            iid
-            (if iid == firstIid then gamePhaseHistory firstGame else gamePhaseHistory secondGame)
-            (gamePhaseHistory game)
-      , gameTurnHistory =
-          copyMapEntry
-            iid
-            (if iid == firstIid then gameTurnHistory firstGame else gameTurnHistory secondGame)
-            (gameTurnHistory game)
-      , gameRoundHistory =
-          copyMapEntry
-            iid
-            (if iid == firstIid then gameRoundHistory firstGame else gameRoundHistory secondGame)
-            (gameRoundHistory game)
-      , gameQuestion =
-          copyMapEntry
-            pid
-            (if pid == firstPid then gameQuestion firstGame else gameQuestion secondGame)
-            (gameQuestion game)
+          copyMapEntry iid (gameInDiscardEntities source) (gameInDiscardEntities game)
+      , gamePhaseHistory = copyMapEntry iid (gamePhaseHistory source) (gamePhaseHistory game)
+      , gameTurnHistory = copyMapEntry iid (gameTurnHistory source) (gameTurnHistory game)
+      , gameRoundHistory = copyMapEntry iid (gameRoundHistory source) (gameRoundHistory game)
       , gameModifiers =
-          copyMapEntry
-            (InvestigatorTarget iid)
-            (if iid == firstIid then gameModifiers firstGame else gameModifiers secondGame)
-            (gameModifiers game)
-      , gameCardUses =
-          transferCardUses
-            iid
-            (if iid == firstIid then gameCardUses firstGame else gameCardUses secondGame)
-            (gameCardUses game)
+          copyMapEntry (InvestigatorTarget iid) (gameModifiers source) (gameModifiers game)
+      , gameCardUses = transferCardUses iid (gameCardUses source) (gameCardUses game)
       , gameActiveInvestigatorId = replaceId firstIid secondIid iid (gameActiveInvestigatorId game)
       , gameTurnPlayerInvestigatorId =
           replaceId firstIid secondIid iid <$> gameTurnPlayerInvestigatorId game
@@ -1653,7 +1672,9 @@ data MainStreetSwapError
   | -- | The group's game was deleted after the group was read.
     SwapGameMissing ArkhamGameId
   | -- | The group's scenario has not readied an investigator at Main Street,
-    -- or the event's 'MainStreetReady' counter for the group is spent.
+    -- the event's 'MainStreetReady' counter for the group is spent, or the
+    -- group's game is not playing its investigation phase or has a skill
+    -- test in progress (see 'mainStreetSideResumable').
     SwapNotReady GroupOrdinal
   | -- | The group's game has no Main Street.
     SwapNoMainStreet GroupOrdinal
@@ -1661,6 +1682,10 @@ data MainStreetSwapError
     SwapInvestigatorMissing GroupOrdinal
   | -- | The readied investigator is no longer at the group's Main Street.
     SwapInvestigatorMoved GroupOrdinal
+  | -- | The group's game already has, besides its own readied investigator,
+    -- the investigator the other group would send it, in any printing: a game
+    -- cannot hold two copies of one investigator.
+    SwapInvestigatorConflict GroupOrdinal
   deriving stock (Eq, Show)
 
 {- | A request names two distinct, non-negative group ordinals. Checked before
@@ -1698,6 +1723,14 @@ data MainStreetSwapSide = MainStreetSwapSide
   , mainStreetSideLocation :: Maybe LocationId
   -- ^ the game's Main Street
   , mainStreetSideInvestigators :: Map InvestigatorId Investigator
+  , mainStreetSideResumable :: Bool
+  -- ^ the game is active in its investigation phase, the only phase whose
+  -- empty queue the engine resumes by itself (it asks the turn investigator's
+  -- PlayerWindow, or chooses the next turn). The swap empties the queue and
+  -- drops the outgoing player's question, so a game anywhere else (e.g. at a
+  -- Mythos encounter draw) would be left unable to continue. Nor may a skill
+  -- test be in progress: the swap would discard its queued continuation while
+  -- the game kept the test, and the re-ask would open a plain player window.
   }
 
 mainStreetSwapSide :: GroupOrdinal -> Game -> MainStreetSwapSide
@@ -1712,6 +1745,11 @@ mainStreetSwapSide ordinal game =
         (.id)
           <$> find ((== CardCode "89006") . toCardCode) (toList $ entitiesLocations $ gameEntities game)
     , mainStreetSideInvestigators = entitiesInvestigators $ gameEntities game
+    , mainStreetSideResumable =
+        gameGameState game == IsActive
+          && gamePhase game == InvestigationPhase
+          && gameRunWindows game
+          && null (gameSkillTest game) -- no skill test in progress
     }
  where
   scenarioReady :: Scenario -> Maybe InvestigatorId
@@ -1729,13 +1767,26 @@ data MainStreetSwapPlan = MainStreetSwapPlan
   deriving stock (Eq, Show)
 
 {- | Both groups must have readied an investigator who is still in their game
-and still at their Main Street.
+and still at their Main Street, and both games must be playing their
+investigation phase with no skill test in progress. Neither game may already hold, besides its outgoing
+investigator, the investigator it would receive, in any printing. Two groups
+that readied the same investigator swap their copies.
 -}
 planMainStreetSwap
   :: MainStreetSwapSide -> MainStreetSwapSide -> Either MainStreetSwapError MainStreetSwapPlan
 planMainStreetSwap firstSide secondSide = do
   (firstInvestigator, firstMainStreet) <- readySide firstSide
   (secondInvestigator, secondMainStreet) <- readySide secondSide
+  let
+    receives side outgoing incoming =
+      when
+        ( any (sameInvestigatorCard incoming.id)
+            $ Map.keys
+            $ Map.delete outgoing.id (mainStreetSideInvestigators side)
+        )
+        $ Left (SwapInvestigatorConflict (mainStreetSideOrdinal side))
+  receives firstSide firstInvestigator secondInvestigator
+  receives secondSide secondInvestigator firstInvestigator
   pure
     MainStreetSwapPlan
       { mainStreetFirstInvestigator = firstInvestigator
@@ -1747,6 +1798,7 @@ planMainStreetSwap firstSide secondSide = do
   readySide side = do
     let ordinal = mainStreetSideOrdinal side
     iid <- maybeToRight (SwapNotReady ordinal) (mainStreetSideReady side)
+    unless (mainStreetSideResumable side) $ Left (SwapNotReady ordinal)
     mainStreet <- maybeToRight (SwapNoMainStreet ordinal) (mainStreetSideLocation side)
     investigator <-
       maybeToRight (SwapInvestigatorMissing ordinal)
@@ -1754,6 +1806,18 @@ planMainStreetSwap firstSide secondSide = do
     when (attr investigatorPlacement investigator /= AtLocation mainStreet)
       $ Left (SwapInvestigatorMoved ordinal)
     pure (investigator, mainStreet)
+
+{- | Whether two investigator ids are the same investigator: equal, or
+@other@'s card lists @iid@ among its printings (an alternate art counts).
+-}
+sameInvestigatorCard :: InvestigatorId -> InvestigatorId -> Bool
+sameInvestigatorCard iid other =
+  iid
+    == other
+    || maybe
+      False
+      ((toCardCode iid `elem`) . (.cardCodes))
+      (Map.lookup (toCardCode other) allInvestigatorCards)
 
 {- | Both groups' 'MainStreetReady' counters must still be raised on the event:
 the swap spends one from each.
