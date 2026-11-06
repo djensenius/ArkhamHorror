@@ -1809,10 +1809,18 @@ for a seat the viewer does not hold are dropped; spectators see only
 Current status:
 
 - REST game responses have been redacted per viewer since TASK-2.22.1:
-  `getGame`, spectate (as a spectator), the pending `GET`/`PUT /join`, create
-  and import. A caller holding every seat of the game (Solo, or one account
+  `getGame`, the replay step route (`GET /arkham/games/{gameId}/replay/{step}`),
+  spectate (as a spectator), the pending `GET`/`PUT /join`, create and
+  import. A caller holding every seat of the game (Solo, or one account
   playing all seats) gets the full view, which is never redacted and never
-  carries `handCount`. Admin and export payloads are not redacted either.
+  carries `handCount`. An administrator who holds no seat in the game gets
+  the spectator view from the replay route.
+- Not redacted: the game export routes under `/arkham/games/{gameId}`
+  (`/export`, `/scenario-export` and `/full-export`), which return the stored
+  game rather than a `PublicGame` snapshot (`/export` and `/scenario-export`
+  also serve administrators for any game), and the log export
+  (`/log/export`). The `/admin` routes return game summaries and room data,
+  not game snapshots.
 - WebSocket `GameUpdate` frames remain unredacted until TASK-2.22.2.
 - The server does not emit `handCount` yet (`defaultRedactOptions` keeps
   `includeHandCount = False`); a follow-up of TASK-2.22.3 turns it on for

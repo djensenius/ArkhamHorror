@@ -16553,7 +16553,7 @@
     }
   ],
   "artifactHashes": {
-    "contracts/asyncapi.yaml": "e953a05473840d1eee6ee0b24dc04e447821365449112ea463e64bc42999ca66",
+    "contracts/asyncapi.yaml": "61b378ec9f849ebe899fcadcc6a8ed29d36685b5d722f897d7f44a29b9c64ddd",
     "contracts/fixtures/account.json": "8880561e50e4e0742e4a73ed43419bdefa26359b79c1fab16d32e65ff6ef1f7b",
     "contracts/fixtures/achievements.json": "9323f78e201ced419f3ed843ef3bc3d375db24a2f376a25f7cf3e3a085483b83",
     "contracts/fixtures/act-no-advance-cost.json": "ef6aa891184deafe2166b58b0df9c0818237a50efa93e3aa69db4aea0dc30a01",

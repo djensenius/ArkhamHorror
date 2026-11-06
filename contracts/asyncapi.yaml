@@ -38,8 +38,8 @@ channels:
   game:
     address: /arkham/games/{gameId}
     description: |
-      Bidirectional game stream. The server publishes complete game snapshots
-      and transient UI messages; the client sends answer payloads. Each
+      Bidirectional game stream. The server publishes full (non-delta) game
+      snapshots and transient UI messages; the client sends answer payloads. Each
       GameUpdate snapshot may be redacted for the participant connection's
       seat(s), so participants holding different seats may receive different
       frames for the same game state.
@@ -54,11 +54,11 @@ channels:
   spectator:
     address: /arkham/games/{gameId}/spectate
     description: |
-      Unauthenticated, read-only game stream. The server publishes complete
-      snapshots and the same transient messages as the participant stream.
-      Each GameUpdate snapshot may be redacted for a spectator, who controls
-      no investigator. Inbound client frames are ignored without being decoded
-      or applied.
+      Unauthenticated, read-only game stream. The server publishes full
+      (non-delta) snapshots and the same transient messages as the
+      participant stream. Each GameUpdate snapshot may be redacted for a
+      spectator, who controls no investigator. Inbound client frames are
+      ignored without being decoded or applied.
     parameters:
       gameId:
         description: Arkham game UUID
