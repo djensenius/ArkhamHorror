@@ -43,6 +43,9 @@ run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/check-schema-revisio
 [tasks."contracts:openapi"]
 description = "Lint the REST OpenAPI document"
 # Installs the exact transitive tree from tools/contract-validators/openapi/package-lock.json.
+# @redocly/cli 2.49.0 skips its usage telemetry when REDOCLY_TELEMETRY is "off" and its
+# registry update check when REDOCLY_SUPPRESS_UPDATE_NOTICE is "true".
+env = { REDOCLY_TELEMETRY = "off", REDOCLY_SUPPRESS_UPDATE_NOTICE = "true" }
 run = [
   "npm --prefix tools/contract-validators/openapi ci --ignore-scripts --no-audit --no-fund --prefer-offline",
   "tools/contract-validators/openapi/node_modules/.bin/redocly lint contracts/openapi.yaml",
@@ -51,6 +54,9 @@ run = [
 [tasks."contracts:asyncapi"]
 description = "Validate the WebSocket AsyncAPI document"
 # Installs the exact transitive tree from tools/contract-validators/asyncapi/package-lock.json.
+# @asyncapi/cli 6.0.2 has no dedicated opt-out variable; it skips its anonymous metrics sink
+# only when CI is "true" (or ~/.asyncapi-analytics disables it), and CI's `env -i` drops CI.
+env = { CI = "true" }
 run = [
   "npm --prefix tools/contract-validators/asyncapi ci --ignore-scripts --no-audit --no-fund --prefer-offline",
   "tools/contract-validators/asyncapi/node_modules/.bin/asyncapi validate contracts/asyncapi.yaml",

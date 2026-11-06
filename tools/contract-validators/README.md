@@ -13,7 +13,15 @@ fixed.
 - `asyncapi/`: `@asyncapi/cli`
 
 Dependabot (`.github/dependabot.yml`) proposes weekly updates for both
-directories.
+directories. Dependency-graph or vulnerability alerts for anything under
+`tools/contract-validators/*` concern CI-only validator tooling, never the
+shipped app, and should be triaged as such.
+
+Both tasks set environment variables that the pinned CLIs honour to skip
+usage telemetry and update checks: `REDOCLY_TELEMETRY=off` and
+`REDOCLY_SUPPRESS_UPDATE_NOTICE=true` for Redocly, and `CI=true` for AsyncAPI,
+whose 6.0.2 release has no dedicated metrics opt-out. Re-check them in the
+installed sources after a bump.
 
 ## Bumping a CLI manually
 
@@ -27,7 +35,26 @@ directories.
 
    If a global mise config overrides `npm`, run the bundled one instead:
    `mise exec -- node "$(mise where node)/lib/node_modules/npm/bin/npm-cli.js" ...`.
+   This fallback matters because npm 12 refuses to generate the AsyncAPI
+   lockfile with `EALLOWREMOTE`, because `@oclif/plugin-plugins` pulls in
+   `npm-11.21.2.tgz`. The lockfiles were generated with npm 11.19.0,
+   the npm bundled with the pinned Node and used by CI.
 
 3. Run the check: `mise run contracts:openapi` or `mise run contracts:asyncapi`.
 4. Commit `package.json` and `package-lock.json` together. Never commit
    `node_modules/`.
+
+## Refreshing transitive dependencies without bumping the CLI
+
+Dependabot version updates only bump the direct dependency, so transitive
+versions stay as locked until the lockfile is regenerated:
+
+1. Delete `tools/contract-validators/<dir>/package-lock.json`.
+2. Regenerate it with the bundled npm:
+
+   ```sh
+   mise exec -- node "$(mise where node)/lib/node_modules/npm/bin/npm-cli.js" \
+     --prefix tools/contract-validators/<dir> install --package-lock-only --ignore-scripts
+   ```
+
+3. Run the check and commit the new `package-lock.json` as above.
