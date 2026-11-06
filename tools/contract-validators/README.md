@@ -20,8 +20,10 @@ shipped app, and should be triaged as such.
 Both tasks set environment variables that the pinned CLIs honour to skip
 usage telemetry and update checks: `REDOCLY_TELEMETRY=off` and
 `REDOCLY_SUPPRESS_UPDATE_NOTICE=true` for Redocly, and `CI=true` for AsyncAPI,
-whose 6.0.2 release has no dedicated metrics opt-out. Re-check them in the
-installed sources after a bump.
+whose 6.0.2 release has no dedicated metrics opt-out. Even with `CI=true`,
+the AsyncAPI CLI may create `~/.asyncapi-analytics` (a random user id) on its
+first run, but it sends nothing. Re-check these settings in the installed
+sources after a bump.
 
 ## Bumping a CLI manually
 
@@ -47,14 +49,22 @@ installed sources after a bump.
 ## Refreshing transitive dependencies without bumping the CLI
 
 Dependabot version updates only bump the direct dependency, so transitive
-versions stay as locked until the lockfile is regenerated:
+versions stay as locked until the lockfile is re-resolved:
 
-1. Delete `tools/contract-validators/<dir>/package-lock.json`.
-2. Regenerate it with the bundled npm:
+1. Re-resolve every transitive dependency to the newest version within its
+   declared range with the bundled npm. The exact CLI pin in `package.json`
+   is kept:
 
    ```sh
    mise exec -- node "$(mise where node)/lib/node_modules/npm/bin/npm-cli.js" \
-     --prefix tools/contract-validators/<dir> install --package-lock-only --ignore-scripts
+     --prefix tools/contract-validators/<dir> update --package-lock-only --ignore-scripts
    ```
 
-3. Run the check and commit the new `package-lock.json` as above.
+   Don't delete the lockfile and run `install --package-lock-only` instead.
+   Without a lockfile, npm builds from the installed `node_modules` (present
+   after any `mise run contracts:openapi|asyncapi`) and writes back the same
+   versions. npm may still print `up to date`, so inspect
+   `git diff -- tools/contract-validators/<dir>/package-lock.json` to see
+   what changed.
+
+2. Run the check and commit the new `package-lock.json` as above.
