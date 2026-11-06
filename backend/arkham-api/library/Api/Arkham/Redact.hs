@@ -15,9 +15,12 @@ the websocket and the contracts are later slices of TASK-2.22.
 What it does, for every investigator object in @investigators@,
 @otherInvestigators@, @killedInvestigators@ and @retiredInvestigators@:
 
-  * Adds @handCount@ (the length of @hand@) to every investigator, controlled
-    or not, so the shape is uniform. If @handCount@ is already present it is
-    kept, which is what makes 'redactFor' idempotent.
+  * With 'includeHandCount' on, adds @handCount@ (the length of @hand@) to
+    every investigator, controlled or not, so the shape is uniform. If
+    @handCount@ is already present it is kept, which is what makes the
+    redaction idempotent. It is off in 'defaultRedactOptions' (and so in
+    'redactFor'): @handCount@ is not in the published contract yet, and
+    TASK-2.22.3 turns it on together with the contract change.
   * Leaves investigators the viewer controls otherwise untouched. Control is
     the investigator's @playerId@ field matching one of the viewer's seats; an
     investigator with no @playerId@, or with the nil @playerId@ PublicGame
@@ -61,7 +64,10 @@ Known leak surfaces deliberately not touched here (follow-ups):
 -}
 module Api.Arkham.Redact (
   Viewer (..),
+  RedactOptions (..),
+  defaultRedactOptions,
   redactFor,
+  redactWith,
   viewerControls,
   hiddenZoneKeys,
   investigatorMapKeys,
@@ -119,28 +125,43 @@ hiddenZoneKeys :: [Key]
 hiddenZoneKeys =
   ["hand", "sideDeck", "decks", "drawnCards", "cardsUnderneath", "excludeFromMulligan"]
 
+-- | Switches for what 'redactWith' adds to the wire value.
+newtype RedactOptions = RedactOptions
+  { includeHandCount :: Bool
+  -- ^ add @handCount@ to every investigator (see the module docs)
+  }
+  deriving stock (Show, Eq)
+
+-- | What the server sends today: no @handCount@ (TASK-2.22.3 turns it on).
+defaultRedactOptions :: RedactOptions
+defaultRedactOptions = RedactOptions {includeHandCount = False}
+
+-- | 'redactWith' 'defaultRedactOptions'.
 redactFor :: Viewer -> Value -> Value
-redactFor viewer = \case
+redactFor = redactWith defaultRedactOptions
+
+redactWith :: RedactOptions -> Viewer -> Value -> Value
+redactWith options viewer = \case
   Object game ->
     Object
       . adjust (redactLog viewer) "log"
-      $ foldl' (\g k -> adjust (redactInvestigatorMap viewer) k g) game investigatorMapKeys
+      $ foldl' (\g k -> adjust (redactInvestigatorMap options viewer) k g) game investigatorMapKeys
   other -> other
 
-redactInvestigatorMap :: Viewer -> Value -> Value
-redactInvestigatorMap viewer = \case
+redactInvestigatorMap :: RedactOptions -> Viewer -> Value -> Value
+redactInvestigatorMap options viewer = \case
   Object investigators ->
-    Object (KeyMap.map (redactInvestigator viewer) (KeyMap.filter isObject investigators))
+    Object (KeyMap.map (redactInvestigator options viewer) (KeyMap.filter isObject investigators))
   _ -> Object mempty
  where
   isObject = \case
     Object _ -> True
     _ -> False
 
-redactInvestigator :: Viewer -> Value -> Value
-redactInvestigator viewer = \case
+redactInvestigator :: RedactOptions -> Viewer -> Value -> Value
+redactInvestigator options viewer = \case
   Object investigator ->
-    let counted = withHandCount investigator
+    let counted = if options.includeHandCount then withHandCount investigator else investigator
         controlled = maybe False (viewerControls viewer) (KeyMap.lookup "playerId" investigator)
      in Object $ if controlled then counted else hideZones counted
   other -> other

@@ -23,9 +23,16 @@ module Api.Handler.Arkham.Games (
 
 import Api.Arkham.Epic (lookupGameEvent)
 import Api.Arkham.Helpers
+import Api.Arkham.Redact (Viewer (ViewerSpectator))
 import Api.Arkham.Types.Game
 import Api.Arkham.Types.GameStep
 import Api.Arkham.Types.MultiplayerVariant
+import Api.Arkham.Viewer (
+  GameView (RedactedView),
+  Redacted (..),
+  RedactedGame (..),
+  viewerForUser,
+ )
 import Api.Handler.Arkham.CustomCards (userCustomCards)
 import Api.Handler.Arkham.Games.Shared
 import Api.Handler.Arkham.Games.Summary (
@@ -151,7 +158,10 @@ gameParticipantGate (Just (Entity playerId _)) attemptUpgrade _reject onAuthoriz
   attemptUpgrade
   onAuthorized playerId
 
-getApiV1ArkhamGameR :: ArkhamGameId -> Handler GetGameJson
+{- | The game for one of its players, redacted to what that caller's seats
+may see ('viewerForUser'): a player holding every seat sees it all.
+-}
+getApiV1ArkhamGameR :: ArkhamGameId -> Handler (Redacted GetGameJson)
 getApiV1ArkhamGameR gameId = do
   userId <- getRequestUserId
   withGameParticipant userId gameId \playerId -> runDB do
@@ -164,7 +174,9 @@ getApiV1ArkhamGameR gameId = do
           WithFriends -> coerce playerId
           Solo -> gameActivePlayerId
     mEvt <- lookupGameEvent gameId
+    gameView <- viewerForUser userId gameId
     pure
+      $ Redacted gameView
       $ GetGameJson
         (Just player)
         g.variant
@@ -191,9 +203,10 @@ shared still works. @allowSpectators@ governs whether the game is *advertised*
 on the home page's watch list, not whether this read is allowed.
 
 The socket is 'spectatorStream', so a watcher cannot answer the game's
-questions.
+questions. The read is always the spectator view, even for a caller who holds
+a seat: this route is not authenticated.
 -}
-getApiV1ArkhamGameSpectateR :: ArkhamGameId -> Handler GetGameJson
+getApiV1ArkhamGameSpectateR :: ArkhamGameId -> Handler (Redacted GetGameJson)
 getApiV1ArkhamGameSpectateR gameId = do
   servePongAware $ spectatorStream gameId
   runDB do
@@ -203,6 +216,7 @@ getApiV1ArkhamGameSpectateR gameId = do
     let player = gameActivePlayerId
     mEvt <- lookupGameEvent gameId
     pure
+      $ Redacted (RedactedView ViewerSpectator)
       $ GetGameJson
         (Just player)
         g.variant
@@ -365,8 +379,10 @@ data SpectatableGameActivity = SpectatableGameActivity
   deriving stock (Show, Generic)
   deriving anyclass ToJSON
 
--- | New Game
-postApiV1ArkhamGamesR :: Handler (PublicGame ArkhamGameId)
+{- | New Game. The response is redacted for the creator's seats like any other
+read ('viewerForUser'); a creator holding every seat row sees it all.
+-}
+postApiV1ArkhamGamesR :: Handler (RedactedGame (PublicGame ArkhamGameId))
 postApiV1ArkhamGamesR = do
   userId <- getRequestUserId
   CreateGamePost {..} <- requireCheckJsonBody
@@ -414,7 +430,8 @@ postApiV1ArkhamGamesR = do
 
     replace gameId ag'
     insert_ $ ArkhamStep gameId (Choice mempty updatedQueue) 0 (ActionDiff [])
-    pure $ toPublicGame (Entity gameId ag') mempty
+    gameView <- viewerForUser userId gameId
+    pure $ RedactedGame gameView $ toPublicGame (Entity gameId ag') mempty
 
 putApiV1ArkhamGameR :: ArkhamGameId -> Handler ()
 putApiV1ArkhamGameR gameId = do

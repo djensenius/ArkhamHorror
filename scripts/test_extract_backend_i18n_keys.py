@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -1970,6 +1971,25 @@ run = campaignI18n $ do
         check(expected in keys, f"heading emitters did not emit {expected}: {sorted(keys)}")
 
 
+def test_a_narrative_resolution_emits_its_title_and_body_with_xp() -> None:
+    modules = {
+        "Test/Helpers.hs": HELPERS,
+        "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ scope "resolutions" $ narrativeResolution "resolution1" Nothing (pure 1)
+""",
+    }
+    for suffix in ("title", "body"):
+        key = f"standalone.testCampaign.resolutions.resolution1.{suffix}"
+        variables = variable_types_of(modules, key)
+        check(
+            variables == {"xp": "integer"},
+            f"narrativeResolution did not emit {key} with an integer xp: {variables}",
+        )
+
+
 def test_the_registry_digest_covers_the_extracted_surface_not_the_input_files() -> None:
     card = """module Test.Card where
 
@@ -2003,6 +2023,196 @@ run = campaignI18n $ labeled' "card.doTheThing" $ pure ()
     check(
         extractor.canonical_bytes(moved) != payload and moved["payloadSha256"] != baseline["payloadSha256"],
         "changing an emitted key left the registry bytes or payloadSha256 unchanged",
+    )
+
+    # Lines shifted above the emitting binding: blank lines, a comment and a
+    # new top-level definition that emits nothing.
+    shifted = {
+        **base,
+        "Test/Card.hs": card.replace(
+            "\nrun = ",
+            "\n\n\n-- a comment\n\nhelper :: Int -> Int\nhelper = (+ 1)\n\nrun = ",
+        ),
+    }
+    check(
+        extractor.canonical_bytes(registry_of(shifted)) == payload,
+        "shifting lines above an emitting key site changed the registry bytes",
+    )
+
+
+DYNAMIC_CARD = """module Test.Card where
+
+import Test.Helpers
+
+other k = campaignI18n $ do
+  labeled' (keyFor k) $ pure ()
+  labeled' (keyFor k) $ pure ()
+  labeled' "card.twice" $ pure ()
+  labeled' "card.twice" $ pure ()
+
+instance RunMessage   Foo where
+  runMessage msg a = campaignI18n $ labeled' "card.inInstance" $ pure a
+"""
+
+
+def test_dynamic_sites_are_line_independent() -> None:
+    base = {"Test/Helpers.hs": HELPERS, "Test/Card.hs": DYNAMIC_CARD}
+    payload = extractor.canonical_bytes(registry_of(base))
+    shifted = {
+        **base,
+        "Test/Card.hs": DYNAMIC_CARD.replace(
+            "\nother k = ",
+            "\n\n-- a comment\n\nhelper :: Int -> Int\nhelper = (+ 1)\n\n\nother k = ",
+        ),
+    }
+    check(
+        extractor.canonical_bytes(registry_of(shifted)) == payload,
+        "shifting lines above a dynamic site changed the registry bytes",
+    )
+
+
+def test_sites_are_named_by_file_and_top_level_binding() -> None:
+    artifact = registry_of({"Test/Helpers.hs": HELPERS, "Test/Card.hs": DYNAMIC_CARD})
+    by_key = {entry["key"]: entry for entry in artifact["keys"]}
+
+    twice = by_key.get("standalone.testCampaign.label.card.twice", {})
+    check(
+        twice.get("site") == "Test/Card.hs#other" and twice.get("sites") == 1,
+        f"the same key twice from one emitter in one binding should be one site: {twice}",
+    )
+    instance = by_key.get("standalone.testCampaign.label.card.inInstance", {})
+    check(
+        instance.get("site") == "Test/Card.hs#instance RunMessage Foo",
+        f"an instance-method site should name the normalised instance head: {instance}",
+    )
+
+    dynamic = artifact["dynamicSites"]
+    check(
+        dynamic["sites"]
+        == [
+            {
+                "site": "Test/Card.hs#other",
+                "emitter": "labeled'",
+                "reason": "non-literal key",
+                "class": "runtime-key",
+                "count": 2,
+            }
+        ]
+        and dynamic["total"] == 2,
+        f"two dynamic sites in one binding should be one entry with count 2: {dynamic}",
+    )
+
+    line_site = re.compile(r"\.hs:\d+$")
+    for entry in [*artifact["keys"], *dynamic["sites"]]:
+        check(line_site.search(entry["site"]) is None, f"a registry site still names a line: {entry}")
+
+    with tempfile.TemporaryDirectory() as directory:
+        library = Path(directory) / "library"
+        for name, text in {"Test/Helpers.hs": HELPERS, "Test/Card.hs": DYNAMIC_CARD}.items():
+            path = library / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        report = Path(directory) / "dynamic.tsv"
+        extractor.build_artifact(dynamic_report=report, library=library)
+        lines = report.read_text(encoding="utf-8").splitlines()
+    check(
+        lines
+        == [
+            "Test/Card.hs:6\tother\tlabeled'\tnon-literal key",
+            "Test/Card.hs:7\tother\tlabeled'\tnon-literal key",
+        ],
+        f"--dynamic-report should keep exact file:line locations: {lines}",
+    )
+
+
+SAME_LINE_CARD = """module Test.Card where
+
+import Test.Helpers
+
+other k = campaignI18n $ do
+  (labeled' "card.twice" $ pure ()) >> (labeled' "card.twice" $ pure ())
+  (labeled' (keyFor k) $ pure ()) >> (labeled' (keyFor k) $ pure ())
+"""
+
+SPLIT_LINE_CARD = """module Test.Card where
+
+import Test.Helpers
+
+other k = campaignI18n $ do
+  (labeled' "card.twice" $ pure ()) >>
+    (labeled' "card.twice" $ pure ())
+  (labeled' (keyFor k) $ pure ()) >>
+    (labeled' (keyFor k) $ pure ())
+"""
+
+
+def test_splitting_identical_calls_across_lines_leaves_the_registry_unchanged() -> None:
+    same_line = registry_of({"Test/Helpers.hs": HELPERS, "Test/Card.hs": SAME_LINE_CARD})
+    split_line = registry_of({"Test/Helpers.hs": HELPERS, "Test/Card.hs": SPLIT_LINE_CARD})
+    check(
+        extractor.canonical_bytes(same_line) == extractor.canonical_bytes(split_line),
+        "a newline between two identical emitter calls changed the registry bytes: "
+        f"{same_line['keys']} {same_line['dynamicSites']} vs "
+        f"{split_line['keys']} {split_line['dynamicSites']}",
+    )
+    twice = {entry["key"]: entry for entry in split_line["keys"]}.get(
+        "standalone.testCampaign.label.card.twice", {}
+    )
+    check(
+        twice.get("sites") == 1,
+        f"two identical calls in one binding should be one (file, binding, emitter) site: {twice}",
+    )
+    groups = split_line["dynamicSites"]["sites"]
+    check(
+        [group.get("count") for group in groups] == [2] and split_line["dynamicSites"]["total"] == 2,
+        f"a dynamic group should count both unresolved calls, not distinct lines: {groups}",
+    )
+
+
+NESTED_SCOPE_CARD = """module Test.Card where
+
+import Test.Helpers
+
+instance (A m, B m) =>
+  RunMessage (Foo a) where
+  runMessage msg a = campaignI18n $ labeled' "card.constrained" $ pure a
+
+outer x = campaignI18n $ helper x
+ where
+  helper y = labeled' "card.inWhere" $ pure y
+
+guarded x
+  | x > 0 = let go = campaignI18n $ labeled' "card.inLetUnderGuard" $ pure x in go
+  | otherwise = pure x
+"""
+
+
+def test_sites_drop_instance_context_and_name_the_outer_binding() -> None:
+    artifact = registry_of({"Test/Helpers.hs": HELPERS, "Test/Card.hs": NESTED_SCOPE_CARD})
+    sites = {entry["key"]: entry.get("site") for entry in artifact["keys"]}
+    for key, expected in (
+        ("standalone.testCampaign.label.card.constrained", "Test/Card.hs#instance RunMessage (Foo a)"),
+        ("standalone.testCampaign.label.card.inWhere", "Test/Card.hs#outer"),
+        ("standalone.testCampaign.label.card.inLetUnderGuard", "Test/Card.hs#guarded"),
+    ):
+        check(sites.get(key) == expected, f"{key} should be sited at {expected}: {sites}")
+
+
+def test_a_key_emitted_from_two_bindings_is_sited_at_the_least_binding() -> None:
+    card = """module Test.Card where
+
+import Test.Helpers
+
+zeta = campaignI18n $ labeled' "card.shared" $ pure ()
+
+alpha = campaignI18n $ labeled' "card.shared" $ pure ()
+"""
+    artifact = registry_of({"Test/Helpers.hs": HELPERS, "Test/Card.hs": card})
+    by_key = {entry["key"]: entry for entry in artifact["keys"]}
+    shared = by_key.get("standalone.testCampaign.label.card.shared", {})
+    check(
+        shared.get("site") == "Test/Card.hs#alpha" and shared.get("sites") == 2,
+        f"a key from two bindings should be sited at the least (file, binding, emitter): {shared}",
     )
 
 
@@ -2069,6 +2279,23 @@ def test_committed_registry_properties() -> None:
     ):
         check(key in keys, f"registry lost a cited key: {key}")
 
+    # Resolutions emitted through narrativeResolution (Arkham/Helpers/Narrative.hs).
+    for prefix in (
+        "theDunwichLegacy.theEssexCountyExpress.resolutions.resolution1",
+        "theDunwichLegacy.whereDoomAwaits.resolutions.resolution1",
+        "theDunwichLegacy.theHouseAlwaysWins.resolutions.resolution3",
+    ):
+        for suffix in ("title", "body"):
+            key = f"{prefix}.{suffix}"
+            entry = by_key.get(key)
+            check(entry is not None, f"registry lost a narrativeResolution key: {key}")
+            if entry is not None:
+                types = {variable["name"]: variable["type"] for variable in entry["variables"]}
+                check(
+                    types.get("xp") == "integer",
+                    f"narrativeResolution key {key} lost its integer xp: {types}",
+                )
+
     # `chooseAmount' iid "additionalActions" "$actions"` is an amount label, not
     # a root-level key.
     check("actions" not in keys, "the $actions false positive is back")
@@ -2086,6 +2313,18 @@ def test_committed_registry_properties() -> None:
     )
     for site in artifact["dynamicSites"]["sites"]:
         check("class" in site and "reason" in site, f"unclassified site {site}")
+    check(
+        sum(site.get("count", 0) for site in artifact["dynamicSites"]["sites"])
+        == artifact["dynamicSites"]["total"],
+        "dynamicSites.total is not the sum of the grouped site counts",
+    )
+    line_site = re.compile(r"\.hs:\d+$")
+    for entry in [*artifact["keys"], *artifact["dynamicSites"]["sites"]]:
+        check(line_site.search(entry["site"]) is None, f"a committed registry site names a line: {entry}")
+        check(
+            not entry["site"].endswith("#<top>"),
+            f"a committed registry site fell back to <top>: {entry}",
+        )
 
 
 TESTS = (
@@ -2163,7 +2402,13 @@ TESTS = (
     test_a_presentation_emitter_keeps_a_module_from_being_waived,
     test_only_known_caller_scope_alias_reasons_are_classified,
     test_a_heading_story_emits_its_title_and_body,
+    test_a_narrative_resolution_emits_its_title_and_body_with_xp,
     test_the_registry_digest_covers_the_extracted_surface_not_the_input_files,
+    test_dynamic_sites_are_line_independent,
+    test_sites_are_named_by_file_and_top_level_binding,
+    test_splitting_identical_calls_across_lines_leaves_the_registry_unchanged,
+    test_sites_drop_instance_context_and_name_the_outer_binding,
+    test_a_key_emitted_from_two_bindings_is_sited_at_the_least_binding,
     test_committed_registry_properties,
 )
 
