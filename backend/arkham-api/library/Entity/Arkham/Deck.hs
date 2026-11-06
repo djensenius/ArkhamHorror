@@ -6,8 +6,9 @@ module Entity.Arkham.Deck (
   module Entity.Arkham.Deck,
 ) where
 
-import Arkham.Custom.Overlay (DeckOverlay, applyOverlay)
+import Arkham.Custom.Overlay (DeckOverlay, applySeatOverlay)
 import Arkham.Decklist
+import Arkham.Investigator (isKnownInvestigator)
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Time.Clock (UTCTime)
 import Data.UUID
@@ -55,7 +56,11 @@ instance ToJSON ArkhamDeck where
 -- | The deck as it should be played: the stored list with its overlay applied.
 arkhamDeckPlayList :: ArkhamDeck -> ArkhamDBDecklist
 arkhamDeckPlayList deck =
-  maybe id applyOverlay (arkhamDeckOverlay deck) (arkhamDeckList deck)
+  applySeatOverlay isKnownInvestigator (arkhamDeckOverlay deck) (arkhamDeckList deck)
+
+-- | The play list with an overlay chosen for one game laid over it as well.
+arkhamDeckPlayListFor :: Maybe DeckOverlay -> ArkhamDeck -> ArkhamDBDecklist
+arkhamDeckPlayListFor overlay = applySeatOverlay isKnownInvestigator overlay . arkhamDeckPlayList
 
 -- A PUT is a new attachment even when its JSON equals an earlier attachment.
 attachDeckOverlay :: UUID -> DeckOverlay -> ArkhamDeck -> ArkhamDeck
