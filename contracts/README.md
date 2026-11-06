@@ -1631,6 +1631,139 @@ catalog fixture digests.
 `nativeClientMinimumRevision` stays `0.1.57`; clients pinned to `0.1.57` or
 `0.1.58` are unaffected and need not repin.
 
+#### Localized card names (revision 0.1.60)
+
+Revision `0.1.60` adds a `cardNames` pack to the locale catalog. It changes no
+route, capability or JSON schema: it is required because the synthetic catalog
+fixtures now carry card-name chunks. The native minimum stays `0.1.57`.
+
+Server labels name cards and investigators through the `name`/`__name` and
+`iname`/`__iname` variables (`cardNameVar`/`investigatorNameVar` in
+`Arkham/I18n.hs`): the English title plus the card code. The web replaces the
+English title with the localized name from `frontend/public/cards_<locale>.json`
+(`handleI18n` in `frontend/src/arkham/i18n.ts`). The catalog now publishes the
+same answer, so a native client looks up `cardNames.<code>` with the `__name`
+or `__iname` code, as one exact key with no suffix logic of its own.
+
+The generator (`frontend/scripts/locale-catalog/card-names.mjs`) resolves each
+key the way `buildCardIndex` and `getDbCard` in
+`frontend/src/stores/dbCards.ts` do:
+
+1. Every record answers for its own code.
+2. Every record also answers for `<code>b` when no record has that code, so a
+   real `b` record always wins over this alias, whatever the file order.
+3. A bare code with no record of its own answers with its `<code>a` record
+   (for example `01121` gives the agenda front `01121a`).
+
+A code is published only when the record it resolves to has a non-empty string
+name. Names are literal text nodes and are never parsed as messages. The card
+files are part of the catalog provenance, so a card-data change moves the
+catalog revision like any locale-source change. Card names are not
+backend-emitted keys, so they never count as backend-required or untranslated.
+
+Fallback is different from the web. A code missing from a locale's pack falls
+back through the catalog chain to the `en` pack. Only if `en` also lacks it
+does the client keep the server's English title. The web instead falls back per
+code straight to the server's English title. Today every UI locale publishes
+the same code set (11,794 keys, about 1.2 MB per locale chunk), so this only
+matters for future data gaps.
+
+Revision `0.1.60` covers the eight UI catalog locales (`de`, `en`, `es`, `fr`,
+`it`, `ko`, `zh`, `zh-CN`). Revision `0.1.63` adds the card-only web languages
+`pl`, `pt` (read from the web's `cards_po.json`), `ru` and `uk` (see below).
+`ja` is excluded because its card file is empty. The synthetic fixtures pin the
+Night of the Zealot names in `en`, `de` and the card-only `pl` (`pt-BR` has no
+card pack and falls back to `en`).
+`frontend/tests/localeCatalogCardNames.test.mjs` proves those pinned names
+equal the real generator output and cover every Night of the Zealot name the
+fixture labels use. If an upstream sync renames a pinned card in
+`frontend/public/cards_en.json` or `cards_de.json`, that test fails. The fix is
+to update the pinned table, rewrite the fixtures
+(`mise run contracts:catalog-fixture-write`) and bump `schemaRevision`.
+
+From `0.1.60` every catalog client downloads, digest-checks and caches the
+`cardNames` pack for each locale in its fallback chain. That is about 1.1 to
+1.3 MB per locale. The `en` total grows from about 7.5 MB to 8.8 MB. A `de`
+client's own locale grows from about 19 KB to 1.27 MB, plus `en`. A client that
+never looks up a `cardNames.*` key still pays that download cost, but nothing
+else changes for it, and the catalog stays within the Apple client's limits
+(256 chunks per locale, 192 MiB). Client pins at `0.1.57` to `0.1.59` remain
+compatible and need not repin. Apple TASK-1.2.23, which consumes the pack,
+repins to `0.1.60`.
+
+#### Serving CI runner disk (revision 0.1.61)
+
+Revision `0.1.61` changes no public JSON shape, route or capability. It records
+a governed CI input change: the "Serving and rollout behavior" job in
+`.github/workflows/locale-catalog.yml`, a governed locale-catalog generator
+input, now frees runner disk before building the production image, which
+changes the synthetic catalog fixture digests. `nativeClientMinimumRevision`
+stays `0.1.57`; clients pinned to `0.1.57` through `0.1.60` are unaffected and
+need not repin.
+
+#### i18n registry payload digest (revision 0.1.62)
+
+Revision `0.1.62` changes no public JSON shape, route or capability. It records
+a governed generator input change: `scripts/extract_backend_i18n_keys.py` (with
+its test and `scripts/validate-locale-catalog.py`) now identifies
+`backend/arkham-api/i18n-emitted-keys.json` by a `payloadSha256` over the
+registry's own canonical bytes instead of a digest over every backend library
+file, which changes the synthetic catalog fixture digests. The catalog
+manifest's `backend.sourceSha256` keeps its name and format.
+`nativeClientMinimumRevision` stays `0.1.57`; clients pinned to `0.1.57`
+through `0.1.61` are unaffected and need not repin.
+
+#### Card-only locales (revision 0.1.63)
+
+Revision `0.1.63` completes the localized card names. The catalog now also
+publishes `pl`, `pt`, `ru` and `uk` as card-only locales: ordinary catalog
+locales whose only keys are `cardNames.*`, with `"fallback": "en"` for every
+other key. They are the languages the web shows card names in but has no UI
+translation for. `pt` is built from the web's `frontend/public/cards_po.json`;
+there is no `cards_pt.json`. The keys follow the same lookup rules as revision
+`0.1.60`. A card-only locale whose tag a UI locale already publishes fails the
+build. So if an upstream sync adds `ru`, `pl`, `uk` or `pt` as a UI locale, the
+generator's clash refusal fails the build, and the fix is to drop that entry
+from `CARD_ONLY_LOCALES` in `frontend/scripts/locale-catalog/card-names.mjs`
+(and `CARD_SOURCE_ALIASES` in `scripts/validate-locale-catalog.py` for `pt`).
+
+`languageResolution` now sends `pl`, `pt`, `ru` and `uk` device languages, bare
+or regional (`pl-PL`, `pt-BR`, `pt-PT`, `ru-RU`, `uk-UA`), to their card-only
+locale, so a client shows those card names and the `en` UI text. Before this
+revision `pt-BR` and `ru` resolved to `en`. Unsupported languages still resolve to `en`; the
+probe list now includes `ja` and `nl` to show it. This follows the web's automatic
+card-language choice (`preferredLanguage`), except that `pt-BR` uses the
+Portuguese card data rather than the web's missing `cards_pt.json`.
+
+The manifest shape is unchanged: no new field or per-locale flag, so closed
+decoders keep working. The production catalog grows from 8 to 12 locales and
+by about 5 MB (45,879 card-name keys). The synthetic catalog fixture gains a
+card-only `pl` locale with the Night of the Zealot names.
+`nativeClientMinimumRevision` stays `0.1.57`; clients pinned to `0.1.57`
+through `0.1.62` are unaffected and need not repin.
+
+#### Tooling provenance lock (revision 0.1.64)
+
+Revision `0.1.64` changes no public JSON shape, route or capability. It is a
+one-time re-derivation so that tooling edits stop forcing revision bumps
+(revisions `0.1.58`, `0.1.59` and `0.1.61` bumped only for one). The synthetic
+catalog manifest's `provenance.generatorSha256` is now derived from the
+generator's identity alone: the SHA-256 of `arkham-locale-catalog@<version>`,
+the schema-pinned generator name and `GENERATOR_VERSION` in
+`scripts/build-locale-catalog-fixture.py`. It keeps its key, type and
+position. The per-file digests it used to fold in (every `scripts/*.py`, both
+launcher stages, the runtime profile, `mise.toml`, `pyproject.toml`,
+`uv.lock`, `frontend/package.json`, the `Dockerfile` and the contracts,
+locale-catalog and Haskell workflows) now live in the non-governed, committed
+`scripts/locale_catalog_tooling_lock.json`. `contracts:catalog-fixture` and the
+python-boundary tamper tests check that lock. This changes `generatorSha256`,
+`provenance.sha256`, `catalogRevision`/`revisionManifestPath` and the
+capabilities fixture's `manifestSha256` once. No client verifies that digest
+value (Apple checks only the provenance block's shape; Linux vendors no
+locale-catalog files), so no client needs to repin.
+`nativeClientMinimumRevision` stays `0.1.57`; clients pinned to `0.1.57`
+through `0.1.63` are unaffected and need not repin.
+
 ### Locale catalog discovery
 
 `GET /capabilities` advertises a catalog with the `i18n.locale-catalog.v1`
@@ -1740,21 +1873,26 @@ computed from committed sibling authorities:
     fixtures/locale-catalog-chunk-<sha256>.json    the rendered chunks
     fixtures/locale-catalog-manifest.json          derived from all of the above
 
-`provenance.generatorSha256` and `schemasSha256` are digests of the *real*
-inputs — every repository-local module the generator executes and the published
-`frontend/schemas/locale-catalog/v1/` schemas — not of a committed description
-of them, which is what those fields mean in production. The generator's source
-set is its own `scripts/` **import closure**, computed from each module's AST,
+`provenance.schemasSha256` is the digest of the *real* published
+`frontend/schemas/locale-catalog/v1/` schemas, not of a committed description
+of them, so a schema edit moves the synthetic catalog revision.
+`provenance.generatorSha256` is the SHA-256 of `<generator name>@<version>`
+(revision `0.1.64`): reproducible, derived, never hand-frozen, and moved only
+by a deliberate `GENERATOR_VERSION` bump. The generator's own source set,
+its `scripts/` **import closure**, is still computed from each module's AST,
 so `strict_json` is included and a helper added later cannot be left out by
-forgetting to list it; a dropped or renamed module changes the digest too,
-because it is bound to the path as well as the bytes. The boundary is
+forgetting to list it. Its digests, bound to path as well as bytes, plus the
+execution environment's, are pinned in the non-governed
+`scripts/locale_catalog_tooling_lock.json` instead of governed bytes. The
+boundary is
 fail-closed: sources must be plain non-symlink files inside `scripts/`, and a
 relative import, a package or repo-local module outside that tree, a dynamic
 `importlib`/`__import__`, an `exec`/`eval`, `sys.path`/`meta_path`/`path_hooks`
 machinery, or any import that is neither generator-local, standard-library nor
 one of the pinned dependencies is a refusal — each proven by injecting it into
-the real generator and helper sources' own AST. Editing any of them
-therefore moves the synthetic catalog revision, and every fixed value
+the real generator and helper sources' own AST. Editing, adding, dropping or
+renaming any of them therefore fails the tooling lock check, which names the
+lock and prints its expected bytes, and every fixed value
 the v1 schemas already pin (`schemaVersion`, `basePath`, `manifestPath`,
 `chunkPathPrefix`, `digestAlgorithm`, the generator name) is read from their
 own `const` declarations rather than re-typed.
@@ -1770,10 +1908,13 @@ own `const` declarations rather than re-typed.
   `schemasSha256`, `generatorSha256`, `localeSourceFiles`, `fixtureKeys`,
   `provenance.sha256`, `catalogRevision` and `revisionManifestPath`. Its
   self-tests mutate each of those in turn — and separately perturb every
-  provenance *input*: an edited generator source or helper, a newly imported
-  local helper, a dropped or renamed helper, an edited, renamed or dropped v1
-  schema, a different generator name or version — and require the result to
-  change or the check to fail.
+  provenance *input*: an edited, renamed or dropped v1 schema, an edited
+  locale source, a different generator name or version, a different contract
+  revision — and require the result to change or the check to fail. The same
+  run checks `scripts/locale_catalog_tooling_lock.json`, and its self-tests
+  require an edited workflow, launcher, `mise.toml`, `Dockerfile`, generator
+  source or helper, or an added, dropped or renamed tooling file, as well as a
+  mutated, reordered, extended or truncated lock, to fail that check by name.
 - It is schema-valid against the published
   `frontend/schemas/locale-catalog/v1/` manifest *and* chunk schemas, is
   narrative-free (identifier-shaped values only), and is never regenerated from
@@ -1932,6 +2073,21 @@ enforces the actual bump rule: it recomputes the current governed-artifact
 hash set, recomputes the same hash set as of a resolved base ref, and
 requires `schemaRevision` to have strictly, numerically increased whenever
 that diff is non-empty.
+
+Only governed artifacts count. Tooling is not a contract artifact: the
+locale-catalog tooling (the generator and its `scripts/` closure, the
+launchers, `mise.toml`, `pyproject.toml`, `uv.lock`, `frontend/package.json`,
+the `Dockerfile` and the workflows) is pinned by the committed, non-governed
+`scripts/locale_catalog_tooling_lock.json`. Editing tooling or widening a
+capability-lint grant moves that lock, which `contracts:catalog-fixture` and
+the python-boundary tamper tests check in CI. It needs a reviewed lock update
+(the failing check prints the exact expected bytes) but no revision bump. A
+change to public generator output (the synthetic chunks, sources, backend
+registry, manifest, the v1 schemas through `schemasSha256`, or the generator
+version) still changes governed bytes and still requires a bump. The drift
+gate's own self-tests prove both halves: a non-governed change passes at the
+same revision, and a governed fixture change at the same revision fails even
+with `artifactHashes` recomputed.
 
 Base-ref resolution is deterministic and fails closed. The authoritative
 route takes the base **positionally**, wired by the workflow from the

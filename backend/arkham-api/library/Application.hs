@@ -50,6 +50,7 @@ import Control.Monad.Logger (liftLoc, runLoggingT)
 import Data.Bugsnag.Settings qualified as Bugsnag
 import Data.ByteString.Char8 qualified as BS8
 import Data.CaseInsensitive (foldCase, mk)
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.Default.Class (def)
 import Data.List (lookup, partition)
 import Data.Pool (destroyAllResources)
@@ -75,13 +76,14 @@ import Database.Redis (
 import Import hiding (newMVar, sendResponse)
 import Language.Haskell.TH.Syntax (qLocation)
 import Network.HTTP.Client.TLS (getGlobalManager)
-import Network.HTTP.Types (HeaderName, ResponseHeaders, status200, status304)
+import Network.HTTP.Types (HeaderName, ResponseHeaders, status200, status304, urlDecode)
 import Network.TLS (ClientParams (..), Shared (..), Supported (..), defaultParamsClient)
 import Network.TLS.Extra.Cipher (ciphersuite_strong)
 import Network.Wai (
   Middleware,
   mapResponseHeaders,
   pathInfo,
+  rawPathInfo,
   requestHeaders,
   requestMethod,
   responseHeaders,
@@ -425,7 +427,8 @@ makeLogWare settings requestLogger =
 -- bodies are logged in Detailed mode.
 skipArkhamDBLogging :: Middleware -> Middleware
 skipArkhamDBLogging logWare app req sendResponse
-  | any (`isPrefixOf` credentialPath) credentialRoutes = app req sendResponse
+  | any isCredentialPath credentialViews = app req sendResponse
+  | isIrregularCredentialPath (pathInfo req) (rawPathInfo req) = app req sendResponse
   | otherwise = logWare app req sendResponse
  where
   credentialRoutes =
@@ -437,8 +440,87 @@ skipArkhamDBLogging logWare app req sendResponse
   -- variants conservatively for privacy, without changing route dispatch or
   -- suppressing similarly named ordinary routes such as "arkhamdb-other".
   -- Drop empty segments so doubled or leading slashes, which are logged before
-  -- Yesod's clean-path redirect, still match.
-  credentialPath = filter (not . T.null) $ concatMap (T.splitOn "/" . T.toCaseFold) (pathInfo req)
+  -- Yesod's clean-path redirect, still match, and drop "." segments. Cutting a
+  -- segment at its first ';' ignores path parameters ("arkhamdb;x=1").
+  -- A backslash ("\" or "%5C") is deliberately not normalised: browsers
+  -- convert it before sending, and Yesod routes it to a 404.
+  isCredentialPath path = any (`isPrefixOf` path) credentialRoutes
+  -- Precise matches: build eight views and skip logging if any of them
+  -- matches. Proxies normalise paths in more ways than these views model, so
+  -- isIrregularCredentialPath below is the fail-closed backstop.
+  -- * split-then-cut: split each decoded segment on '/' (an encoded "%2F"),
+  --   then cut every piece at ';'.
+  -- * cut-then-split: cut each decoded segment at ';' first, as a proxy that
+  --   strips parameters per raw segment would, so "arkham;%2F..%2F" is "arkham".
+  -- * Each of these literally (".." kept) and RFC 3986 dot-resolved (".." pops a
+  --   segment, never above the root), so neither form bypasses the exclusion.
+  -- * Each of these also dot-resolved per RFC 3986 section 5.2.4 while empty
+  --   segments are still present, so ".." pops an empty segment as a resolving
+  --   proxy would ("arkham//../arkhamdb" is "arkham/arkhamdb"), and only then
+  --   with the empty segments dropped.
+  -- * Unsplit: dot-resolve the decoded segments themselves (as-is and cut at
+  --   ';'), as a proxy resolving the raw path would, where "%2F" is data, so
+  --   ".." pops all of "q%2Fr"; then split, cut and drop "" and "." segments.
+  -- A path that climbs out of a credential prefix, such as
+  -- "arkhamdb/../games", is still skipped: privacy wins over logging it.
+  credentialViews =
+    concatMap (withResolved . dropEmptyAndDot) segmentViews
+      <> map (filter (not . T.null) . resolveDots) segmentViews
+      <> map unsplitView [decodedSegments, map cutParams decodedSegments]
+  segmentViews = [splitThenCut, cutThenSplit]
+  decodedSegments = map T.toCaseFold (pathInfo req)
+  splitThenCut = map cutParams $ concatMap (T.splitOn "/") decodedSegments
+  cutThenSplit = concatMap (T.splitOn "/" . cutParams) decodedSegments
+  cutParams = T.takeWhile (/= ';')
+  dropEmptyAndDot = filter (`notElem` ["", "."])
+  withResolved path = [path, resolveDots path]
+  unsplitView segments =
+    [ piece
+    | segment <- resolveDots segments
+    , piece <- T.splitOn "/" (cutParams segment)
+    , piece `notElem` ["", "."]
+    ]
+  resolveDots = reverse . foldl' resolveSegment []
+  resolveSegment segments "." = segments
+  resolveSegment segments ".." = drop 1 segments
+  resolveSegment segments segment = segment : segments
+
+-- Fail-closed backstop for skipArkhamDBLogging: skip logging an irregular path
+-- that mentions a credential route name anywhere, whatever a proxy would
+-- normalise it to. Irregular: a decoded segment other than a single trailing
+-- empty one is "", "." or "..", or contains a character outside safePchar.
+-- That allowlist rejects '/', '\\', ';', '%' (a decoded '%' means double
+-- encoding), NUL, controls, spaces and every non-ASCII character, including
+-- U+FFFD (what lenient UTF-8 decoding leaves of an overlong separator such as
+-- "%C0%AF") and look-alike slashes such as U+FF0F, U+FF3C, U+2215 and U+2044.
+-- Mentions: after percent-decoding the raw path until it stops changing (at
+-- most 8 rounds, to catch double encoding) and casefolding, splitting on every
+-- character outside [a-z0-9-] leaves some piece that is exactly a credential
+-- route name. Exact pieces keep "arkhamdb-other" or "arkham-builder" logged.
+-- Accepted over-exclusion: a path with an irregular segment whose pieces
+-- include an exact credential name is dropped from the log but still served.
+isIrregularCredentialPath :: [Text] -> ByteString -> Bool
+isIrregularCredentialPath decodedSegments rawPath = irregular && mentionsCredentialName
+ where
+  segments = case reverse decodedSegments of
+    "" : rest -> reverse rest
+    _ -> decodedSegments
+  irregular = any irregularSegment segments
+  irregularSegment segment =
+    segment `elem` ["", ".", ".."] || T.any (not . safePchar) segment
+  -- RFC 3986 pchar without ';' (path parameters) and '%' (a decoded '%').
+  safePchar c =
+    isAsciiLower c || isAsciiUpper c || isDigit c || c `elem` ("-._~!$&'()*+,=:@" :: String)
+  isNameChar c = isAsciiLower c || isDigit c || c == '-'
+  mentionsCredentialName =
+    any (`elem` ["arkhamdb", "arkham-build"])
+      $ T.split (not . isNameChar)
+      $ T.toCaseFold (decodeUtf8 (fullyDecoded (8 :: Int) rawPath))
+  fullyDecoded rounds path
+    | rounds <= 0 || decoded == path = path
+    | otherwise = fullyDecoded (rounds - 1) decoded
+   where
+    decoded = urlDecode False path
 
 -- | Warp settings for the given foundation value.
 warpSettings :: App -> Settings
