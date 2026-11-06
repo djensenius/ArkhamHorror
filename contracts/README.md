@@ -2093,7 +2093,14 @@ the `Dockerfile` and the workflows) is pinned by the committed, non-governed
 `scripts/locale_catalog_tooling_lock.json`. Editing tooling or widening a
 capability-lint grant moves that lock, which `contracts:catalog-fixture` and
 the python-boundary tamper tests check in CI. It needs a reviewed lock update
-(the failing check prints the exact expected bytes) but no revision bump. A
+(the failing check prints the exact expected bytes) but no revision bump.
+Because that lock is enforced only by the code it pins, the remaining gate is
+review: `.github/CODEOWNERS` (`* @djensenius`) already assigns the lock,
+`scripts/build-locale-catalog-fixture.py` and `.github/workflows/` to the
+owner, so a narrower entry would add nothing. A change from anyone else
+requests owner review, but GitHub does not request it on the owner's own pull
+requests and branch protection does not require code-owner review, so
+reviewing a lock update is a process gate GitHub does not enforce. A
 change to public generator output (the synthetic chunks, sources, backend
 registry, manifest, the v1 schemas through `schemasSha256`, or the generator
 version) still changes governed bytes and still requires a bump. The drift
