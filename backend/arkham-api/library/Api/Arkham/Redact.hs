@@ -88,10 +88,14 @@ and any string in the viewer's own @question@ entries. Those ids are then remove
     hidden card or id inside an array is removed, as an object value it becomes
     @null@, and an object key that is a hidden id is dropped. Everything else
     (@revealedCards@, a class choice and so on) stays;
-  * @playProhibitions@ and @commitProhibitions@ of every investigator the
-    viewer does not control (@[cardId, refs]@ pairs for cards in hand): an
-    entry naming a hidden id anywhere is dropped (an array stays an array, an
-    object stays an object);
+  * @playProhibitions@, @commitProhibitions@ (@[cardId, refs]@ pairs for
+    cards in hand or played as if in hand), @cannotDiscoverClues@ and
+    @cannotSpendClues@ (@null@ or a list of log refs, which can carry card
+    ids) of every investigator, the viewer's own included (an @AsIfInHand@
+    effect can put another seat's card in them): an array entry naming a
+    hidden id anywhere is dropped (an array stays an array; for the play and
+    commit prohibitions an object keyed by card id stays an object, filtered),
+    and any other value naming a hidden id becomes @null@;
   * the campaign's @meta.otherCampaignPlayers@ (full investigator data for the
     other half of a split campaign): each entry the viewer does not control
     gets the same zone clearing as above (no @handCount@ is added, so the shape
@@ -223,7 +227,10 @@ redactInvestigator options viewer hidden = \case
   Object investigator ->
     let counted = if options.includeHandCount then withHandCount investigator else investigator
         controlled = controls viewer investigator
-     in Object $ if controlled then counted else scrubMetas hidden (hideZones counted)
+     in Object
+          $ if controlled
+            then scrubProhibitions hidden counted
+            else scrubMetas hidden (hideZones counted)
   other -> other
 
 controls :: Viewer -> Object -> Bool
@@ -493,7 +500,8 @@ redactModifiers hidden = onArray (V.mapMaybe modifier)
       | otherwise -> Just other
 
 {- | The hidden-id scrub of an investigator the viewer does not control: its
-@meta@ and @formMeta@ (see 'scrub') and its play and commit prohibitions.
+@meta@ and @formMeta@ (see 'scrub') and its prohibitions (see
+'scrubProhibitions').
 -}
 scrubMetas :: Set Text -> Object -> Object
 scrubMetas hidden
@@ -501,17 +509,34 @@ scrubMetas hidden
   | otherwise =
       adjust (scrub hidden) "meta"
         . adjust (scrub hidden) "formMeta"
-        . adjust prohibitions "playProhibitions"
+        . scrubProhibitions hidden
+
+{- | The prohibition channels of any investigator, the viewer's own included:
+@playProhibitions@ and @commitProhibitions@ (@[cardId, refs]@ pairs; an
+object keyed by card id is handled too) and @cannotDiscoverClues@ and
+@cannotSpendClues@ (@null@ or a list of log refs). An array entry (or keyed
+prohibition) naming a hidden id anywhere goes; any other value naming one
+becomes @null@. The viewer's own
+cards are never in @hidden@, so only another seat's card (an @AsIfInHand@
+one, say) is removed from the viewer's own lists.
+-}
+scrubProhibitions :: Set Text -> Object -> Object
+scrubProhibitions hidden
+  | Set.null hidden = id
+  | otherwise =
+      adjust prohibitions "playProhibitions"
         . adjust prohibitions "commitProhibitions"
+        . adjust refs "cannotDiscoverClues"
+        . adjust refs "cannotSpendClues"
  where
-  -- @[cardId, refs]@ pairs (an object keyed by card id is handled too): an
-  -- entry naming a hidden id anywhere goes.
   prohibitions = \case
-    Array entries -> Array (V.filter (not . mentions hidden) entries)
     Object o ->
       Object
         . KeyMap.filter (not . mentions hidden)
         $ KeyMap.filterWithKey (\k _ -> not (Key.toText k `Set.member` hidden)) o
+    other -> refs other
+  refs = \case
+    Array entries -> Array (V.filter (not . mentions hidden) entries)
     other
       | mentions hidden other -> Null
       | otherwise -> other

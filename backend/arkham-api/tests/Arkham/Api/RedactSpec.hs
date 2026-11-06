@@ -313,7 +313,8 @@ redactFor = redactWith RedactOptions {includeHandCount = True}
 filter covers (TASK-2.22.5 P3):
 
   * @h0@ (B's hand) is listed in A's @meta.revealedCards@, so it is public;
-  * @h1@ (B's hand) is in @cards@, @focusedCards@, @foundCards@, the @card@ of
+  * @h1@ (B's hand) is in @cards@, @focusedCards@, @highlightedCards@,
+    @foundCards@, the @card@ of
     a modifier on A, B's @meta@, and Agnes's (seat C, other campaign half)
     stored @meta@;
   * @h2@ (B's hand) is in @cards@, B's scenario-level search, an
@@ -384,6 +385,7 @@ plantHidden Table {..} = do
           Map.fromList [(toCardId c, c) | c <- [c0, c1, c2, deckTop, public] <> investigatorHand (toAttrs jenny)]
             <> gameCards g
       , gameFocusedCards = [[c1, public]]
+      , gameHighlightedCards = [toCardId c1, toCardId public]
       , gameFoundCards = Map.singleton FromDeck [c1, public]
       , gameModifiers =
           Map.insertWith
@@ -501,6 +503,7 @@ overSeat pid f = \case
     other -> other
 
 -- | The card ids that key a list of @[cardId, refs]@ prohibition pairs.
+-- Fails on any other shape, so it also pins the array-of-pairs encoding.
 prohibitionIds :: Aeson.Value -> [Text]
 prohibitionIds = \case
   Aeson.Array entries -> [i | Aeson.Array e <- toList entries, Aeson.String i : _ <- [toList e]]
@@ -736,6 +739,8 @@ spec = describe "Api.Arkham.Redact.redactFor" do
       for_ (h0 : pub : ownHand) \i -> (i, i `elem` registryKeys asA) `shouldBe` (i, True)
       -- (2) focusedCards and (3) foundCards keep the public card and the zone key.
       cardIdsOf (topKey "focusedCards" asA) `shouldBe` [pub]
+      topKey "highlightedCards" original `shouldBe` toJSON [h1, pub]
+      topKey "highlightedCards" asA `shouldBe` toJSON [pub]
       zoneCards (topKey "foundCards" original) `shouldBe` [[h1, pub]]
       zoneCards (topKey "foundCards" asA) `shouldBe` [[pub]]
       zoneKeys (topKey "foundCards" asA) `shouldBe` zoneKeys (topKey "foundCards" original)
@@ -785,7 +790,7 @@ spec = describe "Api.Arkham.Redact.redactFor" do
       -- the full view is the unredacted value itself.
       for_ [asB, asAB] \v -> do
         for_ (h0 : pub : leaked) \i -> (i, i `elem` registryKeys v) `shouldBe` (i, True)
-        for_ ["focusedCards", "foundCards", "modifiers"] \k -> (k, topKey k v) `shouldBe` (k, topKey k original)
+        for_ ["focusedCards", "highlightedCards", "foundCards", "modifiers"] \k -> (k, topKey k v) `shouldBe` (k, topKey k original)
         scenarioSearchOf v `shouldBe` scenarioSearchOf original
         for_ ["meta", "formMeta", "modifiers"] \k ->
           (k, field' k (investigatorFor tableB v)) `shouldBe` (k, field' k (investigatorFor tableB original))
@@ -822,24 +827,41 @@ spec = describe "Api.Arkham.Redact.redactFor" do
     overTest \g -> g {gameModifiers = Map.insertWith (<>) (toTarget daisy) [cannotPlay] (gameModifiers g)}
     game' <- getGame
     liftIO do
-      -- commitProhibitions only fill during a skill test, so plant one there.
+      -- commitProhibitions only fill during a skill test, so plant one there;
+      -- the clue prohibitions and A's own lists are planted too.
       let noRefs = [] :: [Text]
+          ref i = Aeson.object ["kind" .= ("RefCard" :: Text), "name" .= ("Card" :: Text), "cardId" .= i]
           original =
             overSeat
-              tableB
-              (KeyMap.insert "commitProhibitions" (toJSON [(h1, noRefs), (pub, noRefs)]))
-              (toJSON (PublicGame ("game" :: Text) "Redact" (logRows tableA tableB) game'))
+              tableA
+              ( KeyMap.insert "playProhibitions" (toJSON [(h2, noRefs), (pub, noRefs)])
+                  . KeyMap.insert "cannotSpendClues" (toJSON [ref h1])
+              )
+              . overSeat
+                tableB
+                ( KeyMap.insert "commitProhibitions" (toJSON [(h1, noRefs), (pub, noRefs)])
+                    . KeyMap.insert "cannotDiscoverClues" (toJSON [ref h1, ref pub])
+                    . KeyMap.insert "cannotSpendClues" (ref h1)
+                )
+              $ toJSON (PublicGame ("game" :: Text) "Redact" (logRows tableA tableB) game')
           asA = redactFor (ViewerSeats (Set.singleton tableA)) original
           asB = redactFor (ViewerSeats (Set.singleton tableB)) original
           daisyOf = investigatorFor tableB
+          jennyOf = investigatorFor tableA
       -- The engine really reports B's whole hand as prohibited.
       Set.fromList (prohibitionIds (field' "playProhibitions" (daisyOf original))) `shouldBe` Set.fromList [h0, h1, h2]
       -- A keeps only the revealed card's entry, and the public commit entry.
       prohibitionIds (field' "playProhibitions" (daisyOf asA)) `shouldBe` [h0]
       prohibitionIds (field' "commitProhibitions" (daisyOf asA)) `shouldBe` [pub]
+      -- B's clue prohibitions: the list loses the hidden ref, a non-list goes null.
+      field' "cannotDiscoverClues" (daisyOf asA) `shouldBe` toJSON [ref pub]
+      field' "cannotSpendClues" (daisyOf asA) `shouldBe` Aeson.Null
+      -- A's own lists lose B's hidden card (say one A plays as if in hand).
+      prohibitionIds (field' "playProhibitions" (jennyOf asA)) `shouldBe` [pub]
+      field' "cannotSpendClues" (jennyOf asA) `shouldBe` Aeson.Array mempty
       filter (`elem` [h1, h2, d0]) (stringsIn asA) `shouldBe` []
       -- B's own view keeps every entry.
-      for_ ["playProhibitions", "commitProhibitions"] \k ->
+      for_ ["playProhibitions", "commitProhibitions", "cannotDiscoverClues", "cannotSpendClues"] \k ->
         (k, field' k (daisyOf asB)) `shouldBe` (k, field' k (daisyOf original))
 
   it "keeps a hidden id visible to the viewer whose own question names it (q)" $ withTable \table -> do
