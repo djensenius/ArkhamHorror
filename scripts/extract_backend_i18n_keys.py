@@ -38,6 +38,13 @@ the extracted keys, variable types or dynamic-site inventory therefore leaves
 the artifact byte-identical, so unrelated backend changes do not conflict on
 it; `--check` still re-derives every byte, so nothing is lost by not hashing
 the inputs. The locale catalog binds to this digest as `backend.sourceSha256`.
+
+For the same reason the artifact names sites as `<file>#<binding>` (the
+enclosing top-level function, bind, instance or class head), never by line:
+inserting or removing lines leaves it unchanged. A key's `sites` counts its
+distinct (file, binding, emitter) triples and a dynamic group's `count` its
+unresolved occurrences, so neither moves when a newline splits two calls.
+`--dynamic-report` still writes exact `file:line` locations for triage.
 """
 
 import argparse
@@ -53,7 +60,7 @@ from tree_sitter import Language, Parser
 ROOT = Path(__file__).resolve().parents[1]
 LIBRARY = ROOT / "backend" / "arkham-api" / "library"
 ARTIFACT = ROOT / "backend" / "arkham-api" / "i18n-emitted-keys.json"
-ARTIFACT_VERSION = "2.0.0"
+ARTIFACT_VERSION = "3.0.0"
 
 EXTERNAL_DEFINITION_EXPORTS = frozenset({("ClassyPrelude", "tshow")})
 
@@ -2141,6 +2148,53 @@ def enclosing_definition(node, source: bytes) -> str | None:
     return name
 
 
+def top_level_binding(node, source: bytes) -> str:
+    """A line-independent name for the top-level declaration holding `node`.
+
+    The registry names sites by file and this binding rather than by line, so
+    an edit that only shifts lines (a comment, a blank line, an unrelated
+    definition above) leaves the committed artifact byte-identical. A function
+    or bind gives its name, an instance or class its whitespace-normalised head
+    without the context (`instance RunMessage Foo`), anything else `<top>`."""
+    current = node
+    while current is not None:
+        parent = current.parent
+        if (
+            parent is not None
+            and parent.type == "declarations"
+            and parent.parent is not None
+            and parent.parent.parent is None
+        ):
+            break
+        current = parent
+    if current is None:
+        return "<top>"
+
+    def normalised(part) -> str:
+        return " ".join(text_of(part, source).split())
+
+    if current.type in {"function", "bind"}:
+        name = current.child_by_field_name("name")
+        if name is None:
+            # `a <+> b = ...` or a pattern binding such as `(x, y) = ...`.
+            name = current.child_by_field_name("pattern")
+        if name is None:
+            children = significant_children(current)
+            name = children[0] if children and children[0].type == "infix" else None
+            if name is not None:
+                operator = name.child_by_field_name("operator")
+                name = operator if operator is not None else name
+        return normalised(name) if name is not None else "<top>"
+    if current.type in {"instance", "class"}:
+        head = [current.type]
+        for field in ("name", "patterns"):
+            part = current.child_by_field_name(field)
+            if part is not None:
+                head.append(normalised(part))
+        return " ".join(head)
+    return "<top>"
+
+
 def extract_module(
     path: Path,
     source: bytes,
@@ -2161,7 +2215,12 @@ def extract_module(
     def record_literal(node, key: str) -> None:
         entry = emitted.setdefault(key, {"key": key, "variables": {}, "sites": []})
         entry["sites"].append(
-            {"file": relative, "line": node.start_point[0] + 1, "emitter": "$literal"}
+            {
+                "file": relative,
+                "line": node.start_point[0] + 1,
+                "binding": top_level_binding(node, source),
+                "emitter": "$literal",
+            }
         )
 
     def record_dynamic(node, reason: str, emitter: str) -> None:
@@ -2169,6 +2228,7 @@ def extract_module(
             {
                 "file": relative,
                 "line": node.start_point[0] + 1,
+                "binding": top_level_binding(node, source),
                 "emitter": emitter,
                 "reason": reason,
             }
@@ -2325,6 +2385,7 @@ def extract_module(
                         "function": enclosing_definition(call_node, source),
                         "file": relative,
                         "line": node.start_point[0] + 1,
+                        "binding": top_level_binding(node, source),
                         "emitter": name,
                         "keys": list(call_keys),
                         "relativeScope": [*call_stack, *inner_stack],
@@ -2372,7 +2433,12 @@ def extract_module(
                     )
                     _merge_variable_types(entry["variables"], scoped_variables)
                     entry["sites"].append(
-                        {"file": relative, "line": node.start_point[0] + 1, "emitter": name}
+                        {
+                            "file": relative,
+                            "line": node.start_point[0] + 1,
+                            "binding": top_level_binding(node, source),
+                            "emitter": name,
+                        }
                     )
 
     def handle(node, name, emitter, args):
@@ -2449,6 +2515,7 @@ def extract_module(
                     "function": enclosing_definition(node, source),
                     "file": relative,
                     "line": node.start_point[0] + 1,
+                    "binding": top_level_binding(node, source),
                     "emitter": name,
                     "keys": list(keys),
                     "relativeScope": list(stack),
@@ -3332,6 +3399,7 @@ def build_artifact(
                 {
                     "file": site["file"],
                     "line": site["line"],
+                    "binding": site["binding"],
                     "emitter": site["emitter"],
                     "reason": (
                         "scope supplied by caller"
@@ -3348,6 +3416,7 @@ def build_artifact(
                 {
                     "file": site["file"],
                     "line": site["line"],
+                    "binding": site["binding"],
                     "emitter": site["emitter"],
                     "reason": "too many scope alternatives",
                 }
@@ -3368,6 +3437,7 @@ def build_artifact(
                         {
                             "file": site["file"],
                             "line": site["line"],
+                            "binding": site["binding"],
                             "emitter": site["emitter"],
                             "reason": "partial key (runtime remainder)",
                         }
@@ -3376,19 +3446,29 @@ def build_artifact(
                 entry = emitted.setdefault(full, {"key": full, "variables": {}, "sites": []})
                 _merge_variable_types(entry["variables"], site["variables"])
                 entry["sites"].append(
-                    {"file": site["file"], "line": site["line"], "emitter": site["emitter"]}
+                    {
+                        "file": site["file"],
+                        "line": site["line"],
+                        "binding": site["binding"],
+                        "emitter": site["emitter"],
+                    }
                 )
 
     keys = []
     for key in sorted(emitted):
         entry = emitted[key]
-        sites = sorted(
-            {(site["file"], site["line"], site["emitter"]) for site in entry["sites"]}
-        )
+        # A key's sites are its distinct (file, top-level binding, emitter)
+        # triples, the same identity `site` names, never its lines: counting
+        # by line would let a newline between two identical calls change
+        # `sites` (and so the bytes) without changing what is emitted.
+        sites = {(site["file"], site["binding"], site["emitter"]) for site in entry["sites"]}
         # One site per key: enough to trace a requirement back to the code
-        # that emits it, without turning this artifact into a line-number
-        # database that churns on every unrelated edit.
-        file, line, emitter = sites[0]
+        # that emits it. It is named by file and top-level binding, never by
+        # line, so an edit that only shifts lines leaves the artifact
+        # byte-identical; `--dynamic-report` keeps exact lines for triage.
+        file, binding, _ = min(
+            (site["file"], site["binding"], site["emitter"]) for site in entry["sites"]
+        )
         keys.append(
             {
                 "key": key,
@@ -3397,7 +3477,7 @@ def build_artifact(
                     for name in sorted(entry["variables"])
                 ],
                 "emitters": sorted({emitter for _, _, emitter in sites}),
-                "site": f"{file}:{line}",
+                "site": f"{file}#{binding}",
                 "sites": len(sites),
             }
         )
@@ -3405,12 +3485,26 @@ def build_artifact(
     if dynamic_report is not None:
         dynamic_report.write_text(
             "\n".join(
-                f"{site['file']}:{site['line']}\t{site['emitter']}\t{site['reason']}"
+                f"{site['file']}:{site['line']}\t{site['binding']}\t{site['emitter']}\t{site['reason']}"
                 for site in sorted(dynamic, key=lambda site: (site["reason"], site["file"], site["line"]))
             )
             + "\n",
             encoding="utf-8",
         )
+
+    # Unresolved sites are grouped by file and top-level binding, not listed
+    # by line, for the same reason as `keys[].site`; `count` keeps the total.
+    # It counts every unresolved occurrence, never distinct lines, so a
+    # newline between two unresolved calls leaves it unchanged.
+    dynamic_groups: dict[tuple[str, str, str, str], int] = {}
+    for site in dynamic:
+        group = (
+            f"{site['file']}#{site['binding']}",
+            site["emitter"],
+            site["reason"],
+            classify_dynamic(site["reason"]),
+        )
+        dynamic_groups[group] = dynamic_groups.get(group, 0) + 1
 
     dynamic_summary: dict[str, int] = {}
     class_summary: dict[str, int] = {}
@@ -3436,20 +3530,20 @@ def build_artifact(
                 )
             ),
             "byClass": dict(sorted(class_summary.items())),
-            # The complete inventory, not a sample: a site the extractor cannot
-            # resolve is a hole in the requirement set, and the only honest way
-            # to carry one is to name it, commit it, and let `--check` fail the
-            # moment the set moves.
+            # Every unresolved site, grouped by file#binding, emitter, reason
+            # and class with a count: a site the extractor cannot resolve is a
+            # hole in the requirement set, so it is named and committed, and
+            # `--check` fails when the grouped inventory changes. A dynamic
+            # site moving within the same binding is intentionally not detected.
             "sites": [
                 {
-                    "site": f"{site['file']}:{site['line']}",
-                    "emitter": site["emitter"],
-                    "reason": site["reason"],
-                    "class": classify_dynamic(site["reason"]),
+                    "site": site,
+                    "emitter": emitter,
+                    "reason": reason,
+                    "class": classification,
+                    "count": count,
                 }
-                for site in sorted(
-                    dynamic, key=lambda site: (site["file"], site["line"], site["emitter"], site["reason"])
-                )
+                for (site, emitter, reason, classification), count in sorted(dynamic_groups.items())
             ],
         },
     }
@@ -3469,9 +3563,10 @@ def payload_sha256(artifact: dict) -> str:
     ).hexdigest()
 
 
-# Every reason the extractor is allowed to give up for. A site it cannot place
-# in one of these classes is a gap in the model, not an acceptable unknown, and
-# fails the run.
+# The closed vocabulary of classes the extractor is allowed to give up for.
+# Reasons are descriptive text mapped onto these classes by `classify_dynamic`;
+# a site whose reason maps to no class is a gap in the model, not an acceptable
+# unknown, and fails the run.
 DYNAMIC_CLASSES = {
     "runtime-key": (
         "the key itself is computed at runtime (an enum, a partner name, a "
@@ -3512,7 +3607,8 @@ DYNAMIC_REASON_SUFFIXES = {
 
 
 def classify_dynamic(reason: str) -> str:
-    """Places an unresolved site in the closed vocabulary, or fails."""
+    """Maps an unresolved site's descriptive reason to its class in the closed
+    vocabulary (`DYNAMIC_CLASSES`), or fails."""
     classification = DYNAMIC_REASON_CLASSES.get(reason)
     if classification is None:
         for prefix, candidate in DYNAMIC_REASON_PREFIXES.items():

@@ -210,10 +210,15 @@ Three fail-closed rules keep the registry honest:
   only, never inside a string literal, and without moving an offset — and there
   is no waiver: skipping a module rests on a lexical guess about what an
   unreadable file contains, which is the reasoning this registry replaces;
-* every site that cannot be resolved is committed in full in `dynamicSites`
-  with a reason from a **closed vocabulary** (`runtime-key`, `runtime-scope`,
-  `caller-scope`, `partial-key`, `scope-underflow`); an unclassifiable reason
-  fails the run, and the drift gate fails when the set moves;
+* every site that cannot be resolved is committed in `dynamicSites`, grouped
+  by file#binding, emitter, reason and class with a `count`. The `reason` is
+  descriptive text (it can name the alias or scope involved); the `class` is
+  the **closed vocabulary** (`runtime-key`, `runtime-scope`, `caller-scope`,
+  `partial-key`, `scope-underflow`), which `classify_dynamic` derives from the
+  reason by exact, prefix or suffix match. A reason that maps to no class
+  fails the run, and the drift gate fails when that grouped inventory changes.
+  A dynamic site that moves within the same binding is intentionally not
+  detected;
 * the extractor has its own tests (`mise run locale-catalog:backend-keys-test`)
   that feed synthetic Haskell modules to the production code path, one rule at
   a time.
@@ -228,10 +233,20 @@ top-level `payloadSha256`: the sha256 of the registry's own canonical bytes
 extracted keys, variable types and dynamic-site inventory alone also leaves the
 file byte-identical, and unrelated backend PRs do not all conflict on one
 digest line. Nothing is lost: `--check` re-derives every byte of the registry
-anyway. Sites are still line-sensitive: each key's `keys[].site` (the first
-`file:line` that emits it) and each dynamic site are recorded as `file:line`,
-so an edit that moves an emitting line still changes the registry. Making those
-sites line-stable is tracked as follow-up TASK-2.95. The catalog generator
+anyway. Sites carry no line numbers either: each key's `keys[].site` is
+`<file>#<binding>`, where the binding is the enclosing top-level function or
+bind name, or the instance or class head without its context (`instance
+RunMessage Foo`), and `<top>` for anything else. When a key has several sites,
+the smallest by file, binding and emitter is named; `keys[].sites` counts its
+distinct (file, binding, emitter) triples, so two identical calls in one
+binding are one site whether or not a newline separates them.
+`dynamicSites.sites[]` is grouped the same way, by site, emitter, reason and
+class, with a `count` of unresolved occurrences (not distinct lines), and
+`dynamicSites.total` is the sum of those counts. Inserting or removing lines in a backend module
+therefore leaves the registry byte-identical unless the emitted keys or the
+set of unresolved sites change. For triage, `extract-backend-i18n-keys.py
+--dynamic-report <file>` still writes every unresolved site with its exact
+location, one `file:line<TAB>binding<TAB>emitter<TAB>reason` line each. The catalog generator
 records `payloadSha256` as `backend.sourceSha256` in both the manifest and the
 provenance. `validate-locale-catalog` requires the manifest's
 `backend.sourceSha256` to equal the committed registry's `payloadSha256` and
