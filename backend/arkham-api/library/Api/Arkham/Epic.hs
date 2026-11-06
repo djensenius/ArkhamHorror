@@ -348,3 +348,22 @@ getGameUndoFloor :: MonadIO m => ArkhamGameId -> ReaderT SqlBackend m Int
 getGameUndoFloor gameId = do
   mRow <- P.getBy (UniqueGameUndoFloor gameId)
   pure $ maybe 0 (arkhamGameUndoFloorFloorStep . entityVal) mRow
+
+{- | Raise a game's undo FLOOR (see 'getGameUndoFloor') to @step@, in the
+caller's transaction. The floor never moves down: the stored value becomes the
+GREATER of itself and @step@. Floor writers do not run in step order (an
+organizer settlement floors every group at its current step, a Main Street
+re-ask floors at its own new step, and either may commit first), so an
+unconditional set could lower a floor another writer already raised and let
+undo cross a consumed act advance. Takes the floor row's lock; a caller that
+also holds the game row must take that first.
+-}
+upsertUndoFloorMonotonic :: MonadIO m => ArkhamGameId -> Int -> ReaderT SqlBackend m ()
+upsertUndoFloorMonotonic gameId step =
+  void
+    $ rawExecuteCount
+      "INSERT INTO arkham_game_undo_floors (arkham_game_id, floor_step) \
+      \VALUES (?, ?) \
+      \ON CONFLICT (arkham_game_id) DO UPDATE \
+      \SET floor_step = GREATEST(arkham_game_undo_floors.floor_step, EXCLUDED.floor_step)"
+      [toPersistValue gameId, toPersistValue step]
