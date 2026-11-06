@@ -32,7 +32,10 @@ module Api.Handler.Arkham.CustomCards (
   artUploadPolicy,
   awsArtUpload,
   awsArtUploadWith,
+  classifyPutObjectError,
+  describeArtUploadError,
   describeArtUploadFailure,
+  PutObjectFailure (..),
   runArtUploadGuarded,
   runArtUploadWith,
   storeArtWith,
@@ -65,7 +68,7 @@ import Data.Aeson.Types (parseMaybe, withObject)
 import Data.ByteString.Base16 qualified as B16
 import Data.ByteString.Base64 qualified as B64
 import Data.ByteString.Lazy qualified as BSL
-import Data.Char (isDigit)
+import Data.Char (isAlphaNum, isAscii, isDigit)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time.Clock
@@ -77,7 +80,7 @@ import Import qualified as P
 import Network.HTTP.Types.Status qualified as Status
 import System.Directory (createDirectoryIfMissing)
 import System.IO.Unsafe (unsafePerformIO)
-import UnliftIO.Exception (catch, tryAny)
+import UnliftIO.Exception (catch, try, tryAny)
 
 {- | The requesting user's card library.
 
@@ -568,14 +571,28 @@ those bytes could write over it. The prefix keeps each library's images its own.
 artPrefixFor :: UserId -> Text
 artPrefixFor userId = artPrefix <> toPathPiece userId <> "/"
 
--- | Why an art upload failed. Fieldless on purpose: the exception behind it is
--- dropped unseen, so its text can reach neither the log nor the response.
+-- | Why an art upload failed. No constructor keeps the exception behind it:
+-- its text can reach neither the log nor the response.
 data ArtUploadFailure
   = ArtDiscoveryFailed
-  | -- | Any synchronous exception after discovery: a non-Amazonka exception
-    -- from 'send', a failing PutObject, a lazily failing 'Env', or a
-    -- 'runResourceT' cleanup failure.
+  | -- | An Amazonka 'Error' from PutObject, reduced to 'PutObjectFailure'.
+    ArtPutObjectFailed !PutObjectFailure
+  | -- | Any other synchronous exception after discovery: a non-Amazonka
+    -- exception from 'send', a lazily failing 'Env', or a 'runResourceT'
+    -- cleanup failure.
     ArtUploadFailed
+  deriving stock (Eq, Show)
+
+{- | What a failed PutObject is logged as: the kind of Amazonka 'Error', its
+HTTP status and S3 error code, and nothing else. The message, request id,
+headers, body, key, bucket and URL are dropped. Fields are strict, so forcing
+the value to WHNF leaves no reference to the raw 'Error'.
+-}
+data PutObjectFailure
+  = PutObjectTransportFailed
+  | PutObjectSerializeFailed !Int
+  | -- | HTTP status and the error code, clamped by 'artSafeToken'.
+    PutObjectServiceFailed !Int !Text
   deriving stock (Eq, Show)
 
 data ArtUploadOutcome
@@ -583,11 +600,44 @@ data ArtUploadOutcome
   | ArtUploadFailedWith ArtUploadFailure
   deriving stock (Eq, Show)
 
--- | The constant log line for a failed art upload. Never carries request data.
+-- | The log line for a failed art upload. Never carries request data.
 describeArtUploadFailure :: ArtUploadFailure -> Text
 describeArtUploadFailure = \case
   ArtDiscoveryFailed -> "custom card art upload: AWS credential discovery failed"
+  ArtPutObjectFailed failure -> "custom card art upload: PutObject failed (" <> detail failure <> ")"
   ArtUploadFailed -> "custom card art upload: S3 upload failed"
+ where
+  detail = \case
+    PutObjectTransportFailed -> "transport error"
+    PutObjectSerializeFailed st -> "status " <> tshow st <> ", serialize error"
+    PutObjectServiceFailed st code -> "status " <> tshow st <> ", code " <> code
+
+-- | Reduce an Amazonka 'Error' from PutObject to what may be logged.
+classifyPutObjectError :: Error -> PutObjectFailure
+classifyPutObjectError = \case
+  Amazonka.TransportError _ -> PutObjectTransportFailed
+  Amazonka.SerializeError Amazonka.SerializeError' {Amazonka.status = st} ->
+    PutObjectSerializeFailed (Status.statusCode st)
+  Amazonka.ServiceError Amazonka.ServiceError' {Amazonka.status = st, Amazonka.code = ErrorCode code} ->
+    PutObjectServiceFailed (Status.statusCode st) (artSafeToken code)
+
+-- | The log line a PutObject 'Error' produces.
+describeArtUploadError :: Error -> Text
+describeArtUploadError = describeArtUploadFailure . ArtPutObjectFailed . classifyPutObjectError
+
+{- | An AWS error code if it looks like one: 1 to 64 characters of
+@[A-Za-z0-9._-]@, otherwise a fixed placeholder.
+
+Mirrors @safeToken@ in "Api.Arkham.Archive". Copied rather than imported: it
+is private there, and exporting it would widen Archive's interface (and add a
+module dependency) for a four-line rule.
+-}
+artSafeToken :: Text -> Text
+artSafeToken t
+  | not (T.null t) && T.length t <= 64 && T.all allowed t = t
+  | otherwise = "<filtered>"
+ where
+  allowed c = isAscii c && (isAlphaNum c || c `elem` ("._-" :: String))
 
 {- | Stores image bytes under an object key with a content type. Production uses
 'awsArtUpload'; tests supply a stub or 'awsArtUploadWith' with a stubbed
@@ -598,14 +648,21 @@ type ArtUploadTransport = Text -> Text -> BSL.ByteString -> IO ArtUploadOutcome
 {- | HeadObject, then PutObject only if needed. Any Amazonka 'Error' from
 HeadObject means the object is treated as absent and uploaded: an IAM role
 without ListBucket gets 403, not 404, for a missing key, so only a successful
-HeadObject may skip the PUT. Any other exception propagates to
-'runArtUploadGuarded'.
+HeadObject may skip the PUT. An Amazonka 'Error' from PutObject becomes
+'ArtPutObjectFailed', classified and forced here so the raw 'Error' is
+dropped. Any other exception propagates to 'runArtUploadGuarded'.
 -}
 artUploadPolicy :: MonadUnliftIO m => m () -> m () -> m ArtUploadOutcome
 artUploadPolicy headAction putAction = do
   present <- catch @_ @Error (headAction $> True) (\_ -> pure False)
-  unless present putAction
-  pure ArtStored
+  if present
+    then pure ArtStored
+    else
+      try @_ @Error putAction >>= \case
+        Right () -> pure ArtStored
+        Left err -> do
+          failure <- liftIO $ evaluate $ classifyPutObjectError err
+          pure $ ArtUploadFailedWith $ ArtPutObjectFailed failure
 
 {- | Run the upload so that any synchronous exception it throws becomes
 'ArtUploadFailed'. The outcome is forced with 'evaluate' inside the guard, so a
