@@ -859,7 +859,18 @@ def narrative_key_base(node, source: bytes):
 
 
 def _is_do_bind_body(node) -> bool:
-    """True when `node` is the action of a `name <- action` do statement."""
+    """True when `node` is the action of a `name <- action` do statement.
+
+    `key <- (narrativeKey "resolution1" override)` binds the same action, so
+    walk outward through `exp`/`parens` wrappers that hold only this node;
+    a wrapper around anything more (`(narrativeKey a b <&> f)`) is not it.
+    """
+    while (
+        node.parent is not None
+        and node.parent.type in {"exp", "parens"}
+        and len(significant_children(node.parent)) == 1
+    ):
+        node = node.parent
     parent = node.parent
     return (
         parent is not None

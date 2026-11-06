@@ -2074,6 +2074,77 @@ run = campaignI18n $ scope "interlude4" do
     )
 
 
+def test_a_parenthesised_narrative_key_bound_in_do_reaches_its_emitter() -> None:
+    # Parentheses around the bound action do not change what the bind yields.
+    registry = registry_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run r = campaignI18n $ scope "resolutions" do
+  narrative <- getNarrative
+  case r of
+    1 -> do
+      key <- (narrativeKey "resolution1" narrative.resolution1)
+      resolutionWithXp key $ gainXp
+    _ -> do
+      other <- ((narrativeKey "resolution2" narrative.resolution2))
+      resolutionWithXp other $ gainXp
+""",
+        }
+    )
+    by_key = {entry["key"]: entry for entry in registry["keys"]}
+    for resolution in ("resolution1", "resolution2"):
+        for suffix in ("title", "body"):
+            key = f"standalone.testCampaign.resolutions.{resolution}.{suffix}"
+            entry = by_key.get(key)
+            check(entry is not None, f"parenthesised narrativeKey bind did not emit {key}: {sorted(by_key)}")
+            if entry is not None:
+                types = {variable["name"]: variable["type"] for variable in entry["variables"]}
+                check(types == {"xp": "integer"}, f"{key} lost its integer xp: {types}")
+    check(
+        not any(
+            site["emitter"] == "resolutionWithXp" for site in registry["dynamicSites"]["sites"]
+        ),
+        f"a parenthesised narrativeKey bind is still dynamic: {registry['dynamicSites']['sites']}",
+    )
+
+
+def test_a_wrapped_narrative_key_bound_in_do_stays_dynamic() -> None:
+    # Parentheses holding more than the narrativeKey application change the
+    # bound value, so the base key is not what the bind yields.
+    registry = registry_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run r = campaignI18n $ scope "resolutions" do
+  narrative <- getNarrative
+  case r of
+    1 -> do
+      key <- (narrativeKey "resolution1" narrative.resolution1 <&> suffixed)
+      resolutionWithXp key $ gainXp
+    _ -> do
+      other <- (wrap (narrativeKey "resolution2" narrative.resolution2))
+      resolutionWithXp other $ gainXp
+""",
+        }
+    )
+    keys = {entry["key"] for entry in registry["keys"]}
+    check(
+        not any("resolution1" in key or "resolution2" in key for key in keys),
+        f"a wrapped narrativeKey bind was read as a key: {sorted(keys)}",
+    )
+    check(
+        any(site["emitter"] == "resolutionWithXp" for site in registry["dynamicSites"]["sites"]),
+        f"a wrapped narrativeKey bind is no longer dynamic: {registry['dynamicSites']['sites']}",
+    )
+
+
 def test_a_let_bound_narrative_key_is_not_read_as_a_key() -> None:
     # `let key = narrativeKey ...` binds the action, not the key it yields.
     registry = registry_of(
@@ -2535,6 +2606,8 @@ TESTS = (
     test_a_narrative_key_bound_in_do_reaches_its_emitter_with_xp,
     test_a_narrative_key_bound_in_do_reaches_a_local_helper,
     test_an_emitter_bound_to_a_narrative_key_with_reverse_bind,
+    test_a_parenthesised_narrative_key_bound_in_do_reaches_its_emitter,
+    test_a_wrapped_narrative_key_bound_in_do_stays_dynamic,
     test_a_let_bound_narrative_key_is_not_read_as_a_key,
     test_the_registry_digest_covers_the_extracted_surface_not_the_input_files,
     test_dynamic_sites_are_line_independent,
