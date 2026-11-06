@@ -8,12 +8,18 @@ generator's import closure, so its bytes are sha256-pinned by the non-governed
 `scripts/locale_catalog_tooling_lock.json` exactly as the generator's own are.
 The runtime profile `scripts/locale_catalog_python_runtime.json`, whose bytes
 that lock also pins, sha256-pins the uv and Node binaries. For Python it pins
-the implementation and version (CPython 3.14.7), the stdlib identity, and the
-sha256 of the stdlib source tree and of every stdlib module (`stdlibModules`),
-and records the sha256 of the upstream source tarball
-(`distribution.upstream`). Only the interpreter binary's own bytes are not
-hashed: its install, binary and stdlib paths are checked by
-`has_path_identity` in `scripts/build-locale-catalog-fixture.py`.
+the implementation and version (CPython 3.14.7) and the sha256 of the stdlib
+source tree and of every stdlib module (`stdlibModules`), and records the
+stdlib identity label and the sha256 of the upstream source tarball
+(`distribution.upstream`). The interpreter binary's own bytes are not hashed.
+Instead `verify_interpreter` in `scripts/locale_catalog_runtime.py` requires at
+run time that the running interpreter is the sealed `bin/python3.14` and that
+the profile records exactly the CPython 3.14.7 install, binary and stdlib
+paths. `has_path_identity` in `scripts/build-locale-catalog-fixture.py` only
+checks, in the self-tests, that the profile records those three paths.
+File-backed extension modules and the declared platform-variant modules are
+not hashed either: the import-closure check refuses them if a governed source
+can reach them.
 
 The subset is deliberately tiny and deliberately __fail-closed__: every
 keyword, every `$ref` spelling and every `$schema` dialect this module does not
