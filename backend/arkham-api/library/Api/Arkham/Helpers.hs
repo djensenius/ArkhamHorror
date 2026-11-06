@@ -952,11 +952,45 @@ runRoomOp gameId roomOp = do
 timestamp for every game this pod still has live subscribers for. This
 keeps active games out of the staleness sweep even when nothing else
 (subscribe / unsubscribe) is writing to Redis. Run once per pod via
-'forkIO' from 'makeFoundation'.
+'forkIO' from 'makeFoundation'. A pass that fails is logged and the next one
+runs on schedule; see 'heartbeatLoop'.
 -}
 roomHeartbeat :: App -> IO ()
-roomHeartbeat app = forever do
-  threadDelay (roomHeartbeatSeconds * 1000000)
+roomHeartbeat app =
+  heartbeatLoop
+    (threadDelay (roomHeartbeatSeconds * 1000000))
+    logRoomHeartbeatFailure
+    (roomHeartbeatPass app)
+
+{- | Run @beat@ after every @pause@, for good.
+
+A beat that throws synchronously is handed to @onFailure@ and the loop carries
+on. 'roomHeartbeat' used to be a bare 'forever', so one Redis or socket error in
+a pass ended the thread -- and every later sweep with it -- silently, for the
+life of the pod. 'UE.tryAny' lets asynchronous exceptions through, so the
+'killThread' at shutdown still stops the loop.
+
+@onFailure@ is guarded the same way: a report that cannot be written (stdout
+closed, say) must not end the loop it is reporting on.
+-}
+heartbeatLoop :: IO () -> (SomeException -> IO ()) -> IO () -> IO ()
+heartbeatLoop pause onFailure beat = forever do
+  pause
+  UE.tryAny beat >>= either (void . UE.tryAny . onFailure) pure
+
+{- | Report a failed 'roomHeartbeatPass'. Flushed for the reason
+'Api.Arkham.Archive.logArchive' gives: stdout is block-buffered in a container,
+and a rare diagnostic can otherwise sit unseen in the buffer. Capped at 500
+characters, as 'Api.Arkham.Archive.reason' caps its own.
+-}
+logRoomHeartbeatFailure :: SomeException -> IO ()
+logRoomHeartbeatFailure e = do
+  putStrLn $ "room heartbeat: pass failed, retrying next beat: " <> take 500 (displayException e)
+  hFlush stdout
+
+-- | One beat of 'roomHeartbeat'.
+roomHeartbeatPass :: App -> IO ()
+roomHeartbeatPass app = do
   rooms <- MVar.readMVar (appGameRooms app)
   active <- catMaybes <$> traverse keepIfActive (Map.toList rooms)
   case appMessageBroker app of

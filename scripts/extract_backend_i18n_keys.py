@@ -130,6 +130,9 @@ EMITTERS = {
     "i18nWithHeading": {"arg": 0, "suffixes": [".title", ".body"]},
     "resolution": {"arg": 0, "suffixes": [".title", ".body"]},
     "resolutionWithXp": {"arg": 0, "suffixes": [".title", ".body"], "vars": {"xp": "integer"}},
+    # narrativeResolution base _ gainXp = withXp xp (setTitle (base <> ".title") >> p (base <> ".body"))
+    # (Arkham/Helpers/Narrative.hs).
+    "narrativeResolution": {"arg": 0, "suffixes": [".title", ".body"], "vars": {"xp": "integer"}},
     "p": {"arg": 0, "suffixes": [""]},
     "li": {"arg": 0, "suffixes": [""]},
     "h": {"arg": 0, "suffixes": [""]},

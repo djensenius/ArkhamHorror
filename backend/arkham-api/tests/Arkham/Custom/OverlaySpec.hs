@@ -11,9 +11,15 @@ import Arkham.Decklist.Type (ArkhamDBDecklist (..))
 import Arkham.Id (InvestigatorId (..))
 import Arkham.Investigator (decklistInvestigatorError, isKnownInvestigator)
 import Arkham.Name (Name)
-import Data.Aeson (toJSON)
+import Data.Aeson (Value, decode, toJSON)
+import Data.ByteString.Lazy qualified as BL
+import Data.Foldable (for_)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust)
+import Data.Text (Text)
+import Data.Text.Encoding (encodeUtf8)
+import Entity.Arkham.Deck (ArkhamDeck (..), arkhamDeckPlayList, arkhamDeckPlayListFor)
+import Entity.User (Key (UserKey))
 import GHC.Records (getField)
 import Test.Hspec
 import Prelude
@@ -49,6 +55,97 @@ spec = describe "a deck built on an arkham.build placeholder" do
   it "does not keep the alternate front it was swapped away from" do
     let played = applyOverlay (investigatorOverlay (InvestigatorId ownCode)) alternateFrontDeck
     getField @"investigator" played `shouldBe` InvestigatorId ownCode
+
+  -- The parallel faces belong to the deck's investigator: a real swap drops both,
+  -- an overlay naming that same investigator keeps both (#219 review).
+  describe "an overlay over a deck with parallel faces" do
+    it "seats a different investigator over a parallel front, dropping both faces" do
+      let played = applyOverlay (investigatorOverlay (InvestigatorId ownCode)) parallelDeck
+      getField @"investigator" parallelDeck `shouldBe` "90024"
+      getField @"investigator" played `shouldBe` InvestigatorId ownCode
+      metaKeys played `shouldBe` Just ["taboo"]
+
+    it "drops an alternate back when a different investigator is laid over it" do
+      let played = applyOverlay (investigatorOverlay (InvestigatorId ownCode)) alternateBackDeck
+      getField @"investigator" played `shouldBe` InvestigatorId ownCode
+      metaKeys played `shouldBe` Just ["taboo"]
+
+    it "keeps both faces when the overlay names the deck's own investigator" do
+      let played = applyOverlay (investigatorOverlay "01001") parallelDeck
+      meta played `shouldBe` meta parallelDeck
+      getField @"investigator" played `shouldBe` "90024"
+
+    it "keeps both faces when the overlay names no investigator" do
+      let played = applyOverlay (DeckOverlay Nothing mempty mempty mempty) parallelDeck
+      meta played `shouldBe` meta parallelDeck
+      getField @"investigator" played `shouldBe` "90024"
+
+    it "keeps both faces when the overlay names the seated parallel front" do
+      let played = applyOverlay (investigatorOverlay "90024") parallelDeck
+      meta played `shouldBe` meta parallelDeck
+      getField @"investigator" played `shouldBe` "90024"
+
+    it "keeps both faces when the overlay names another printing of the deck's investigator" do
+      let played = applyOverlay (investigatorOverlay "01501") parallelDeck
+      meta played `shouldBe` meta parallelDeck
+      investigator_code played `shouldBe` "01501"
+      getField @"investigator" played `shouldBe` "90024"
+
+    it "keeps both faces when the deck is on another printing of the overlay's investigator" do
+      let reprinted = parallelDeck {investigator_code = "01501"}
+          played = applyOverlay (investigatorOverlay "01001") reprinted
+      meta played `shouldBe` meta reprinted
+      investigator_code played `shouldBe` "01001"
+      getField @"investigator" played `shouldBe` "90024"
+
+    it "leaves meta that is not a JSON object as it came" do
+      let overlay = investigatorOverlay (InvestigatorId ownCode)
+      for_ ["not json", "[\"alternate_front\"]"] \raw -> do
+        let played = applyOverlay overlay printedDeck {meta = Just raw}
+        meta played `shouldBe` Just raw
+        getField @"investigator" played `shouldBe` InvestigatorId ownCode
+
+  -- An upgrade's fallback lays the seat's own investigator over a list whose front
+  -- this app cannot build; keeping that front would reject the upgrade (TASK-2.50 review).
+  describe "a seat's upgrade through applySeatOverlay" do
+    it "seats the base code over a parallel front this app does not know" do
+      let seat = Just (investigatorOverlay "01001")
+      decklistInvestigatorError (applyOverlay (investigatorOverlay "01001") unknownFrontDeck)
+        `shouldSatisfy` isJust
+      let played = applySeatOverlay isKnownInvestigator seat unknownFrontDeck
+      getField @"investigator" played `shouldBe` "01001"
+      decklistInvestigatorError played `shouldBe` Nothing
+      metaKeys played `shouldBe` Just ["taboo"]
+
+    it "keeps a parallel front this app knows" do
+      let played = applySeatOverlay isKnownInvestigator (Just (investigatorOverlay "01001")) parallelDeck
+      meta played `shouldBe` meta parallelDeck
+      getField @"investigator" played `shouldBe` "90024"
+      decklistInvestigatorError played `shouldBe` Nothing
+
+    it "leaves an unknown front alone when no overlay names an investigator" do
+      for_ [Nothing, Just (DeckOverlay Nothing mempty mempty mempty)] \overlay ->
+        meta (applySeatOverlay isKnownInvestigator overlay unknownFrontDeck)
+          `shouldBe` meta unknownFrontDeck
+
+  -- The saved deck's play list and a per-game overlay over it (DeckAnswer) seat
+  -- through the same helper, so neither keeps a front this app cannot build.
+  describe "a saved deck's play list" do
+    it "seats its overlay's base code over an unknown front" do
+      let played = arkhamDeckPlayList (savedDeck unknownFrontDeck (Just (investigatorOverlay "01001")))
+      getField @"investigator" played `shouldBe` "01001"
+      decklistInvestigatorError played `shouldBe` Nothing
+
+    it "seats a per-game overlay's base code over an unknown front" do
+      let played = arkhamDeckPlayListFor (Just (investigatorOverlay "01001")) (savedDeck unknownFrontDeck Nothing)
+      getField @"investigator" played `shouldBe` "01001"
+      decklistInvestigatorError played `shouldBe` Nothing
+
+    it "keeps a parallel front this app knows" do
+      let deck = savedDeck parallelDeck (Just (investigatorOverlay "01001"))
+      getField @"investigator" (arkhamDeckPlayList deck) `shouldBe` "90024"
+      getField @"investigator" (arkhamDeckPlayListFor (Just (investigatorOverlay "01001")) deck)
+        `shouldBe` "90024"
 
   describe "isKnownInvestigator" do
     it "knows a printed investigator" do
@@ -118,6 +215,32 @@ unlistedPlaceholderDeck =
 
 printedDeck :: ArkhamDBDecklist
 printedDeck = decklist {slots = Map.fromList [("01020", 1)]}
+
+-- | Roland Banks played with the parallel front and back, plus an unrelated key.
+parallelDeck :: ArkhamDBDecklist
+parallelDeck =
+  decklist
+    { meta =
+        Just "{\"alternate_front\":\"90024\",\"alternate_back\":\"90024\",\"taboo\":1}"
+    }
+
+alternateBackDeck :: ArkhamDBDecklist
+alternateBackDeck = decklist {meta = Just "{\"alternate_back\":\"90024\",\"taboo\":1}"}
+
+-- | Roland Banks with an arkham.build front nothing here registers.
+unknownFrontDeck :: ArkhamDBDecklist
+unknownFrontDeck =
+  decklist
+    { meta =
+        Just "{\"alternate_front\":\"*00000000000000000000000000000f00\",\"alternate_back\":\"01001\",\"taboo\":1}"
+    }
+
+-- | A deck row as saved, with an overlay laid over it or not.
+savedDeck :: ArkhamDBDecklist -> Maybe DeckOverlay -> ArkhamDeck
+savedDeck list overlay = ArkhamDeck (UserKey 1) Nothing "Deck" "Roland Banks" list overlay Nothing Nothing
+
+metaKeys :: ArkhamDBDecklist -> Maybe [Text]
+metaKeys d = Map.keys <$> (decode @(Map.Map Text Value) . BL.fromStrict . encodeUtf8 =<< meta d)
 
 alternateFrontDeck :: ArkhamDBDecklist
 alternateFrontDeck =
