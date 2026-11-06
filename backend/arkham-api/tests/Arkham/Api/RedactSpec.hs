@@ -536,6 +536,26 @@ overOwnSearch f inv = case KeyMap.lookup "search" inv of
 foundFromDeck :: [Aeson.Value] -> Aeson.Object -> Aeson.Object
 foundFromDeck cards = KeyMap.insert "searchFoundCards" (Aeson.object ["FromDeck" .= cards])
 
+-- | The @n@th card of a seat's deck in a (full) game, as a @Card@ encoding
+-- (registry shape), with its id.
+deckCardAt :: PlayerId -> Int -> Aeson.Value -> (Text, Aeson.Value)
+deckCardAt pid n game = case field' "deck" (investigatorFor pid game) of
+  Aeson.Array cards
+    | c : _ <- drop n (toList cards) ->
+        let asCard = case c of
+              Aeson.Object o | KeyMap.member "tag" o -> c
+              _ -> Aeson.object ["tag" .= ("PlayerCard" :: Text), "contents" .= c]
+         in case cardIdsOf (toJSON [asCard]) of
+              [i] -> (i, asCard)
+              _ -> error "deckCardAt: no card id"
+  _ -> error "deckCardAt: deck too short"
+
+-- | Add an encoded card to the @cards@ registry.
+addToRegistry :: Text -> Aeson.Value -> Aeson.Value -> Aeson.Value
+addToRegistry i c game = case topKey "cards" game of
+  Aeson.Object cards -> setTop "cards" (Aeson.Object (KeyMap.insert (Key.fromText i) c cards)) game
+  _ -> error "cards is not an object"
+
 withSearchType :: Text -> Aeson.Object -> Aeson.Object
 withSearchType t = KeyMap.insert "searchType" (Aeson.String t)
 
@@ -994,19 +1014,59 @@ spec = describe "Api.Arkham.Redact.redactFor" do
           let private = redactFor v (withB t)
           (v, t, filter (`elem` [h1, h2]) (registryKeys private)) `shouldBe` (v, t, [])
           (v, t, zoneCards (field' "searchFoundCards" (scenarioSearchOf private))) `shouldBe` (v, t, [[]])
+      -- Mixed: only the Revealing search's cards become public.
+      let card = registryCard plantedGame
+          scenarioRevealing =
+            overScenarioSearch (withSearchType "Revealing")
+              . overSeat tableB (overOwnSearch (withSearchType "Searching" . foundFromDeck [card h1, card h2]))
+              $ plantedGame
+          ownRevealing =
+            overScenarioSearch (withSearchType "Searching")
+              . overSeat tableB (overOwnSearch (withSearchType "Revealing" . foundFromDeck [card h1]))
+              $ plantedGame
+      for_ [ViewerSpectator, ViewerSeats (Set.singleton tableA)] \v -> do
+        let mixed = redactFor v scenarioRevealing
+        (v, h2 `elem` registryKeys mixed) `shouldBe` (v, True)
+        (v, h1 `elem` registryKeys mixed) `shouldBe` (v, False)
+        (v, zoneCards (field' "searchFoundCards" (scenarioSearchOf mixed))) `shouldBe` (v, [[h2]])
+        let opposite = redactFor v ownRevealing
+        (v, h1 `elem` registryKeys opposite) `shouldBe` (v, True)
+        (v, h2 `elem` registryKeys opposite) `shouldBe` (v, False)
+        (v, zoneCards (field' "searchFoundCards" (scenarioSearchOf opposite))) `shouldBe` (v, [[]])
+      -- B's own view of either mix is unchanged: the same registry as B's
+      -- view of the unmixed game, with both its cards and its own search.
+      let asBOf = redactFor (ViewerSeats (Set.singleton tableB))
+      for_ [scenarioRevealing, ownRevealing] \g -> do
+        let asB = asBOf g
+        registryKeys asB `shouldBe` registryKeys (asBOf plantedGame)
+        all (`elem` registryKeys asB) [h1, h2] `shouldBe` True
+        zoneCards (field' "searchFoundCards" (scenarioSearchOf asB)) `shouldBe` [[h2]]
+        field' "search" (investigatorFor tableB asB) `shouldBe` field' "search" (investigatorFor tableB g)
 
   it "keeps a revealed deck top visible even when a private search also found it (u)" $ withTable \table -> do
     Planted {..} <- plantHidden table
     let Table {..} = table
     revealed <- withTopCardRevealed table tableB
     liftIO do
-      let card = registryCard revealed
+      -- d1, B's second deck card, sits in the registry, B's private search
+      -- and focusedCards next to the revealed top: only the top is public.
+      let (top, _) = deckCardAt tableB 0 revealed
+          (d1, d1Card) = deckCardAt tableB 1 revealed
+          withD1 = addToRegistry d1 d1Card revealed
+          card = registryCard withD1
           original =
-            setTop "focusedCards" (toJSON [card d0, card h1])
-              . overSeat tableB (overOwnSearch (withSearchType "Searching" . foundFromDeck [card d0, card h1]))
-              $ revealed
+            setTop "focusedCards" (toJSON [card d0, card d1, card h1])
+              . overSeat tableB (overOwnSearch (withSearchType "Searching" . foundFromDeck [card d0, card d1, card h1]))
+              $ withD1
+      top `shouldBe` d0
+      (d1 /= d0) `shouldBe` True
       for_ [ViewerSpectator, ViewerSeats (Set.singleton tableA)] \v -> do
         let redacted = redactFor v original
         (v, d0 `elem` registryKeys redacted) `shouldBe` (v, True)
+        (v, d1 `elem` registryKeys redacted) `shouldBe` (v, False)
         (v, h1 `elem` registryKeys redacted) `shouldBe` (v, False)
         (v, cardIdsOf (topKey "focusedCards" redacted)) `shouldBe` (v, [d0])
+      -- B keeps all of them.
+      let asB = redactFor (ViewerSeats (Set.singleton tableB)) original
+      all (`elem` registryKeys asB) [d0, d1, h1] `shouldBe` True
+      cardIdsOf (topKey "focusedCards" asB) `shouldBe` [d0, d1, h1]
