@@ -33,12 +33,14 @@ library
       Api.Arkham.Export
       Api.Arkham.Helpers
       Api.Arkham.Maintenance
+      Api.Arkham.Redact
       Api.Arkham.RoomOps
       Api.Arkham.Types.Achievement
       Api.Arkham.Types.Deck
       Api.Arkham.Types.Game
       Api.Arkham.Types.GameStep
       Api.Arkham.Types.MultiplayerVariant
+      Api.Arkham.Viewer
       Api.Handler.ApiKeys
       Api.Handler.Arkham.Achievements
       Api.Handler.Arkham.Admin.Archives
@@ -9855,6 +9857,7 @@ test-suite arkhamdb-postgres
       Postgres.PayloadSpec
       Postgres.PendingJoinSpec
       Postgres.Production
+      Postgres.RedactRestSpec
       Postgres.Remote
       Postgres.ThirdEditionSpec
       Postgres.WriteBackSpec
@@ -9969,6 +9972,8 @@ test-suite spec
       Arkham.Api.LocaleCatalogCapabilitySpec
       Arkham.Api.LocaleCatalogSettingsPreflightSpec
       Arkham.Api.MainStreetSwapPlanSpec
+      Arkham.Api.RedactSpec
+      Arkham.Api.ViewerSpec
       Arkham.Asset.Assets.AncientAnkhSpec
       Arkham.Asset.Assets.Aquinnah1Spec
       Arkham.Asset.Assets.Aquinnah3Spec
