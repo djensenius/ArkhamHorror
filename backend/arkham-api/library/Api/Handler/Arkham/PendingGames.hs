@@ -14,6 +14,7 @@ import Api.Arkham.Epic (
   reserveGroupMembership,
  )
 import Api.Arkham.Helpers
+import Api.Arkham.Viewer (RedactedGame (..), viewerForUser)
 import Api.Handler.Arkham.Games.Shared (
   broadcastEventChanged,
   epicSyncMessages,
@@ -45,11 +46,15 @@ import Entity.Arkham.Step
 import UnliftIO.Exception (throwIO, try)
 import UnliftIO.Timeout (timeout)
 
-getApiV1ArkhamPendingGameR :: ArkhamGameId -> Handler (PublicGame ArkhamGameId)
+{- | The game previewed before joining, redacted to what the caller's current
+seats may see ('viewerForUser'): someone not yet seated gets the spectator
+view.
+-}
+getApiV1ArkhamPendingGameR :: ArkhamGameId -> Handler (RedactedGame (PublicGame ArkhamGameId))
 getApiV1ArkhamPendingGameR gameId = do
-  _ <- getRequestUserId
-  ge <- runDB $ get404 gameId
-  pure $ toPublicGame (Entity gameId ge) mempty
+  userId <- getRequestUserId
+  (ge, gameView) <- runDB $ (,) <$> get404 gameId <*> viewerForUser userId gameId
+  pure $ RedactedGame gameView $ toPublicGame (Entity gameId ge) mempty
 
 -- | Refuses a join inside the game-locked transaction. Thrown rather than
 -- answered there, so the transaction rolls back; 'putApiV1ArkhamPendingGameR'
@@ -67,7 +72,11 @@ data PendingJoinRefused
   deriving stock Show
   deriving anyclass Exception
 
-putApiV1ArkhamPendingGameR :: ArkhamGameId -> Handler (PublicGame ArkhamGameId)
+{- | Join, then answer with the game redacted for the caller's seats as they
+stand at the end of the join, read under the same game lock as the game, so a
+new player sees their own seat's zones.
+-}
+putApiV1ArkhamPendingGameR :: ArkhamGameId -> Handler (RedactedGame (PublicGame ArkhamGameId))
 putApiV1ArkhamPendingGameR gameId = do
   userId <- getRequestUserId
   now <- liftIO getCurrentTime
@@ -117,7 +126,7 @@ putApiV1ArkhamPendingGameR gameId = do
       unchanged = do
         requireNoOtherGroup
         pure (original, Nothing, Nothing)
-    case gameGameState arkhamGameCurrentData of
+    result <- case gameGameState arkhamGameCurrentData of
       -- Between scenarios a campaign is open to new players (Rules Reference,
       -- "Joining or Leaving a Campaign"). The seat is added to the live game and
       -- picks a deck from the investigators nobody has used yet.
@@ -245,8 +254,12 @@ putApiV1ArkhamPendingGameR gameId = do
 
             pure (game', mShared, entityKey . fst <$> mLockedCtx)
       _ -> unchanged
+    -- Last, still under the game lock: the caller's seats, including any row
+    -- this join inserted, match the game the response carries.
+    gameView <- viewerForUser userId gameId
+    pure (result, gameView)
 
-  (game@ArkhamGame {..}, mShared, mChangedEvent) <- case joined of
+  ((game@ArkhamGame {..}, mShared, mChangedEvent), gameView) <- case joined of
     Left SeatedInAnotherGroup ->
       permissionDenied "You already occupy a seat in another group in this event"
     Left EpicEventGone -> notFound
@@ -256,4 +269,4 @@ putApiV1ArkhamPendingGameR gameId = do
   publishToRoom gameId
     $ GameUpdate
     $ PublicGame gameId arkhamGameName [] arkhamGameCurrentData
-  pure $ toPublicGame (Entity gameId game) mempty
+  pure $ RedactedGame gameView $ toPublicGame (Entity gameId game) mempty

@@ -27,7 +27,12 @@ import Api.Arkham.Redact (Viewer (ViewerSpectator))
 import Api.Arkham.Types.Game
 import Api.Arkham.Types.GameStep
 import Api.Arkham.Types.MultiplayerVariant
-import Api.Arkham.Viewer (GameView (RedactedView), Redacted (..), viewerForUser)
+import Api.Arkham.Viewer (
+  GameView (RedactedView),
+  Redacted (..),
+  RedactedGame (..),
+  viewerForUser,
+ )
 import Api.Handler.Arkham.CustomCards (userCustomCards)
 import Api.Handler.Arkham.Games.Shared
 import Api.Handler.Arkham.Games.Summary (
@@ -374,8 +379,10 @@ data SpectatableGameActivity = SpectatableGameActivity
   deriving stock (Show, Generic)
   deriving anyclass ToJSON
 
--- | New Game
-postApiV1ArkhamGamesR :: Handler (PublicGame ArkhamGameId)
+{- | New Game. The response is redacted for the creator's seats like any other
+read ('viewerForUser'); a creator holding every seat row sees it all.
+-}
+postApiV1ArkhamGamesR :: Handler (RedactedGame (PublicGame ArkhamGameId))
 postApiV1ArkhamGamesR = do
   userId <- getRequestUserId
   CreateGamePost {..} <- requireCheckJsonBody
@@ -423,7 +430,8 @@ postApiV1ArkhamGamesR = do
 
     replace gameId ag'
     insert_ $ ArkhamStep gameId (Choice mempty updatedQueue) 0 (ActionDiff [])
-    pure $ toPublicGame (Entity gameId ag') mempty
+    gameView <- viewerForUser userId gameId
+    pure $ RedactedGame gameView $ toPublicGame (Entity gameId ag') mempty
 
 putApiV1ArkhamGameR :: ArkhamGameId -> Handler ()
 putApiV1ArkhamGameR gameId = do
