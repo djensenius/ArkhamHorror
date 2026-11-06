@@ -3,7 +3,7 @@
   "files": {
     ".github/workflows/contracts.yml": "1d927a520bf4ed4c2d047b81f25ae6f0473c750fc9f484f1d9c22569931e1f6a",
     ".github/workflows/haskell.yml": "aa09768ea364b944f9b620b369f750e30ed3fe9300f1cd8b04f10bab90462915",
-    ".github/workflows/locale-catalog.yml": "21ee1c17abf9bb577bea81c98b6b9ced050385ee7f0aefe578c53b27eef89767",
+    ".github/workflows/locale-catalog.yml": "e6428d121d3098dfe845a0f5b126055a623763a45051b6dd868b0d525f577149",
     "Dockerfile": "db3c42bb355cb109d0517bae61b89382fbc80c6fe85f7fe3767cc56a2175e05f",
     "frontend/package.json": "5a7fa1c41e0e26da5898bd00a0ddc26cca6a4d745e304cc7fc78c9cb7f743833",
     "mise.toml": "7332120ae9edc55c1143535984d1a7d5efde46fc857992f57a09b0534a3cab2f",

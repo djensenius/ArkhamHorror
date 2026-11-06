@@ -1709,7 +1709,9 @@ a governed CI input change: the "Serving and rollout behavior" job in
 input, now frees runner disk before building the production image, which
 changes the synthetic catalog fixture digests. `nativeClientMinimumRevision`
 stays `0.1.57`; clients pinned to `0.1.57` through `0.1.60` are unaffected and
-need not repin.
+need not repin. A later tooling-only change (TASK-2.47, no revision bump) makes
+the job fail early when Docker's filesystem has less than 40 GiB free, and log
+`df` and `docker system df` after the image build, even when it fails.
 
 #### i18n registry payload digest (revision 0.1.62)
 
