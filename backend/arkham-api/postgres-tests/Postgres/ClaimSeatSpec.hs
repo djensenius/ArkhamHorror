@@ -18,7 +18,6 @@ import Arkham.Epic.Types (EpicRole (GroupPlayer), emptySharedEventState)
 import Arkham.Game qualified as Game
 import Arkham.Id (PlayerId (..))
 import Arkham.Investigator (lookupInvestigator)
-import Control.Concurrent (threadDelay)
 import Data.Aeson (encode, object, (.=))
 import Data.Map.Strict qualified as Map
 import Data.UUID qualified as UUID
@@ -43,9 +42,10 @@ import Yesod.Core.Types (ErrorResponse (..), HandlerContents (..))
 
 type SeedUser = SqlBackend -> Text -> IO UserId
 
--- What the route answered. Permission and argument failures are the HCError
--- responses Yesod renders as 403 and 400; anything else fails the test.
-data Outcome = Succeeded | Forbidden Text | BadRequest [Text]
+-- What the route answered. Permission, argument and not-found failures are
+-- the HCError responses Yesod renders as 403, 400 and 404; anything else
+-- fails the test.
+data Outcome = Succeeded | Forbidden Text | BadRequest [Text] | Missing
   deriving stock (Eq, Ord, Show)
 
 data EpicFixture = EpicFixture
@@ -161,6 +161,54 @@ claimSeatSpec harness app seedUser = describe "Claim seat" do
       seatRows connection f.group0 `shouldReturn` []
       membership connection f player `shouldReturn` [(GroupPlayer, Nothing)]
 
+  it "serializes a pending join and a claim for one player's first membership in different groups on the event lock" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      organizer <- seedUser observer "claim-join-organizer"
+      player <- seedUser observer "claim-join-player"
+      f <- seedEvent observer "claim-join" organizer
+      held <- newBarrier
+      holderPid <- backendPid holding
+      -- Hold the event row FOR UPDATE, queue the join's event lock behind it,
+      -- then queue the claim behind both. Before claim seat locked the event,
+      -- the claim inserted its membership row and waited on that insert's
+      -- foreign-key KEY SHARE behind the join's FOR UPDATE, while the join's
+      -- own membership insert waited on the claim's uncommitted row: 40P01.
+      withAsync (transaction holding do
+        _ <- rawSql "SELECT 1::bigint FROM arkham_epic_events WHERE id = ? FOR UPDATE"
+          [toPersistValue f.eventId] :: ReaderT SqlBackend IO [Single Int64]
+        liftIO $ pauseAt held) \holder -> do
+          link holder
+          awaitBarrier held
+          withAsync (pendingJoin app player f.group0) \joining -> do
+            awaitBlockedSessions observer holderPid 1
+            withAsync (claim app player f.group1 "01001") \claiming -> do
+              awaitBlockedSessions observer holderPid 2
+              -- lock_timeout is 3s: release as soon as both are queued.
+              releaseBarrier held
+              within "lock holder commit" $ wait holder
+              within "join" (wait joining) `shouldReturn` Succeeded
+              within "claim" (wait claiming) `shouldReturn` Forbidden anotherGroup
+      membership observer f player `shouldReturn` [(GroupPlayer, Just 0)]
+      map fst <$> seatRows observer f.group0 `shouldReturn` [player]
+      seatRows observer f.group1 `shouldReturn` []
+
+  it "answers 404, not 500, when a delete outside the canonical lock order removes the event under a waiting claim" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      organizer <- seedUser observer "claim-gone-organizer"
+      player <- seedUser observer "claim-gone-player"
+      f <- seedEvent observer "claim-gone" organizer
+      -- The event delete handler locks the group games first, so a claim
+      -- never sees its event vanish. Deleting the row directly bypasses that
+      -- order: the claim, already past its event lookup, waits on the event
+      -- lock and finds the row gone once the delete commits.
+      behindHeldLock holding observer (P.delete f.eventId) (claim app player f.group0 "01001")
+        `shouldReturn` Missing
+      seatRows observer f.group0 `shouldReturn` []
+      membership observer f player `shouldReturn` []
+      -- The seat's placeholder player id was not remapped either.
+      seatPlayerId observer f.group0 "c01001"
+        `shouldReturn` Just (UUID.toText $ UUID.fromWords 0x2580 0 0 1)
+
 openSeatsSpec :: Harness -> App -> SeedUser -> Spec
 openSeatsSpec harness app seedUser = describe "Open seats" do
   it "omits a deck-selected bare-coded seat" $
@@ -256,6 +304,7 @@ route app uid method body action =
     (Succeeded <$ asUser uid method body action) `Exception.catch` \case
       HCError (PermissionDenied message) -> pure $ Forbidden message
       HCError (InvalidArgs messages) -> pure $ BadRequest messages
+      HCError NotFound -> pure Missing
       other -> Exception.throwIO other
 
 -- Run the handler as the user's JWT-authenticated request. Each call builds a
@@ -273,21 +322,3 @@ asUser uid method body action = do
             : [("Content-Type", "application/json") | isJust body]
         }
   withRequest request action
-
--- Pool sessions have no PID the test can name up front, so wait until the
--- expected number of sessions are blocked, directly or behind each other, on
--- the holder's lock.
-awaitBlockedSessions :: SqlBackend -> Int64 -> Int64 -> IO ()
-awaitBlockedSessions observer holder expected = within "claims queued behind the game lock" loop
- where
-  loop = do
-    rows <- transaction observer $
-      rawSql
-        "SELECT count(*)::bigint FROM pg_stat_activity \
-        \WHERE datname = current_database() AND pid <> ?::integer \
-        \AND cardinality(pg_blocking_pids(pid)) > 0"
-        [PersistInt64 holder]
-    case rows of
-      [Single n] | n >= expected -> pure ()
-      [Single _] -> threadDelay 10000 >> loop
-      _ -> fail "Expected one PostgreSQL lock observation"

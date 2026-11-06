@@ -28,6 +28,7 @@ module Api.Handler.Arkham.Game.Debug (
 
 import Api.Arkham.Epic (
   GroupMembershipReservation (..),
+  lockEpicEventRow,
   lookupGameEvent,
   reserveGroupMembership,
  )
@@ -35,6 +36,7 @@ import Api.Arkham.Export
 import Api.Arkham.Helpers
 import Api.Arkham.Types.Game (ClaimSeatPost (..))
 import Api.Arkham.Types.MultiplayerVariant
+import Api.Arkham.Viewer (RedactedGame (..), viewerForUser)
 import Api.Handler.Arkham.CustomCards (forRendering, setPayloadEtag, userCustomCards)
 import Api.Handler.Arkham.Games.Shared (broadcastEventChanged, withGameAccess)
 import Arkham.Card.CardCode
@@ -442,7 +444,11 @@ getApiV1ArkhamGameReloadR gameId = do
   for_ stepIds \stepId -> do
     try @_ @SomeException (runDB $ Persist.get stepId >>= traverse_ (Persist.replace stepId))
 
-postApiV1ArkhamGamesImportR :: Handler (PublicGame ArkhamGameId)
+{- | Import an export as a new game. The response is redacted for the
+importer's seats like any other read ('viewerForUser'): the importer holds
+every seat row the import inserts, so in practice they see the whole game.
+-}
+postApiV1ArkhamGamesImportR :: Handler (RedactedGame (PublicGame ArkhamGameId))
 postApiV1ArkhamGamesImportR = do
   userId <- getRequestUserId
   mVariantOverride <- lookupGetParam "multiplayerVariant"
@@ -649,7 +655,10 @@ postApiV1ArkhamGamesImportR = do
       traverse_
         (uncurry addHeader)
         (replayImportResponseHeaders serverBuildIdentity importReceipt)
+      -- Read after the import committed, so it sees the inserted seat rows.
+      gameView <- runDB $ viewerForUser userId (entityKey importedGame)
       pure
+        $ RedactedGame gameView
         $ toPublicGame
           importedGame
           -- An import's rows come straight from the export, so hand them over
@@ -731,9 +740,16 @@ postApiV1ArkhamGameClaimSeatR gameId = do
       lift $ permissionDenied "You already have a seat in this game"
     -- Epic Multiplayer: a player may occupy seats in only one group of an
     -- event, so the seat reserves the same membership a pending join would.
+    -- The event row is locked FOR UPDATE first, as the pending join does, so
+    -- both keep the game -> event -> member order. Otherwise this insert's
+    -- foreign-key KEY SHARE waits behind a join's event lock while that join
+    -- waits on this uncommitted membership row. An event row that is gone
+    -- (only a delete bypassing 'canonicalEpicGameLockOrder' can do that) is
+    -- answered 404, like the pending join.
     mEvent <- lookupGameEvent gameId
     mReserved <- forM mEvent \(eventEntity, ordinal) -> do
       let eventId = entityKey eventEntity
+      whenNothingM_ (lockEpicEventRow eventId) $ lift notFound
       reserveGroupMembership eventId userId ordinal >>= \case
         GroupMembershipInserted -> pure (Just eventId)
         GroupMembershipExisting -> pure Nothing

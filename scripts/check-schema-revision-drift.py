@@ -982,6 +982,59 @@ def run_manifest_worktree_authority_self_tests() -> None:
     finally:
         shutil.rmtree(scratch_root, ignore_errors=True)
 
+    # -- Scenario 7: a change outside the governed set (a non-governed lock
+    # file, as the locale-catalog tooling lock is) at an unchanged
+    # schemaRevision passes; nothing a client pins moved. ------------------
+    scratch_root.mkdir()
+    try:
+        initial_commit = _build_scratch_repo()
+        updater_result = _run("update-manifest-hashes.py")
+        require(
+            updater_result.returncode == 0,
+            "Self-test setup failure: update-manifest-hashes.py failed. stderr: "
+            f"{updater_result.stderr.decode('utf-8', errors='replace')}",
+        )
+        _git_scratch(["git", "add", "-A"])
+        commit_result = _git_scratch(["git", "commit", "-q", "-m", "scratch recorded hashes"])
+        require(commit_result.returncode == 0, "Self-test setup failure: hash commit failed.")
+        hashed_commit = _git_scratch(["git", "rev-parse", "HEAD"]).stdout.decode("utf-8").strip()
+        (scratch_root / "scripts" / "tooling_lock.json").write_bytes(b'{"files": {"a": "1"}}\n')
+        _git_scratch(["git", "add", "-A"])
+        commit_result = _git_scratch(["git", "commit", "-q", "-m", "scratch tooling-only change"])
+        require(commit_result.returncode == 0, "Self-test setup failure: tooling commit failed.")
+        drift_result = _run_drift_checker(hashed_commit)
+        require(
+            drift_result.returncode == 0
+            and b"no governed artifact content changed" in drift_result.stdout,
+            "Self-test failure: a change outside the governed set at an unchanged schemaRevision "
+            "must pass the drift gate. stdout: "
+            f"{drift_result.stdout.decode('utf-8', errors='replace')} stderr: "
+            f"{drift_result.stderr.decode('utf-8', errors='replace')}",
+        )
+
+        # -- Scenario 8: a governed fixture change at that same revision fails,
+        # even with artifactHashes faithfully recomputed by the updater, so a
+        # recorded hash can never stand in for a revision bump. --------------
+        (scratch_root / "contracts" / "fixtures" / "x.json").write_bytes(b'{"a": 2}\n')
+        updater_result = _run("update-manifest-hashes.py")
+        require(
+            updater_result.returncode == 0,
+            "Self-test setup failure: update-manifest-hashes.py failed. stderr: "
+            f"{updater_result.stderr.decode('utf-8', errors='replace')}",
+        )
+        drift_result = _run_drift_checker(hashed_commit)
+        require(
+            drift_result.returncode != 0
+            and b"contracts/fixtures/x.json" in drift_result.stderr
+            and b"schemaRevision was not strictly" in drift_result.stderr,
+            "Self-test failure: a governed fixture change at an unchanged schemaRevision must fail "
+            "the drift gate even when artifactHashes is updated. stdout: "
+            f"{drift_result.stdout.decode('utf-8', errors='replace')} stderr: "
+            f"{drift_result.stderr.decode('utf-8', errors='replace')}",
+        )
+    finally:
+        shutil.rmtree(scratch_root, ignore_errors=True)
+
     # -- Scenario 5: the current manifest path is a symlink pointing at an
     # external file (outside contracts/ entirely) containing genuinely
     # valid, well-formed JSON identical in shape to a legitimate manifest.

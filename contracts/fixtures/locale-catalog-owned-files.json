@@ -3,13 +3,17 @@
     "capabilities-locale-catalog.json",
     "capabilities.json",
     "locale-catalog-backend-registry.json",
+    "locale-catalog-chunk-0aa7e0e3622e1963b538fcb506184809a9f3caffea917e97d7b78098c277f1f1.json",
+    "locale-catalog-chunk-0d670d111cf4f1a3b23c24db076fb2d687383ff9f29043295bd50aa907992746.json",
     "locale-catalog-chunk-2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448.json",
     "locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json",
+    "locale-catalog-chunk-97c056d4405e800061cff060f996eff82dde0f84fb396321448bd4e58e6a3640.json",
     "locale-catalog-chunk-9a30c62c45fb06a929d13506b454d5b9637c5bf3eeb986243ddb007a856cb1a5.json",
     "locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json",
     "locale-catalog-manifest.json",
     "locale-catalog-source-de.json",
     "locale-catalog-source-en.json",
+    "locale-catalog-source-pl.json",
     "locale-catalog-source-pt-BR.json"
   ]
 }

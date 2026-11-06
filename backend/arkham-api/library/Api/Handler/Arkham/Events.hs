@@ -21,8 +21,11 @@ module Api.Handler.Arkham.Events (
   postApiV1ArkhamEventResolveAdvanceR,
   postApiV1ArkhamEventReplicateR,
   postApiV1ArkhamEventSwapMainStreetR,
+  mainStreetSwapErrorStatus,
   deduplicateEventMemberships,
   withEventMember,
+  EventDeletionOutcome (..),
+  decideEventDeletion,
   PendingGroupGame (..),
   buildGroupGame,
   preparePendingGroupGames,
@@ -31,10 +34,15 @@ module Api.Handler.Arkham.Events (
   gameScenarioMetaDefault,
 ) where
 
-import Api.Arkham.Epic (applyEpicDeltasLocked, modifySharedStateLocked)
+import Api.Arkham.Epic (
+  applyEpicDeltasLocked,
+  canonicalEpicGameLockOrder,
+  modifySharedStateLocked,
+ )
 import Api.Arkham.Helpers
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (WithFriends))
 import Api.Handler.Arkham.Games.Shared (
+  MainStreetSwapError (..),
   broadcastSharedToEvent,
   deleteEventRoom,
   deleteRoom,
@@ -86,6 +94,7 @@ import Database.Esqueleto.Experimental hiding (isNothing, update, (=.))
 import Database.Persist qualified as P
 import Entity.Arkham.Step (ActionDiff (..), ArkhamStep (..), Choice (..))
 import Import hiding (on, (==.))
+import Network.HTTP.Types.Status qualified as Status
 import UnliftIO.Exception (catch)
 import Yesod.WebSockets (WebSocketsT, webSocketsOptions)
 
@@ -268,14 +277,50 @@ Organizer row directly rather than trusting the first membership found.
 -}
 requireOrganizer :: UserId -> ArkhamEpicEventId -> Handler ()
 requireOrganizer userId eid = do
-  isOrganizer <-
-    runDB
-      $ P.exists
-        [ ArkhamEpicMemberArkhamEpicEventId P.==. eid
-        , ArkhamEpicMemberUserId P.==. userId
-        , ArkhamEpicMemberRole P.==. Organizer
-        ]
-  unless isOrganizer $ permissionDenied "Only the event organizer may perform this action"
+  isOrganizer <- isEventOrganizer userId eid
+  unless isOrganizer organizerOnly
+
+isEventOrganizer :: UserId -> ArkhamEpicEventId -> Handler Bool
+isEventOrganizer userId eid =
+  runDB
+    $ P.exists
+      [ ArkhamEpicMemberArkhamEpicEventId P.==. eid
+      , ArkhamEpicMemberUserId P.==. userId
+      , ArkhamEpicMemberRole P.==. Organizer
+      ]
+
+organizerOnly :: Handler a
+organizerOnly = permissionDenied "Only the event organizer may perform this action"
+
+-- | How an event deletion request resolved; 'EventDeleted' carries the deletion's result.
+data EventDeletionOutcome a = EventMissing | EventForbidden | EventDeleted a
+  deriving stock (Eq, Show)
+
+{- | Decide an event deletion. A missing event is 'EventMissing' (404) before any
+organizer check, so the status discloses nothing about who organizes it. A
+non-organizer re-probes and prefers 'EventMissing' when a concurrent delete won;
+that path never locks the event. The locked delete returns 'Nothing' when the
+event vanished before its lock was taken. Polymorphic so tests can run it in
+plain 'IO'.
+-}
+decideEventDeletion
+  :: Monad m
+  => m Bool
+  -- ^ unlocked existence probe
+  -> m Bool
+  -- ^ whether the caller organizes the event
+  -> m (Maybe a)
+  -- ^ delete under the canonical lock order
+  -> m (EventDeletionOutcome a)
+decideEventDeletion probe isOrganizer deleteLocked = do
+  present <- probe
+  if not present
+    then pure EventMissing
+    else do
+      organizer <- isOrganizer
+      if organizer
+        then maybe EventMissing EventDeleted <$> deleteLocked
+        else bool EventMissing EventForbidden <$> probe
 
 -- Handlers --------------------------------------------------------------------
 
@@ -369,22 +414,30 @@ getApiV1ArkhamEventR eid = do
 
 {- | Delete an event and all of its group games (organizer only). Deleting each
 group's 'ArkhamGame' cascades its players/steps/logs and the epic-group row;
-deleting the event cascades members and shared-state steps.
+deleting the event cascades members and shared-state steps. A missing event is
+404; an existing event the caller does not organize is 403. The aggregate is
+deleted under 'canonicalEpicGameLockOrder' before any room is cleaned up.
 -}
 deleteApiV1ArkhamEventR :: ArkhamEpicEventId -> Handler ()
 deleteApiV1ArkhamEventR eid = do
   userId <- getRequestUserId
-  requireOrganizer userId eid
-  gameValues <- runDB $ select do
-    grp <- from $ table @ArkhamEpicGroup
-    where_ $ grp.arkhamEpicEventId ==. val eid
-    pure grp.arkhamGameId
-  let gameIds = [gid | Value (Just gid) <- gameValues]
-  runDB do
-    for_ gameIds P.delete
-    P.delete eid
-  for_ gameIds deleteRoom
-  deleteEventRoom eid
+  outcome <-
+    decideEventDeletion
+      (runDB $ P.exists [ArkhamEpicEventId P.==. eid])
+      (isEventOrganizer userId eid)
+      (runDB deleteLocked)
+  case outcome of
+    EventMissing -> notFound
+    EventForbidden -> organizerOnly
+    EventDeleted gameIds -> do
+      for_ gameIds deleteRoom
+      deleteEventRoom eid
+ where
+  deleteLocked =
+    canonicalEpicGameLockOrder eid >>= traverse \(gameIds, _) -> do
+      for_ gameIds P.delete
+      P.delete eid
+      pure gameIds
 
 {- | Organizer correction for the one user-adjustable Blob pool. Internal keys
 (health, act gates/generations, timer state) are never writable through the
@@ -457,7 +510,7 @@ postApiV1ArkhamEventReadyR eid = do
     let
       nowEpoch = floor (utcTimeToPOSIXSeconds now) :: Int
       fullMask = (1 `shiftL` numGroups) - 1
-    newState <- runDB $ modifySharedStateLocked eid \s ->
+    mNewState <- runDB $ modifySharedStateLocked eid \s ->
       let
         mask' = sharedCounter GroupsReadyMask s .|. (1 `shiftL` ordinal)
         s' = setSharedCounter GroupsReadyMask mask' s
@@ -465,7 +518,8 @@ postApiV1ArkhamEventReadyR eid = do
         if mask' == fullMask && sharedCounter TimerStartedAt s == 0
           then setSharedCounter TimerStartedAt nowEpoch s'
           else s'
-    broadcastSharedToEvent eid newState
+    -- The event was deleted after the membership check.
+    maybe notFound (broadcastSharedToEvent eid) mNewState
 
 {- | Organizer-mediated excess-clue distribution on a shared act advance. The
 coordinator has gated the stage with @AwaitingOrganizer stage == 1@; the organizer
@@ -529,7 +583,8 @@ postApiV1ArkhamEventReplicateR eid = do
         []
     pure $ mGroup >>= arkhamEpicGroupArkhamGameId . entityVal
   gameId <- maybe (invalidArgs ["Unknown event group"]) pure mGameId
-  rawGame <- runDB $ P.getJust gameId
+  -- The game can be deleted after the group read: 404, not a 500.
+  rawGame <- runDB (P.get gameId) >>= maybe notFound pure
   unless (gameUsesBlobElse $ arkhamGameCurrentData rawGame)
     $ permissionDenied "Replicating Aberrations require The Blob That Ate Everything ELSE!"
   runMessagesInGroupWhen
@@ -537,14 +592,46 @@ postApiV1ArkhamEventReplicateR eid = do
     [ScenarioSpecific "blobRequestAberration" (toJSON (cardCode, target))]
     gameId
 
+{- | Swap two groups' readied Main Street investigators (organizer only). A
+missing event is 404 before any organizer check, as for deletion. The swap
+commits as one unit ('swapMainStreetInvestigators'). A refused swap changes
+nothing: a missing event, group or game is 404, anything else is
+'mainStreetSwapErrorStatus' with a stable @{"error": code}@ body.
+-}
 postApiV1ArkhamEventSwapMainStreetR :: ArkhamEpicEventId -> Handler ()
 postApiV1ArkhamEventSwapMainStreetR eid = do
   userId <- getRequestUserId
+  eventExists <- runDB $ P.exists [ArkhamEpicEventId P.==. eid]
+  unless eventExists notFound
   requireOrganizer userId eid
   MainStreetSwapPost {..} <- requireCheckJsonBody
-  when (firstGroupOrdinal == secondGroupOrdinal)
-    $ invalidArgs ["Investigators must be in different groups"]
-  swapMainStreetInvestigators eid firstGroupOrdinal secondGroupOrdinal
+  swapped <- swapMainStreetInvestigators eid firstGroupOrdinal secondGroupOrdinal
+  for_ (leftToMaybe swapped) \err -> case mainStreetSwapErrorStatus err of
+    (errorStatus, code)
+      | errorStatus == Status.status404 -> notFound
+      | otherwise -> sendStatusJSON errorStatus $ object ["error" .= code]
+
+{- | The status and stable error code for a refused Main Street swap: 400 for a
+malformed request, 404 for an event, group or game that does not exist, 409 for
+groups not ready to swap (@main-street-not-ready@, including a readiness that
+an earlier swap spent, a game not playing its investigation phase and a game
+with a skill test in progress), whose
+readiness no longer holds (@main-street-stale@), or whose game already holds
+the investigator it would receive (@main-street-conflict@).
+-}
+mainStreetSwapErrorStatus :: MainStreetSwapError -> (Status.Status, Text)
+mainStreetSwapErrorStatus = \case
+  SwapSameGroup -> (Status.status400, "main-street-same-group")
+  SwapBadOrdinal _ -> (Status.status400, "main-street-bad-group")
+  SwapEventMissing -> (Status.status404, "main-street-event-missing")
+  SwapGroupMissing _ -> (Status.status404, "main-street-group-missing")
+  SwapGroupHasNoGame _ -> (Status.status404, "main-street-game-missing")
+  SwapGameMissing _ -> (Status.status404, "main-street-game-missing")
+  SwapNotReady _ -> (Status.status409, "main-street-not-ready")
+  SwapNoMainStreet _ -> (Status.status409, "main-street-stale")
+  SwapInvestigatorMissing _ -> (Status.status409, "main-street-stale")
+  SwapInvestigatorMoved _ -> (Status.status409, "main-street-stale")
+  SwapInvestigatorConflict _ -> (Status.status409, "main-street-conflict")
 
 {- | Whether any agenda currently in play in the group's game is at or past
 @stage@. Used as the in-lock idempotency guard for the time-up forcing: a group
