@@ -79,6 +79,24 @@ constructor.
   and the response identifies the current active player for rendering. Its
   WebSocket upgrade is server-enforced read-only: spectator frames are ignored
   without being decoded or applied to the game.
+- The spectate route checks that the game exists before anything else. An
+  unknown game ID answers `404` before any WebSocket upgrade, so it never
+  opens or joins a game room, subscribes to its updates, or changes a watcher
+  count. A game deleted between that check and the read also answers `404`.
+- The spectate read always returns the spectator view of `PublicGame`, even
+  when the caller holds a seat, because the route is not authenticated. That
+  view is redacted for a viewer who controls no investigator. Every
+  investigator's hidden zones are emptied: `deck`, `hand`, `sideDeck`, `decks`,
+  `drawnCards`, `cardsUnderneath` and `excludeFromMulligan`. `drawing` and
+  `discarding` become `null`, and the found and drawn cards of a search in
+  progress are cleared. Log entries addressed to a single player are dropped.
+  The top card of `deck` stays when a modifier reveals it, and `deckSize` is
+  unchanged. This redaction is not complete yet. WebSocket `GameUpdate` frames
+  on the same route are not redacted (TASK-2.22.2). The REST redaction does not
+  yet cover `cards`, `question`/`questionPresentation`,
+  `foundCards`/`focusedCards`, modifier card payloads, investigator
+  `meta`/`formMeta` or the encounter deck order (TASK-2.22.5). Until those
+  tasks land, spectators can still see hidden information through them.
 - The `PublicGame` schema governs all 58 top-level snapshot fields shared by
   REST game reads and WebSocket `GameUpdate`. Deep entity, question, target,
   source, and campaign unions remain intentionally broad until their dedicated

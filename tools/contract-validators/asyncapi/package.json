@@ -1,0 +1,9 @@
+{
+  "name": "contract-validators-asyncapi",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Locked install of the AsyncAPI validator used by mise run contracts:asyncapi",
+  "dependencies": {
+    "@asyncapi/cli": "6.0.2"
+  }
+}

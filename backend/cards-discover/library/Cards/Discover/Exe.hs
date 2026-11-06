@@ -277,11 +277,17 @@ one-line signature such as @foo :: EnemyCard Foo@ (card *definition* modules use
 a Haskell parser while still making an unrecognised declaration fail closed (it
 simply is not registered).  Each mode is handed the whole right-hand side and
 decides how much of it has to match, so a helper such as
-@permanent :: CardDef -> CardDef@ is not mistaken for a definition. -}
+@permanent :: CardDef -> CardDef@ is not mistaken for a definition.
+
+A signature may also name several builders at once, either on one line
+(@foo, bar :: EnemyCard X@) or in fourmolu's leading-comma layout below; it
+yields one entry per name, and only if every name is a valid builder.  Other
+layouts (trailing commas, for instance) are not recognised and, like any other
+unrecognised declaration, are skipped. -}
 readHomebrewEntries :: HomebrewSpec -> Module -> IO [HomebrewEntry]
 readHomebrewEntries spec mod' = do
   source <- readFile $ modulePath mod'
-  pure $ mapMaybe (lineEntry mod') (logicalLines $ lines source)
+  pure $ concat $ mapMaybe (lineEntry mod') (logicalLines $ lines source)
  where
   {- fourmolu wraps a long signature onto the following line:
 
@@ -291,7 +297,22 @@ readHomebrewEntries spec mod' = do
   @
 
   Neither half is a registrable declaration on its own, so scanning raw lines
-  drops the card silently.  Glue a continuation back onto its name first. -}
+  drops the card silently.  Glue a continuation back onto its name first.
+
+  A multi-name signature wraps the same way, with each further name on its own
+  @, name@ line before the @::@ line:
+
+  @
+  replicatingAberrationA
+    , replicatingAberrationB
+    :: EnemyCard ReplicatingAberration
+  @
+
+  Folding from the right, the @::@ line is glued onto the @, name@ line above
+  it, and that onto the first name, so the whole signature becomes one line.
+  A @, name@ line is only glued once it already ends in a signature, and only
+  onto a line holding nothing but names and commas, so export lists, list
+  literals and record fields are left alone. -}
   logicalLines = foldr glue []
    where
     glue l (next : rest)
@@ -299,7 +320,23 @@ readHomebrewEntries spec mod' = do
       , not (null (dropWhile isSpace l))
       , not ("::" `isPrefixOf` dropWhile isSpace l) =
           (l ++ " " ++ dropWhile isSpace next) : rest
+      | isNameContinuation (dropWhile isSpace next)
+      , isNameList (dropWhile isSpace l) =
+          (l ++ " " ++ dropWhile isSpace next) : rest
     glue l rest = l : rest
+
+    -- @, name@ followed by more names and then the @::@ glued onto it.
+    isNameContinuation (',' : more) = case span isIdentChar (dropWhile isSpace more) of
+      (name@(_ : _), after) | validBuilder name -> case dropWhile isSpace after of
+        after'@(',' : _) -> isNameContinuation after'
+        after' -> "::" `isPrefixOf` after'
+      _ -> False
+    isNameContinuation _ = False
+
+    -- The first name of a signature, or a @, name@ line already inside one.
+    isNameList l = case filter (not . isSpace) l of
+      ',' : names -> all validBuilder (splitOnComma names)
+      names -> all validBuilder (splitOnComma names)
 
   lineEntry m line = do
     let stripped = dropWhile isSpace line
@@ -307,13 +344,18 @@ readHomebrewEntries spec mod' = do
     let (lhs, rest) = break (== ':') stripped
     rhs <- stripPrefix "::" rest
     helper <- hsHelper spec $ trim rhs
-    builder <- case filter (not . isSpace) lhs of
-      name | validBuilder name -> Just name
-      _ -> Nothing
-    pure $ HomebrewEntry m builder helper
+    let names = splitOnComma $ filter (not . isSpace) lhs
+    guard $ all validBuilder names
+    pure [HomebrewEntry m builder helper | builder <- names]
+
+  splitOnComma s = case break (== ',') s of
+    (name, []) -> [name]
+    (name, _ : more) -> name : splitOnComma more
+
+  isIdentChar x = isAlphaNum x || x == '_' || x == '\''
 
   validBuilder [] = False
-  validBuilder (c : cs) = isLower c && all (\x -> isAlphaNum x || x == '_' || x == '\'') cs
+  validBuilder (c : cs) = isLower c && all isIdentChar cs
 
   trim = dropWhileEnd isSpace . dropWhile isSpace
 
