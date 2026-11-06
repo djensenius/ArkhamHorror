@@ -1990,6 +1990,113 @@ run = campaignI18n $ scope "resolutions" $ narrativeResolution "resolution1" Not
         )
 
 
+NARRATIVE_KEY_SCENARIO = """module Test.Scenario where
+
+import Test.Helpers
+
+run r = campaignI18n $ scope "resolutions" do
+  narrative <- getNarrative
+  case r of
+    1 -> do
+      key <- narrativeKey "resolution1" narrative.resolution1
+      resolutionWithXp key $ gainXp
+    _ -> do
+      other <- narrativeKey "resolution2" narrative.resolution2
+      resolutionWithXp other $ gainXp
+"""
+
+
+def test_a_narrative_key_bound_in_do_reaches_its_emitter_with_xp() -> None:
+    modules = {"Test/Helpers.hs": HELPERS, "Test/Scenario.hs": NARRATIVE_KEY_SCENARIO}
+    registry = registry_of(modules)
+    by_key = {entry["key"]: entry for entry in registry["keys"]}
+    for resolution in ("resolution1", "resolution2"):
+        for suffix in ("title", "body"):
+            key = f"standalone.testCampaign.resolutions.{resolution}.{suffix}"
+            entry = by_key.get(key)
+            check(entry is not None, f"narrativeKey binding did not emit {key}: {sorted(by_key)}")
+            if entry is not None:
+                types = {variable["name"]: variable["type"] for variable in entry["variables"]}
+                check(types == {"xp": "integer"}, f"{key} lost its integer xp: {types}")
+    check(
+        not any(
+            site["emitter"] == "resolutionWithXp" for site in registry["dynamicSites"]["sites"]
+        ),
+        f"a resolved narrativeKey binding is still dynamic: {registry['dynamicSites']['sites']}",
+    )
+
+
+def test_a_narrative_key_bound_in_do_reaches_a_local_helper() -> None:
+    keys = keys_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Campaign.hs": """module Test.Campaign where
+
+import Test.Helpers
+
+run = campaignI18n $ scope "interlude2" do
+  narrative <- getNarrative
+  let interlude k = story $ setTitle "title" >> p k
+  interlude "body"
+  armitageKey <- narrativeKey "drHenryArmitage" narrative.armitage
+  interlude armitageKey
+  interlude "professorWarrenRice"
+""",
+        }
+    )
+    for leaf in ("title", "body", "drHenryArmitage", "professorWarrenRice"):
+        expected = f"standalone.testCampaign.interlude2.{leaf}"
+        check(expected in keys, f"narrativeKey through a local helper missing {expected}: {sorted(keys)}")
+
+
+def test_an_emitter_bound_to_a_narrative_key_with_reverse_bind() -> None:
+    keys = keys_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Campaign.hs": """module Test.Campaign where
+
+import Test.Helpers
+
+run = campaignI18n $ scope "interlude4" do
+  narrative <- getNarrative
+  story . i18n =<< narrativeKey "rightfulKeeper" narrative.rightfulKeeper
+  (story . i18n) =<< narrativeKey "parenthesised" narrative.other
+  story . i18n =<< pure "notANarrativeKey"
+""",
+        }
+    )
+    for leaf in ("rightfulKeeper", "parenthesised"):
+        expected = f"standalone.testCampaign.interlude4.{leaf}"
+        check(expected in keys, f"i18n =<< narrativeKey missing {expected}: {sorted(keys)}")
+    check(
+        "standalone.testCampaign.interlude4.notANarrativeKey" not in keys,
+        f"=<< from something other than narrativeKey was read as a key: {sorted(keys)}",
+    )
+
+
+def test_a_let_bound_narrative_key_is_not_read_as_a_key() -> None:
+    # `let key = narrativeKey ...` binds the action, not the key it yields.
+    registry = registry_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ scope "resolutions" do
+  narrative <- getNarrative
+  let key = narrativeKey "resolution1" narrative.resolution1
+  resolutionWithXp key $ gainXp
+""",
+        }
+    )
+    keys = {entry["key"] for entry in registry["keys"]}
+    check(
+        not any("resolution1" in key for key in keys),
+        f"a let-bound narrativeKey action was read as a key: {sorted(keys)}",
+    )
+
+
 def test_the_registry_digest_covers_the_extracted_surface_not_the_input_files() -> None:
     card = """module Test.Card where
 
@@ -2296,6 +2403,28 @@ def test_committed_registry_properties() -> None:
                     f"narrativeResolution key {key} lost its integer xp: {types}",
                 )
 
+    # Resolutions whose key is bound with narrativeKey (Arkham/Helpers/Narrative.hs).
+    for prefix in (
+        "theDunwichLegacy.theMiskatonicMuseum.resolutions.resolution1",
+        "theDunwichLegacy.theMiskatonicMuseum.resolutions.resolution2",
+        "theDunwichLegacy.extracurricularActivity.resolutions.resolution2",
+    ):
+        for suffix in ("title", "body"):
+            key = f"{prefix}.{suffix}"
+            entry = by_key.get(key)
+            check(entry is not None, f"registry lost a narrativeKey resolution: {key}")
+            if entry is not None:
+                types = {variable["name"]: variable["type"] for variable in entry["variables"]}
+                check(
+                    types.get("xp") == "integer",
+                    f"narrativeKey resolution {key} lost its integer xp: {types}",
+                )
+    for key in (
+        "theDunwichLegacy.interlude2.drHenryArmitage",
+        "theInnsmouthConspiracy.interlude4.rightfulKeeper",
+    ):
+        check(key in keys, f"registry lost a narrativeKey interlude key: {key}")
+
     # `chooseAmount' iid "additionalActions" "$actions"` is an amount label, not
     # a root-level key.
     check("actions" not in keys, "the $actions false positive is back")
@@ -2403,6 +2532,10 @@ TESTS = (
     test_only_known_caller_scope_alias_reasons_are_classified,
     test_a_heading_story_emits_its_title_and_body,
     test_a_narrative_resolution_emits_its_title_and_body_with_xp,
+    test_a_narrative_key_bound_in_do_reaches_its_emitter_with_xp,
+    test_a_narrative_key_bound_in_do_reaches_a_local_helper,
+    test_an_emitter_bound_to_a_narrative_key_with_reverse_bind,
+    test_a_let_bound_narrative_key_is_not_read_as_a_key,
     test_the_registry_digest_covers_the_extracted_surface_not_the_input_files,
     test_dynamic_sites_are_line_independent,
     test_sites_are_named_by_file_and_top_level_binding,

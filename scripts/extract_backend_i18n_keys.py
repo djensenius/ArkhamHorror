@@ -830,7 +830,78 @@ def scope_alternatives(node, source: bytes, parameters: set[str], depth: int = 0
             return scope_alternatives(binding, source, parameters, depth + 1, context, site)
         return parameter_alternatives(node, name, source, parameters, depth, context)
 
+    # `key <- narrativeKey "resolution1" narrative.theMiskatonicMuseumResolution1`
+    # binds the guide's own key unless a narrative variant overrides it, so
+    # the base is the key the guide's locale must carry. Only a do-bind counts:
+    # `let key = narrativeKey ...` is still the action, not the key.
+    base = narrative_key_base(node, source)
+    if base is not None and _is_do_bind_body(node):
+        return scope_alternatives(base, source, parameters, depth + 1, context, site)
+
     return None
+
+
+def narrative_key_base(node, source: bytes):
+    """The base-key argument of `narrativeKey base override`, else None.
+
+    `narrativeKey base = fromMaybe (pure base)` (Arkham/Helpers/Narrative.hs):
+    without a variant the action yields `base` unchanged.
+    """
+    while node is not None and node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
+        node = significant_children(node)[0]
+    application = flatten_application(node, source) if node is not None else None
+    if application is None:
+        return None
+    name, args = application
+    if name != "narrativeKey" or len(args) != 2:
+        return None
+    return args[0]
+
+
+def _is_do_bind_body(node) -> bool:
+    """True when `node` is the action of a `name <- action` do statement."""
+    parent = node.parent
+    return (
+        parent is not None
+        and parent.type == "bind"
+        and any(child.type == "<-" for child in parent.children)
+        and significant_children(parent)[-1].id == node.id
+    )
+
+
+def _emitter_bound_to_narrative_key(node, source: bytes):
+    """(name, emitter, base) for `emitter =<< narrativeKey base override`.
+
+    `story . i18n =<< narrativeKey "rightfulKeeper" narrative.x` hands the
+    bound key straight to `i18n`. The parser reads every operator as right
+    associative, so the emitter may sit alone on the left of `=<<`
+    (`story . (i18n =<< ...)`) or at the end of a `.` chain
+    (`(story . i18n) =<< ...`); both are the same program. Only an emitter whose
+    key is its first argument is applied to the bound key.
+    """
+    parts = infix_parts(node, source)
+    if parts is None or parts[1] != "=<<":
+        return None
+    left, _, right = parts
+    base = narrative_key_base(right, source)
+    if base is None:
+        return None
+    while left.type in {"exp", "parens"} and len(significant_children(left)) == 1:
+        left = significant_children(left)[0]
+    while left.type == "infix":
+        left_parts = infix_parts(left, source)
+        if left_parts is None or left_parts[1] != ".":
+            return None
+        left = left_parts[2]
+        while left.type in {"exp", "parens"} and len(significant_children(left)) == 1:
+            left = significant_children(left)[0]
+    if left.type not in {"variable", "projection"}:
+        return None
+    name = text_of(left, source)
+    emitter = emitter_for(name)
+    if emitter is None or "literal" in emitter or emitter.get("arg") != 0:
+        return None
+    return name, emitter, base
 
 
 class ParameterContext:
@@ -2288,6 +2359,11 @@ def extract_module(
                     record_dynamic(node, "partial key (runtime remainder)", "$literal")
                 else:
                     record_literal(node, key)
+        elif node.type == "infix":
+            bound = _emitter_bound_to_narrative_key(node, source)
+            if bound is not None:
+                name, emitter, base = bound
+                handle(node, name, emitter, [base])
         elif node.type in {"variable", "projection"} and emitter_for(text_of(node, source)):
             name = text_of(node, source)
             emitter = emitter_for(name)
