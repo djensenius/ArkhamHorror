@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/public-game.schema.json",
   "title": "PublicGame",
-  "description": "Top-level authoritative game snapshot published over REST and WebSocket.",
+  "description": "Top-level authoritative game snapshot published over REST and WebSocket. A snapshot may be redacted for the viewer's seat(s): investigators the viewer does not control may have empty hidden zones and an optional handCount (see investigator.schema.json), and log entries addressed only to other seats may be omitted.",
   "type": "object",
   "additionalProperties": false,
   "required": [

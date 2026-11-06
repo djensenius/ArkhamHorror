@@ -1,7 +1,7 @@
 asyncapi: 3.1.0
 info:
   title: Arkham Horror WebSocket API
-  version: 0.1.10
+  version: 0.1.11
   description: |
     Envelope-level contract for participant, spectator, and Epic Multiplayer
     sockets. The server sends an RFC 6455 ping every 15 seconds and may negotiate
@@ -11,6 +11,12 @@ info:
     the number of watching sockets changes. Disconnected subscribers do not
     receive buffered updates, so a reconnect must refetch the authoritative REST
     snapshot.
+
+    Game snapshots are per-view: a GameUpdate frame may be redacted for the
+    receiving connection's seat(s). In a redacted frame, an investigator the
+    connection does not control may have empty hidden zones and an optional
+    handCount, and log entries addressed only to other seats may be omitted
+    (see investigator.schema.json). handCount may be absent from any frame.
 servers:
   production:
     host: arkhamhorror.app
@@ -33,7 +39,10 @@ channels:
     address: /arkham/games/{gameId}
     description: |
       Bidirectional game stream. The server publishes complete game snapshots
-      and transient UI messages; the client sends answer payloads.
+      and transient UI messages; the client sends answer payloads. Each
+      GameUpdate snapshot may be redacted for the participant connection's
+      seat(s), so participants holding different seats may receive different
+      frames for the same game state.
     parameters:
       gameId:
         description: Arkham game UUID
@@ -45,9 +54,11 @@ channels:
   spectator:
     address: /arkham/games/{gameId}/spectate
     description: |
-      Unauthenticated, read-only game stream. The server publishes the same
-      complete snapshots and transient messages as the participant stream.
-      Inbound client frames are ignored without being decoded or applied.
+      Unauthenticated, read-only game stream. The server publishes complete
+      snapshots and the same transient messages as the participant stream.
+      Each GameUpdate snapshot may be redacted for a spectator, who controls
+      no investigator. Inbound client frames are ignored without being decoded
+      or applied.
     parameters:
       gameId:
         description: Arkham game UUID
@@ -68,7 +79,9 @@ channels:
 operations:
   receiveGameMessages:
     action: receive
-    description: Receive authoritative snapshots and transient game messages.
+    description: |
+      Receive authoritative snapshots, which may be redacted for this
+      connection's seat(s), and transient game messages.
     channel:
       $ref: "#/channels/game"
     messages:
@@ -92,7 +105,9 @@ operations:
       - $ref: "#/channels/game/messages/clientAnswer"
   receiveSpectatorMessages:
     action: receive
-    description: Receive public game snapshots and transient messages.
+    description: |
+      Receive game snapshots, which may be redacted for a spectator, and
+      transient messages.
     security: []
     channel:
       $ref: "#/channels/spectator"

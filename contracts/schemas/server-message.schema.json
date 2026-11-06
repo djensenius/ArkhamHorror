@@ -16,7 +16,8 @@
           "const": "GameUpdate"
         },
         "contents": {
-          "$ref": "./public-game.schema.json"
+          "$ref": "./public-game.schema.json",
+          "description": "The game snapshot for this connection. It may be redacted for the connection's seat(s); see public-game.schema.json."
         }
       }
     },

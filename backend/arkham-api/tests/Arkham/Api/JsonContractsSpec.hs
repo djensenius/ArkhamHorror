@@ -2,6 +2,7 @@ module Arkham.Api.JsonContractsSpec (spec) where
 
 import Api.Arkham.Deck (deckFromCreateRequest)
 import Api.Arkham.Helpers (ApiResponse (..))
+import Api.Arkham.Redact (RedactOptions (..), Viewer (ViewerSeats), redactWith)
 import Api.Arkham.Types.Achievement
 import Api.Arkham.Types.Deck
 import Api.Arkham.Types.Game
@@ -1529,6 +1530,44 @@ fixtureInvestigatorNegativeUnhealedHorror = unsafePerformIO $ runAgainstFixtureB
       _ -> error "fixtureInvestigatorNegativeUnhealedHorror: missing investigators object"
     _ -> error "fixtureInvestigatorNegativeUnhealedHorror: expected a PublicGame object"
 {-# NOINLINE fixtureInvestigatorNegativeUnhealedHorror #-}
+
+{- | The redacted investigator shape (TASK-2.22.3): the fixture investigator
+holds the three real 'fixtureMulliganCards' in hand, and the real
+'PublicGame' encoder's output is run through the production
+'redactWith' @RedactOptions {includeHandCount = True}@ for a viewer who holds
+a different seat. So the investigator is not controlled by the viewer: its
+hidden zones come back emptied and it carries @handCount@ (3). Returned for
+both the @toJSON@ and the 'viaWireEncoding' wire paths, so the governed
+@investigator-redacted.json@ fixture fails if either encoder or
+@Api.Arkham.Redact@'s @withHandCount@\/@hideZones@ output drifts.
+-}
+fixtureInvestigatorRedacted :: (Aeson.Value, Aeson.Value)
+fixtureInvestigatorRedacted = unsafePerformIO $ runAgainstFixtureBoardGame do
+  let iid = InvestigatorId "01001"
+  overTest
+    ( entitiesL
+        . investigatorsL
+        . ix iid
+        %~ overAttrs (\attrs -> attrs {investigatorHand = fixtureMulliganCards})
+    )
+  game <- getGame
+  let
+    publicGame = PublicGame fixtureGameId "Contract fixture game" [LogRowLegacy "Contract fixture log entry." Nothing] game
+    otherSeat = ViewerSeats (Set.singleton (PlayerId $ UUID.fromWords 0 0 0 2))
+    redacted = redactWith RedactOptions {includeHandCount = True} otherSeat
+    extractInvestigator :: Aeson.Value -> Aeson.Value
+    extractInvestigator = \case
+      Aeson.Object top -> case AesonKeyMap.lookup "investigators" top of
+        Just (Aeson.Object invs) -> case AesonKeyMap.lookup (AesonKey.fromText "c01001") invs of
+          Just investigatorValue -> investigatorValue
+          Nothing -> error "fixtureInvestigatorRedacted: missing c01001 in investigators"
+        _ -> error "fixtureInvestigatorRedacted: missing investigators object"
+      _ -> error "fixtureInvestigatorRedacted: expected a PublicGame object"
+  pure
+    ( extractInvestigator (redacted (Aeson.toJSON publicGame))
+    , extractInvestigator (redacted (viaWireEncoding publicGame))
+    )
+{-# NOINLINE fixtureInvestigatorRedacted #-}
 
 {- | Regression coverage for a real production drift: upstream's
 'investigatorCardPool' field (@Maybe ArkhamBuildCardPool@,
@@ -4992,6 +5031,15 @@ spec = describe "Native client contract fixtures" do
   it "matches the real investigator encoder for a negative unhealedHorrorThisRound (issue: investigator.schema.json incorrectly had a minimum:0 even though production's min 0 . subtract amount in Runner/Damage.hs genuinely emits negative values on the wire when over-healing)" do
     fixture <- loadFixture "investigator-unhealed-horror-negative.json"
     fixtureInvestigatorNegativeUnhealedHorror `shouldBe` fixture
+
+  it "matches the real redactWith (includeHandCount) output for an investigator the viewer does not control (TASK-2.22.3: hidden zones emptied, handCount added)" do
+    fixture <- loadFixture "investigator-redacted.json"
+    let (viaToJson, viaWire) = fixtureInvestigatorRedacted
+
+    viaToJson `shouldBe` fixture
+    viaWire `shouldBe` fixture
+    lookupValue "handCount" fixture `shouldBe` Aeson.Number 3
+    lookupValue "hand" fixture `shouldBe` Aeson.Array mempty
 
   it "keeps investigatorCardPool out of the public wire while leaving it in the internal encoder (see Haddock on fixtureInvestigatorCardPoolShim above)" do
     let (internalEncoding, publicToJson, publicWireEncoding) = fixtureInvestigatorCardPoolShim

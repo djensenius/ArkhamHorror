@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Arkham Horror API
-  version: 0.1.9
+  version: 0.1.10
   description: |
     Initial native-client contract baseline. Only documented operations are
     covered; undocumented /api/v1 routes retain their existing behavior.
@@ -935,6 +935,12 @@ paths:
         The required legacy `deckIds` array is decoded but is not currently
         consumed by game initialization. Creation has no idempotency key:
         retrying after an ambiguous transport failure can create another game.
+
+        The returned snapshot is redacted for the caller's seat(s): an
+        investigator the caller does not control may have empty hidden zones
+        and an optional `handCount`, and log entries addressed only to other
+        seats may be omitted (see `investigator.schema.json`). A caller who
+        holds every seat of the game may receive the unredacted snapshot.
       requestBody:
         required: true
         content:
@@ -943,7 +949,7 @@ paths:
               $ref: "#/components/schemas/CreateGameRequest"
       responses:
         "200":
-          description: Initialized authoritative game snapshot
+          description: Initialized game snapshot, redacted for the caller's seat(s)
           content:
             application/json:
               schema:
@@ -960,9 +966,13 @@ paths:
       summary: Import a complete saved game or validated replay checkpoint
       description: |
         This is the existing production import route. A successful response
-        body is the complete `PublicGame` snapshot used by the web client,
-        including its top-level `id`; it is not an ID-only object such as
-        `{ "id": "..." }`.
+        body is a `PublicGame` snapshot, including its top-level `id`; it is
+        not an ID-only object such as `{ "id": "..." }`. The snapshot is
+        redacted for the caller's seat(s): an investigator the caller does not
+        control may have empty hidden zones and an optional `handCount`, and
+        log entries addressed only to other seats may be omitted (see
+        `investigator.schema.json`). A caller who holds every seat of the
+        imported game may receive the unredacted snapshot.
 
         Every successful ordinary-export or checkpoint import also returns
         `X-Arkham-Backend-Build-Identity`, containing the JSON build identity
@@ -992,7 +1002,7 @@ paths:
         for local reproducibility checks but are not authenticated by the
         import receipt.
         Ordinary exports do not acquire checkpoint authority: they still
-        return the full `PublicGame` and running build header, but never the
+        return the `PublicGame` body and running build header, but never the
         checkpoint receipt or durable replay attestation.
       parameters:
         - name: multiplayerVariant
@@ -1028,7 +1038,7 @@ paths:
                     are remapped to the newly inserted player.
       responses:
         "200":
-          description: Complete imported game snapshot with server authority headers
+          description: Imported game snapshot, redacted for the caller's seat(s), with server authority headers
           headers:
             X-Arkham-Backend-Build-Identity:
               required: true
@@ -1066,11 +1076,17 @@ paths:
       description: |
         Requires membership in the game. A WebSocket upgrade on this same path
         opens the bidirectional game stream documented by AsyncAPI.
+
+        The `game` snapshot is redacted for the caller's seat(s): an
+        investigator the caller does not control may have empty hidden zones
+        and an optional `handCount`, and log entries addressed only to other
+        seats may be omitted (see `investigator.schema.json`). A caller who
+        holds every seat of the game may receive the unredacted snapshot.
       parameters:
         - $ref: "#/components/parameters/GameId"
       responses:
         "200":
-          description: Participant identity, multiplayer mode, event link, and game snapshot
+          description: Participant identity, multiplayer mode, event link, and game snapshot redacted for the caller's seat(s)
           content:
             application/json:
               schema:
@@ -1100,12 +1116,16 @@ paths:
       summary: Preview a game before joining it
       description: |
         Requires authentication but not existing game membership. The returned
-        `PublicGame.log` is always empty.
+        `PublicGame.log` is always empty. The snapshot is redacted for the
+        caller's seat(s), if any (a caller with no seat gets the spectator
+        view): an investigator the caller does not control may have empty
+        hidden zones and an optional `handCount` (see
+        `investigator.schema.json`).
       parameters:
         - $ref: "#/components/parameters/GameId"
       responses:
         "200":
-          description: Pending game snapshot
+          description: Pending game snapshot, redacted for the caller's seat(s)
           content:
             application/json:
               schema:
@@ -1121,11 +1141,16 @@ paths:
         The request has no body. Joining twice is idempotent. A game that is no
         longer pending is returned unchanged rather than rejected. Epic
         Multiplayer participants cannot join a second group in the same event.
+
+        The returned snapshot is redacted for the caller's seat(s): an
+        investigator the caller does not control may have empty hidden zones
+        and an optional `handCount`, and log entries addressed only to other
+        seats may be omitted (see `investigator.schema.json`).
       parameters:
         - $ref: "#/components/parameters/GameId"
       responses:
         "200":
-          description: Current game snapshot after the join attempt
+          description: Current game snapshot after the join attempt, redacted for the caller's seat(s)
           content:
             application/json:
               schema:
@@ -1252,12 +1277,17 @@ paths:
         This route does not require an account or game membership. Its
         WebSocket upgrade opens the server-enforced read-only spectator stream
         documented by AsyncAPI; inbound frames are ignored.
+
+        The `game` snapshot is redacted for a spectator, who controls no
+        investigator: every investigator may have empty hidden zones and an
+        optional `handCount`, and log entries addressed only to a seat may be
+        omitted (see `investigator.schema.json`).
       security: []
       parameters:
         - $ref: "#/components/parameters/GameId"
       responses:
         "200":
-          description: Active-player rendering ID, multiplayer mode, event link, and game snapshot
+          description: Active-player rendering ID, multiplayer mode, event link, and spectator-redacted game snapshot
           content:
             application/json:
               schema:
