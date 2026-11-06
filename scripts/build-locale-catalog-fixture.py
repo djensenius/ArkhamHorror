@@ -172,11 +172,12 @@ def has_path_identity(value: object, fields: set[str]) -> bool:
 def runtime_identity() -> dict[str, object]:
     """The *committed* toolchain pin, never a measurement of this host.
 
-    Only the values recorded in `RUNTIME_PROFILE` reach fixture provenance;
-    nothing the sealed runtime attests at execution time (the resolved
-    interpreter path, the toolchain root, the hashes it recomputes) is mixed
-    in, so the derived revision is identical on every machine that carries the
-    same committed lock.
+    Read only by the self-tests, which require `RUNTIME_PROFILE` to be complete
+    and to pin the exact bytes of the trusted computing base. The profile's own
+    bytes are pinned by the non-governed TOOLING_LOCK. Neither it nor anything
+    the sealed runtime attests at execution time (the resolved interpreter
+    path, the toolchain root, the hashes it recomputes) reaches fixture
+    provenance, so the derived revision is identical on every machine.
     """
     profile = strict_json.strict_json_load_path(ROOT / RUNTIME_PROFILE)
     require(
