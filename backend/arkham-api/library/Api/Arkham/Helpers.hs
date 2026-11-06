@@ -39,7 +39,7 @@ import Database.Esqueleto.Experimental
 
 -- Aliased for '<.', which Control.Lens and persistent also define.
 import Database.Esqueleto.Experimental qualified as E
-import Database.Esqueleto.Internal.Internal (unsafeSqlBinOp, unsafeSqlValue)
+import Database.Esqueleto.Internal.Internal (unsafeSqlBinOp, unsafeSqlCastAs, unsafeSqlFunction, unsafeSqlValue)
 import Database.Redis (
   Connection,
   PubSubController,
@@ -235,35 +235,55 @@ logRowsForView :: GameView -> [LogRow] -> [LogRow]
 logRowsForView = mapMaybe . logRowForView
 
 {- | Whether a stored row's own audience lets the viewer read it, as SQL, so a
-read can filter before its LIMIT.
+read can filter before its LIMIT. Fails closed: a row passes only if
 
-The same rule as the game payload's @log@ tail (see 'Api.Arkham.Redact'): a
-row with a NULL @payload@ (legacy text), or a payload with no @audience@, is
-for everyone; @Everyone@ is for everyone; @OnlyPlayer p@ only for a viewer
-holding seat @p@ (never the nil player id, which 'viewerSeats' drops). Any
-other audience is dropped, so a payload the server can no longer decode cannot
-reach another seat through the legacy fallback of 'toLogRow'. Children are not
-visible to SQL and are pruned afterwards by 'logRowsForView'.
+  * its @payload@ is SQL NULL (a legacy text row), or
+  * its @payload@ is a JSON object with no @audience@ key
+    (@jsonb_typeof(payload) = 'object' AND payload -> 'audience' IS NULL@), or
+  * its @payload -> 'audience'@ equals @{"tag":"Everyone"}@ exactly, or
+  * its @payload -> 'audience'@ equals @{"tag":"OnlyPlayer","contents":s}@
+    exactly, for @s@ one of the viewer's seat ids ('viewerSeats', which never
+    includes the nil player id).
 
-@#>>@ on the jsonb column: NULL for a NULL payload, a missing key or a JSON
-null alike. The game-and-seq (or game-and-step) index still drives the scan;
-this is a per-row filter on rows it already reads.
+Everything else is dropped: a JSON-null audience (@->@ gives jsonb @null@,
+not SQL NULL), a non-object payload, an audience of any other shape or tag,
+and an @OnlyPlayer@ row for another seat. That includes a row whose payload no
+longer decodes as a 'LogEntry', so its flat @body@ cannot reach another seat
+through the legacy fallback of 'toLogRow'. This is the @log@ tail's rule (see
+'Api.Arkham.Redact'), only stricter about malformed rows. Children are not
+visible to SQL and are pruned afterwards by 'logRowForView'.
+
+No jsonb @?@ operator: persistent uses @?@ as its placeholder. The
+game-and-seq (or game-and-step) index still drives the scan; this is a per-row
+filter on rows it already reads.
 -}
 logRowVisibleSql :: Viewer -> SqlExpr (Entity ArkhamLogEntry) -> SqlExpr (E.Value Bool)
 logRowVisibleSql viewer entries =
-  isNothing_ (audienceAt "'{audience}'")
-    E.||. audienceAt "'{audience,tag}'" ==. just (val "Everyone")
+  isNothing_ entries.payload
+    E.||. (jsonbTypeOf entries.payload ==. just (val "object") E.&&. isNothing_ audience)
+    E.||. sqlEquals audience (unsafeSqlValue "'{\"tag\":\"Everyone\"}'::jsonb")
     E.||. ownSeat
  where
-  -- The paths are literals: unsafeSqlValue splices them into the query text.
-  audienceAt path =
-    unsafeSqlBinOp "#>>" entries.payload (unsafeSqlValue path) :: SqlExpr (E.Value (Maybe Text))
-  seats = [UUID.toText uuid | PlayerId uuid <- viewerSeats viewer]
-  ownSeat
-    | null seats = val False
-    | otherwise =
-        audienceAt "'{audience,tag}'" ==. just (val "OnlyPlayer")
-          E.&&. audienceAt "'{audience,contents}'" `in_` valList (map Just seats)
+  -- Literal SQL fragments only; the seat ids below are bound as values.
+  audience :: SqlExpr (E.Value (Maybe Aeson.Value))
+  audience = unsafeSqlBinOp " -> " entries.payload (unsafeSqlValue "'audience'")
+  jsonbTypeOf :: SqlExpr (E.Value (Maybe Aeson.Value)) -> SqlExpr (E.Value (Maybe Text))
+  jsonbTypeOf = unsafeSqlFunction "jsonb_typeof"
+  sqlEquals :: SqlExpr (E.Value a) -> SqlExpr (E.Value b) -> SqlExpr (E.Value Bool)
+  sqlEquals = unsafeSqlBinOp " = "
+  onlyPlayer :: Text -> SqlExpr (E.Value (Maybe Aeson.Value))
+  onlyPlayer seat =
+    unsafeSqlFunction
+      "jsonb_build_object"
+      ( unsafeSqlValue "'tag'" :: SqlExpr (E.Value Text)
+      , unsafeSqlValue "'OnlyPlayer'" :: SqlExpr (E.Value Text)
+      , unsafeSqlValue "'contents'" :: SqlExpr (E.Value Text)
+      , unsafeSqlCastAs "text" (val seat) :: SqlExpr (E.Value Text)
+      )
+  ownSeat = case [UUID.toText uuid | PlayerId uuid <- viewerSeats viewer] of
+    [] -> val False
+    seat : seats -> foldl' (E.||.) (mine seat) (map mine seats)
+  mine = sqlEquals audience . onlyPlayer
 
 toPublicGame :: Entity ArkhamGame -> GameLog -> PublicGame ArkhamGameId
 toPublicGame (Entity gId ArkhamGame {..}) gameLog =

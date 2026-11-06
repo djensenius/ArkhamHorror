@@ -87,12 +87,17 @@ Matched on @body@ rather than on the JSON payload: a structured row's @body@ is
 key itself (@$log.scenarioBegins(scenario=...)@). That keeps this a cheap
 prefix match on one column instead of a jsonb traversal, and the game filter
 carries the index.
+
+A redacted viewer only gets banners its audience filter lets through
+('logRowVisibleSql'), as for every other log read; the narrator's banners are
+for everyone, so in practice this drops nothing.
 -}
-scenarioBanners :: ArkhamGameId -> DB [(Int, Maybe Aeson.Value)]
-scenarioBanners gameId = do
+scenarioBanners :: GameView -> ArkhamGameId -> DB [(Int, Maybe Aeson.Value)]
+scenarioBanners gameView gameId = do
   rows <- select do
     e <- from $ table @ArkhamLogEntry
     where_ $ e.arkhamGameId E.==. val gameId
+    for_ (redactedLogViewer gameView) \viewer -> where_ $ logRowVisibleSql viewer e
     -- Parenthesised: `like` is infixr 2, as Admin/Users.hs notes.
     where_ $ e.body `like` (val "$log.scenarioBegins" ++. (%))
     orderBy [asc e.step, asc e.id]
@@ -132,7 +137,8 @@ getApiV1ArkhamGameLogSectionsR gameId = do
   userId <- getRequestUserId
   runDB do
     void $ getBy404 (UniquePlayer userId gameId)
-    toSections <$> scenarioBanners gameId
+    gameView <- viewerForUser userId gameId
+    toSections <$> scenarioBanners gameView gameId
 
 {- | A step range of the log.
 

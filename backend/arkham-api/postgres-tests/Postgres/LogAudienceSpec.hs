@@ -36,28 +36,69 @@ import Yesod.Core (toPathPiece)
 type SeedUser = SqlBackend -> Text -> IO UserId
 
 -- | Who a seeded row is for.
-data Audience = Public | NoPayload | NoAudience | OnlyA | OnlyB
+data Audience
+  = Public
+  | NoPayload
+  | NoAudience
+  | OnlyA
+  | OnlyB
+  | -- | Seat B's audience on a payload that does not decode as a 'LogEntry',
+    -- so a read that let it through would serve its flat body.
+    UndecodableB
+  | -- | An audience whose tag is neither Everyone nor OnlyPlayer.
+    UnknownTag
+  | -- | @"audience": null@.
+    NullAudience
+  | -- | A payload that is a JSON array.
+    ArrayPayload
+  | -- | A payload that is the jsonb @null@ (not SQL NULL).
+    JsonNullPayload
   deriving stock (Eq, Show)
 
+-- | The rows only a full view (or, for 'UndecodableB', seat B) may read.
+failClosed :: [Audience]
+failClosed = [UndecodableB, UnknownTag, NullAudience, ArrayPayload, JsonNullPayload]
+
 {- | The seeded log, by seq (and step): rows 1-3 are public, a NULL payload and
-a payload with no audience; 51 rows for seat B alone; 45 rows alternating
-seat A alone and public; then 61 more rows for seat B alone. The page size is
-40, so the newest page and the one below the visible block hold nothing for
-seat A: a filter after the LIMIT would answer seat A an empty first page.
+a payload with no audience; rows 4-8 are the malformed audiences of
+'failClosed', each with a sentinel body; 46 rows for seat B alone; 45 rows
+alternating seat A alone and public; then 61 more rows for seat B alone. The
+page size is 40, so the newest page and the one below the visible block hold
+nothing for seat A: a filter after the LIMIT would answer seat A an empty
+first page.
 -}
 seededLog :: [(Int, Audience)]
 seededLog =
   [(1, Public), (2, NoPayload), (3, NoAudience)]
-    <> [(n, OnlyB) | n <- [4 .. 54]]
+    <> zip [4 ..] failClosed
+    <> [(n, OnlyB) | n <- [9 .. 54]]
     <> [(n, if odd n then OnlyA else Public) | n <- [55 .. 99]]
     <> [(n, OnlyB) | n <- [100 .. 160]]
 
 label :: Int -> Text
 label n = "r" <> T.justifyRight 3 '0' (show n)
 
+-- | A seeded row's label: its flat body, which is all a legacy row shows.
+bodyOf :: (Int, Audience) -> Text
+bodyOf (n, audience) = case audience of
+  UndecodableB -> "secret-b"
+  UnknownTag -> "secret-unknown"
+  NullAudience -> "secret-null-audience"
+  ArrayPayload -> "secret-array"
+  JsonNullPayload -> "secret-null-payload"
+  _ -> label n
+
+-- | The labels of the seeded rows with these audiences, oldest first.
+labelsWith :: (Audience -> Bool) -> [Text]
+labelsWith keep = [bodyOf row | row@(_, audience) <- seededLog, keep audience]
+
 -- | The labels of the rows a holder of seat A alone may read, oldest first.
 visibleToA :: [Text]
-visibleToA = [label n | (n, audience) <- seededLog, audience /= OnlyB]
+visibleToA = labelsWith (\audience -> audience /= OnlyB && audience `notElem` failClosed)
+
+-- | Every seeded label, which a full view reads.
+everyLabel :: [Text]
+everyLabel = labelsWith (const True)
 
 -- | The labels of the children of row 1 a holder of seat A alone may read.
 childrenForA :: [Text]
@@ -90,8 +131,11 @@ spec harness app seedUser = describe "Log reads are filtered for the caller's se
       seat connection 2 gameId alice 1
       seat connection 2 gameId bob 2
       rows <- concat . reverse <$> pageBack bob gameId
+      -- Seat B's own undecodable row reaches seat B as its flat body; the
+      -- other malformed audiences reach nobody but a full view.
       map rowLabel rows
-        `shouldBe` [Just (label n) | (n, audience) <- seededLog, audience /= OnlyA]
+        `shouldBe` map Just
+          (labelsWith \audience -> audience `notElem` [OnlyA, UnknownTag, NullAudience, ArrayPayload, JsonNullPayload])
       childrenOf "r001" rows `shouldBe` Just ["c-b", "c-all"]
 
   it "gives a caller holding every seat the whole log" $
@@ -103,7 +147,7 @@ spec harness app seedUser = describe "Log reads are filtered for the caller's se
       pages <- pageBack dave gameId
       map length pages `shouldBe` [40, 40, 40, 40, 0]
       let rows = concat (reverse pages)
-      map rowLabel rows `shouldBe` [Just (label n) | (n, _) <- seededLog]
+      map rowLabel rows `shouldBe` map Just everyLabel
       childrenOf "r001" rows `shouldBe` Just ["c-a", "c-b", "c-all"]
 
   it "filters the JSON and trace log exports the same way" $
@@ -127,17 +171,58 @@ spec harness app seedUser = describe "Log reads are filtered for the caller's se
       traceStatus `shouldBe` status200
       labelsIn (decodeUtf8 traceBody) `shouldBe` Set.fromList (visibleToA <> childrenForA)
 
+      -- A step range is filtered the same way: steps 2-59 for seat A are the
+      -- NULL and no-audience rows and 55-59, not the malformed rows 4-8.
+      let ranged = "&fromStep=2&untilStep=60"
+          inRange = [bodyOf row | row@(n, _) <- seededLog, n >= 2, n < 60]
+          visibleInRange = filter (`elem` visibleToA) inRange
+      exportedLabels alice gameId ("json" <> ranged) `shouldReturn` map Just visibleInRange
+      tracedLabels alice gameId ("trace" <> ranged) `shouldReturn` Set.fromList visibleInRange
+
       -- A caller holding every seat still exports everything.
       fullGame <- seedGame connection 5 "log-audience-export-full"
       seat connection 5 fullGame dave 1
       seat connection 5 fullGame dave 2
-      (_, fullTrace) <- request dave (gamePath fullGame "/log/export?format=trace")
-      labelsIn (decodeUtf8 fullTrace)
-        `shouldBe` Set.fromList (map (label . fst) seededLog <> ["c-a", "c-b", "c-all"])
+      exportedLabels dave fullGame "json" `shouldReturn` map Just everyLabel
+      tracedLabels dave fullGame "trace"
+        `shouldReturn` Set.fromList (everyLabel <> ["c-a", "c-b", "c-all"])
+      exportedLabels dave fullGame ("json" <> ranged) `shouldReturn` map Just inRange
+
+  it "lists log sections from the banners the caller may read" $
+    withConnection harness \connection -> do
+      gameId <- seedBanners connection 6 "log-audience-sections"
+      alice <- seedUser connection "log-audience-sections-alice"
+      bob <- seedUser connection "log-audience-sections-bob"
+      seat connection 6 gameId alice 1
+      seat connection 6 gameId bob 2
+      sectionCount alice gameId `shouldReturn` 1
+      sectionCount bob gameId `shouldReturn` 2
+
+      fullGame <- seedBanners connection 7 "log-audience-sections-full"
+      dave <- seedUser connection "log-audience-sections-dave"
+      seat connection 7 fullGame dave 1
+      seat connection 7 fullGame dave 2
+      sectionCount dave fullGame `shouldReturn` 2
  where
   request caller path = do
     authorization <- authorizationFor app caller
     routeRequest app "GET" path [authorization] ""
+  exportRows caller gameId query = do
+    (status, body) <- request caller (gamePath gameId ("/log/export?format=" <> query))
+    status `shouldBe` status200
+    pure $ fromMaybe [] do
+      Object envelope <- decode body
+      Array exported <- KeyMap.lookup "rows" envelope
+      pure (toList exported)
+  exportedLabels caller gameId query = map rowLabel <$> exportRows caller gameId query
+  tracedLabels caller gameId query = do
+    (status, body) <- request caller (gamePath gameId ("/log/export?format=" <> query))
+    status `shouldBe` status200
+    pure (labelsIn (decodeUtf8 body))
+  sectionCount caller gameId = do
+    (status, body) <- request caller (gamePath gameId "/log/sections")
+    status `shouldBe` status200
+    pure $ maybe (-1) length (decode body >>= arrayOf)
   -- Page back from the end the way the client does, until an empty page.
   -- Each page is newest first in the list of pages; rows in a page are
   -- oldest first.
@@ -195,7 +280,7 @@ labelsIn traceText =
   Set.fromList
     [ word
     | word <- words traceText
-    , isRowLabel word || word `elem` ["c-a", "c-b", "c-all"]
+    , isRowLabel word || T.isPrefixOf "secret-" word || word `elem` ["c-a", "c-b", "c-all"]
     ]
  where
   isRowLabel word = T.length word == 4 && T.isPrefixOf "r" word && T.all digit (T.drop 1 word)
@@ -235,13 +320,45 @@ seedGame connection g name = do
         NoAudience -> Just (object ["seq" .= n, "note" .= label n])
         OnlyA -> Just (toJSON (entry n (OnlyPlayer seatA) []))
         OnlyB -> Just (toJSON (entry n (OnlyPlayer seatB) []))
+        -- A well-formed audience for seat B, but no body or kind: not a LogEntry.
+        UndecodableB -> Just (object ["seq" .= n, "audience" .= OnlyPlayer seatB])
+        UnknownTag -> Just (object ["seq" .= n, "audience" .= object ["tag" .= ("Somebody" :: Text)]])
+        NullAudience -> Just (object ["seq" .= n, "audience" .= Null])
+        ArrayPayload -> Just (toJSON [toJSON (entry n Everyone [])])
+        JsonNullPayload -> Just Null
   transaction connection do
     gameId <- P.insert $ ArkhamGame name game 1 WithFriends now now False
-    for_ seededLog \(n, audience) ->
+    for_ seededLog \row@(n, audience) ->
       P.insert_
         ArkhamLogEntry
-          { arkhamLogEntryBody = label n
+          { arkhamLogEntryBody = bodyOf row
           , arkhamLogEntryPayload = payloadOf n audience
+          , arkhamLogEntrySeq = Just n
+          , arkhamLogEntryGroupId = Nothing
+          , arkhamLogEntryArkhamGameId = gameId
+          , arkhamLogEntryStep = n
+          , arkhamLogEntryCreatedAt = now
+          }
+    pure gameId
+
+{- | Game @g@ with two scenario banners: one for everyone at step 1, and one
+addressed to seat B alone at step 5.
+-}
+seedBanners :: SqlBackend -> Word32 -> Text -> IO ArkhamGameId
+seedBanners connection g name = do
+  now <- currentTimeMicros
+  let game = Game.newCampaign "01" Nothing 1 2 Easy False
+      banner n audience =
+        (mkLogEntry Narrative [LogI18n "log.scenarioBegins" mempty])
+          {logEntrySeq = n, logEntryAudience = audience}
+  transaction connection do
+    gameId <- P.insert $ ArkhamGame name game 1 WithFriends now now False
+    for_ [(1, Everyone), (5, OnlyPlayer (PlayerId (seatUuid g 2)))] \(n, audience) -> do
+      let entry = banner n audience
+      P.insert_
+        ArkhamLogEntry
+          { arkhamLogEntryBody = logEntryToText entry
+          , arkhamLogEntryPayload = Just (toJSON entry)
           , arkhamLogEntrySeq = Just n
           , arkhamLogEntryGroupId = Nothing
           , arkhamLogEntryArkhamGameId = gameId
