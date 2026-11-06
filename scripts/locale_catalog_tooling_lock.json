@@ -6,7 +6,7 @@
     ".github/workflows/locale-catalog.yml": "21ee1c17abf9bb577bea81c98b6b9ced050385ee7f0aefe578c53b27eef89767",
     "Dockerfile": "db3c42bb355cb109d0517bae61b89382fbc80c6fe85f7fe3767cc56a2175e05f",
     "frontend/package.json": "5a7fa1c41e0e26da5898bd00a0ddc26cca6a4d745e304cc7fc78c9cb7f743833",
-    "mise.toml": "10059757f3f67622391f9e1bf2922597ce291dd67f4c78469e6150feed7f1946",
+    "mise.toml": "7332120ae9edc55c1143535984d1a7d5efde46fc857992f57a09b0534a3cab2f",
     "pyproject.toml": "6af9c332ca04e66f2f569b2cbfd676ee9d7077ad9a778f28f2760a0ddb8389d2",
     "scripts/analyze-question-presentation-gaps.py": "7a050d35de8fa46d81df698f35c4c89099f1cae0ad43a0a1978d7ab1174abf32",
     "scripts/build-campaign-catalog.py": "7f569a708ca75d6731961dd08f4a82981ee8ac089cf93ab634fffa9e86a8e985",
