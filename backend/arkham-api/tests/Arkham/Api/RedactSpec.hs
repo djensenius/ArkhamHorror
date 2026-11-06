@@ -26,7 +26,8 @@ import Arkham.Log.Entry (
   mkLogEntry,
  )
 import Arkham.Matcher.Card (CardMatcher (AnyCard), ExtendedCardMatcher (BasicCardMatch))
-import Arkham.Modifier (Modifier (..), ModifierType (TopCardOfDeckIsRevealed))
+import Arkham.Modifier (Modifier (..), ModifierType (AsIfInHand, CannotBeFlipped, TopCardOfDeckIsRevealed))
+import Arkham.Scenario.Types (ScenarioAttrs (..))
 import Arkham.Search (Search (..), SearchType (Searching), mkSearch)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
@@ -308,6 +309,172 @@ run with it on; the last case pins that the default leaves it out.
 redactFor :: Viewer -> Aeson.Value -> Aeson.Value
 redactFor = redactWith RedactOptions {includeHandCount = True}
 
+{- | Seat B's hidden cards placed, on purpose, on every surface the hidden-id
+filter covers (TASK-2.22.5 P3):
+
+  * @h0@ (B's hand) is listed in A's @meta.revealedCards@, so it is public;
+  * @h1@ (B's hand) is in @cards@, @focusedCards@, @foundCards@, the @card@ of
+    a modifier on A, B's @meta@, and Agnes's (seat C, other campaign half)
+    stored @meta@;
+  * @h2@ (B's hand) is in @cards@, B's scenario-level search, an
+    @AsIfInHand@ modifier on A, the target of a top-level modifier, and B's
+    @formMeta@ (also as an object key in @meta@);
+  * @d0@ (B's deck) is in @cards@ and in B's @meta@ as a bare id;
+  * @pub@ is a card in no hidden zone, sitting next to them everywhere.
+-}
+data Planted = Planted
+  { plantedGame :: Aeson.Value
+  , h0, h1, h2, d0, pub :: Text
+  , agnesKey :: Aeson.Key
+  }
+
+plantHidden :: Table -> TestAppT Planted
+plantHidden Table {..} = do
+  game <- getGame
+  let seated pid =
+        fromJustNote "no investigator for seat"
+          $ find ((== pid) . investigatorPlayerId . toAttrs) (toList $ game ^. entitiesL . investigatorsL)
+      jenny = seated tableA
+      daisy = seated tableB
+      attrsB = toAttrs daisy
+  (c0, c1, c2) <- case investigatorHand attrsB of
+    [x, y, z] -> pure (x, y, z)
+    _ -> error "plantHidden: expected three hand cards"
+  deckTop <- case investigatorDeck attrsB of
+    Deck (x : _) -> pure (PlayerCard x)
+    _ -> error "plantHidden: empty deck"
+  public <- PlayerCard <$> testPlayerCard id
+  let modifierOn card ty = Modifier (toSource jenny) ty False card Nothing
+      bSearch =
+        ( mkSearch Searching (toId daisy) attrsB attrsB [] (BasicCardMatch AnyCard) (DrawFound (toId daisy) 1)
+        )
+          { searchFoundCards = Map.singleton FromDeck [c2]
+          , searchDrawnCards = [c2]
+          }
+      withSearch = overAttrs (\s -> s {scenarioSearch = Just bSearch})
+      agnesMeta = \case
+        Aeson.Object meta
+          | Just players <- KeyMap.lookup "otherCampaignPlayers" meta
+          , Aeson.Success ps <- decodePlayers players ->
+              Aeson.Object
+                $ KeyMap.insert
+                  "otherCampaignPlayers"
+                  (toJSON (Map.map (\a -> a {investigatorMeta = Aeson.object ["secret" .= c1]}) ps))
+                  meta
+        _ -> error "plantHidden: no otherCampaignPlayers"
+      decodePlayers :: Aeson.Value -> Aeson.Result (Map PlayerId InvestigatorAttrs)
+      decodePlayers = Aeson.fromJSON
+  updateInvestigator jenny \a ->
+    a {investigatorMeta = Aeson.object ["revealedCards" .= Map.singleton (toId daisy) [toCardId c0]]}
+  updateInvestigator daisy \a ->
+    a
+      { investigatorMeta =
+          Aeson.object
+            [ "secret" .= c1
+            , "ids" .= [toCardId deckTop, toCardId public]
+            , "byId" .= Map.singleton (toCardId c2) True
+            , "revealed" .= toCardId c0
+            , "class" .= ("Seeker" :: Text)
+            ]
+      , investigatorFormMeta = toJSON [c2, public]
+      }
+  overTest \g ->
+    g
+      { gameCards =
+          Map.fromList [(toCardId c, c) | c <- [c0, c1, c2, deckTop, public] <> investigatorHand (toAttrs jenny)]
+            <> gameCards g
+      , gameFocusedCards = [[c1, public]]
+      , gameFoundCards = Map.singleton FromDeck [c1, public]
+      , gameModifiers =
+          Map.insertWith
+            (<>)
+            (toTarget jenny)
+            [ modifierOn (Just c1) CannotBeFlipped
+            , modifierOn Nothing (AsIfInHand c2)
+            , modifierOn (Just public) CannotBeFlipped
+            ]
+            $ Map.insert (CardIdTarget (toCardId c2)) [modifierOn Nothing CannotBeFlipped] (gameModifiers g)
+      , gameMode = case gameMode g of
+          These c s -> These (overAttrs (\ca -> ca {campaignMeta = agnesMeta (campaignMeta ca)}) c) (withSearch s)
+          other -> other
+      }
+  game' <- getGame
+  let idText c = case toJSON (toCardId c) of
+        Aeson.String t -> t
+        _ -> error "card id is not a string"
+  pure
+    Planted
+      { plantedGame = toJSON (PublicGame ("game" :: Text) "Redact" (logRows tableA tableB) game')
+      , h0 = idText c0
+      , h1 = idText c1
+      , h2 = idText c2
+      , d0 = idText deckTop
+      , pub = idText public
+      , agnesKey = Key.fromText (idTextOf (toJSON tableC))
+      }
+ where
+  idTextOf = \case
+    Aeson.String t -> t
+    _ -> error "player id is not a string"
+
+topKey :: Aeson.Key -> Aeson.Value -> Aeson.Value
+topKey k = \case
+  Aeson.Object o -> field' k o
+  _ -> error "topKey: not an object"
+
+registryKeys :: Aeson.Value -> [Text]
+registryKeys v = case topKey "cards" v of
+  Aeson.Object cards -> map Key.toText (KeyMap.keys cards)
+  _ -> error "cards is not an object"
+
+-- | Card ids of an array of encoded cards.
+cardIdsOf :: Aeson.Value -> [Text]
+cardIdsOf = \case
+  Aeson.Array cards ->
+    [ i
+    | Aeson.Object c <- toList cards
+    , Just (Aeson.Object contents) <- [KeyMap.lookup "contents" c]
+    , Just (Aeson.String i) <- [KeyMap.lookup "id" contents]
+    ]
+  _ -> error "cardIdsOf: not an array"
+
+-- | The card ids of each zone of a @Map Zone [Card]@, in key order.
+zoneCards :: Aeson.Value -> [[Text]]
+zoneCards = \case
+  Aeson.Object zones -> map cardIdsOf (KeyMap.elems zones)
+  _ -> error "zoneCards: not an object"
+
+zoneKeys :: Aeson.Value -> [Aeson.Key]
+zoneKeys = \case
+  Aeson.Object zones -> KeyMap.keys zones
+  _ -> error "zoneKeys: not an object"
+
+-- | Every string and object key in a value.
+stringsIn :: Aeson.Value -> [Text]
+stringsIn = \case
+  Aeson.String s -> [s]
+  Aeson.Object o -> map Key.toText (KeyMap.keys o) <> concatMap stringsIn (KeyMap.elems o)
+  Aeson.Array xs -> concatMap stringsIn (toList xs)
+  _ -> []
+
+scenarioSearchOf :: Aeson.Value -> Aeson.Object
+scenarioSearchOf v = case topKey "mode" v of
+  Aeson.Object mode
+    | Just (Aeson.Object scenario) <- KeyMap.lookup "That" mode
+    , Just (Aeson.Object s) <- KeyMap.lookup "search" scenario ->
+        s
+  _ -> error "no scenario search"
+
+agnesStored :: Aeson.Key -> Aeson.Value -> Aeson.Object
+agnesStored key v = case topKey "mode" v of
+  Aeson.Object mode
+    | Just (Aeson.Object campaign) <- KeyMap.lookup "This" mode
+    , Just (Aeson.Object meta) <- KeyMap.lookup "meta" campaign
+    , Just (Aeson.Object players) <- KeyMap.lookup "otherCampaignPlayers" meta
+    , Just (Aeson.Object agnes) <- KeyMap.lookup key players ->
+        agnes
+  _ -> error "no otherCampaignPlayers entry"
+
 spec :: Spec
 spec = describe "Api.Arkham.Redact.redactFor" do
   it "adds no handCount by default, and otherwise redacts the same way" $ withTable \table@Table {..} -> liftIO do
@@ -516,3 +683,99 @@ spec = describe "Api.Arkham.Redact.redactFor" do
       `shouldBe` Aeson.object ["log" .= [structured (entry "kept"), legacy]]
     redactFor ViewerSpectator (Aeson.object ["log" .= Aeson.String "odd"])
       `shouldBe` Aeson.object ["log" .= ([] :: [Aeson.Value])]
+
+  it "drops seat B's hidden card ids from every surface for seat A, and keeps them for B (m)" $ withTable \table -> do
+    Planted {..} <- plantHidden table
+    let Table {..} = table
+    liftIO do
+      let original = plantedGame
+          asA = redactFor (ViewerSeats (Set.singleton tableA)) original
+          asB = redactFor (ViewerSeats (Set.singleton tableB)) original
+          asAB = redactFor (ViewerSeats (Set.fromList [tableA, tableB])) original
+          leaked = [h1, h2, d0]
+          ownHand = cardIdsOf (field' "hand" (investigatorFor tableA original))
+      -- The fixture really planted every id where it is about to be hidden.
+      for_ (h0 : pub : leaked <> ownHand) \i -> (i, i `elem` registryKeys original) `shouldBe` (i, True)
+      cardIdsOf (topKey "focusedCards" original) `shouldBe` [h1, pub]
+      length ownHand `shouldBe` 3
+
+      -- (1) the cards registry: B's hidden ids go, the revealed card, the
+      -- public card and A's own hand stay.
+      for_ leaked \i -> (i, i `elem` registryKeys asA) `shouldBe` (i, False)
+      for_ (h0 : pub : ownHand) \i -> (i, i `elem` registryKeys asA) `shouldBe` (i, True)
+      -- (2) focusedCards and (3) foundCards keep the public card and the zone key.
+      cardIdsOf (topKey "focusedCards" asA) `shouldBe` [pub]
+      zoneCards (topKey "foundCards" original) `shouldBe` [[h1, pub]]
+      zoneCards (topKey "foundCards" asA) `shouldBe` [[pub]]
+      zoneKeys (topKey "foundCards" asA) `shouldBe` zoneKeys (topKey "foundCards" original)
+      -- (3) B's scenario-level search keeps its zone keys, with no cards.
+      let searchA = scenarioSearchOf asA
+      zoneCards (field' "searchFoundCards" (scenarioSearchOf original)) `shouldBe` [[h2]]
+      zoneCards (field' "searchFoundCards" searchA) `shouldBe` [[]]
+      zoneKeys (field' "searchFoundCards" searchA)
+        `shouldBe` zoneKeys (field' "searchFoundCards" (scenarioSearchOf original))
+      field' "searchDrawnCards" searchA `shouldBe` Aeson.Array mempty
+      -- (4) modifiers: the hidden card payload is nulled, AsIfInHand of a hand
+      -- card and the pair targeting a hand card are dropped.
+      for_ [topKey "modifiers" asA, field' "modifiers" (investigatorFor tableA asA)] \mods -> do
+        filter (`elem` leaked) (stringsIn mods) `shouldBe` []
+        pub `elem` stringsIn mods `shouldBe` True
+      let jennyCardFields =
+            [ KeyMap.lookup "card" m
+            | Aeson.Object m <- case field' "modifiers" (investigatorFor tableA asA) of
+                Aeson.Array ms -> toList ms
+                _ -> []
+            , KeyMap.lookup "type" m == Just (toJSON CannotBeFlipped)
+            ]
+      length jennyCardFields `shouldBe` 2
+      Just Aeson.Null `elem` jennyCardFields `shouldBe` True
+      -- (5) B's meta and formMeta: hidden cards and ids removed, the rest kept.
+      let daisyA = investigatorFor tableB asA
+      field' "meta" daisyA
+        `shouldBe` Aeson.object
+          [ "secret" .= Aeson.Null
+          , "ids" .= [pub]
+          , "byId" .= Aeson.object []
+          , "revealed" .= h0
+          , "class" .= ("Seeker" :: Text)
+          ]
+      cardIdsOf (field' "formMeta" daisyA) `shouldBe` [pub]
+      -- (6) otherCampaignPlayers: Agnes's zones and meta are cleared for A.
+      let agnesA = agnesStored agnesKey asA
+      shouldBePopulated (agnesStored agnesKey original)
+      for_ ["hand", "deck", "sideDeck", "drawnCards", "cardsUnderneath"] \k ->
+        (k, arrayLength (field' k agnesA)) `shouldBe` (k, 0)
+      field' "meta" agnesA `shouldBe` Aeson.object ["secret" .= Aeson.Null]
+      KeyMap.member "handCount" agnesA `shouldBe` False
+      -- And nowhere in A's view does a hidden id of B survive.
+      filter (`elem` leaked) (stringsIn asA) `shouldBe` []
+
+      -- Seat B's own view, and a viewer holding both seats, keep every surface;
+      -- the full view is the unredacted value itself.
+      for_ [asB, asAB] \v -> do
+        for_ (h0 : pub : leaked) \i -> (i, i `elem` registryKeys v) `shouldBe` (i, True)
+        for_ ["focusedCards", "foundCards", "modifiers"] \k -> (k, topKey k v) `shouldBe` (k, topKey k original)
+        scenarioSearchOf v `shouldBe` scenarioSearchOf original
+        for_ ["meta", "formMeta", "modifiers"] \k ->
+          (k, field' k (investigatorFor tableB v)) `shouldBe` (k, field' k (investigatorFor tableB original))
+      -- Seat C sees its own other-campaign entry in full.
+      agnesStored agnesKey (redactFor (ViewerSeats (Set.singleton tableC)) original)
+        `shouldBe` agnesStored agnesKey original
+
+  it "keeps revealedCards public for every viewer (n)" $ withTable \table -> do
+    Planted {..} <- plantHidden table
+    let Table {..} = table
+    liftIO do
+      let original = plantedGame
+      for_ [ViewerSpectator, ViewerSeats (Set.singleton tableB), ViewerSeats (Set.singleton tableC)] \v -> do
+        let redacted = redactFor v original
+        (v, h0 `elem` registryKeys redacted) `shouldBe` (v, True)
+        field' "meta" (investigatorFor tableA redacted) `shouldBe` field' "meta" (investigatorFor tableA original)
+      -- A spectator loses the other hidden ids, like seat A.
+      let asSpectator = redactFor ViewerSpectator original
+      filter (`elem` [h1, h2, d0]) (registryKeys asSpectator) `shouldBe` []
+
+  it "is idempotent with hidden ids planted (o)" $ withTable \table -> do
+    Planted {..} <- plantHidden table
+    liftIO $ for_ (allViewers table) \v ->
+      redactFor v (redactFor v plantedGame) `shouldBe` redactFor v plantedGame
