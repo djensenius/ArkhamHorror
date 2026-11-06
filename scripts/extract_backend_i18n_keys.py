@@ -826,6 +826,8 @@ def scope_alternatives(node, source: bytes, parameters: set[str], depth: int = 0
         if name in parameters:
             return None
         binding = local_binding(node, name, source)
+        if binding is UNDECIDED_BINDING:
+            return None
         if binding is not None:
             return scope_alternatives(binding, source, parameters, depth + 1, context, site)
         return parameter_alternatives(node, name, source, parameters, depth, context)
@@ -1141,19 +1143,99 @@ def _case_bindings(node, source: bytes):
         ancestor = ancestor.parent
 
 
+# `local_binding`'s answer when `name` is bound in scope but the binding that
+# reaches the use cannot be told apart, so the site must stay dynamic rather
+# than resolve to some other binding of the same name.
+UNDECIDED_BINDING = object()
+
+
 def local_binding(node, name: str, source: bytes):
-    """The body of the nearest enclosing `let`/`where` binding of `name`."""
+    """The body of the binding of `name` in scope at `node`, else None.
+
+    `let ... in` and `where` groups are recursive, so any binding in them is
+    in scope. A `do` block is sequential: only a statement before the use can
+    bind it, and the nearest such statement shadows the earlier ones. Returns
+    UNDECIDED_BINDING when the binding that reaches the use is not knowable.
+    """
+    child = node
     ancestor = node.parent
     while ancestor is not None:
-        for candidate in _descendant_binds(ancestor, name, source):
-            children = significant_children(candidate)
-            body = children[-1] if children else None
-            if body is not None and body.type == "match":
-                inner = significant_children(body)
-                body = inner[-1] if inner else None
-            return body
+        if ancestor.type == "do":
+            found = _do_block_binding(ancestor, child, name, source)
+            if found is not None:
+                return found
+        else:
+            for candidate in _descendant_binds(ancestor, name, source):
+                return _binding_body(candidate)
+        child = ancestor
         ancestor = ancestor.parent
     return None
+
+
+def _binding_body(candidate):
+    children = significant_children(candidate)
+    body = children[-1] if children else None
+    if body is not None and body.type == "match":
+        inner = significant_children(body)
+        body = inner[-1] if inner else None
+    return body
+
+
+def _do_block_binding(block, statement, name: str, source: bytes):
+    """The body binding `name` for a use inside `statement` of do `block`.
+
+    `key <- narrativeKey "first" a; p key; key <- narrativeKey "second" b;
+    p key` gives each `p key` the nearest bind before it. A `let` statement
+    is recursive within itself, so it also covers uses in its own bodies; a
+    `<-` statement's own action still sees the outer `key`. Returns None when
+    no statement before the use binds `name`, and UNDECIDED_BINDING when one
+    binds it through a pattern this reader does not follow.
+    """
+    statements = significant_children(block)
+    index = next((i for i, item in enumerate(statements) if item.id == statement.id), None)
+    if index is None:
+        return UNDECIDED_BINDING
+    if statements[index].type == "let":
+        found = _let_statement_binding(statements[index], name, source)
+        if found is not None:
+            return found
+    for item in reversed(statements[:index]):
+        if item.type == "bind" and any(part.type == "<-" for part in item.children):
+            parts = significant_children(item)
+            pattern = parts[0] if parts else None
+            if pattern is not None and pattern.type == "variable":
+                if text_of(pattern, source) == name:
+                    return parts[-1]
+            elif pattern is None or _mentions_variable(pattern, name, source):
+                return UNDECIDED_BINDING
+        elif item.type == "let":
+            found = _let_statement_binding(item, name, source)
+            if found is not None:
+                return found
+        elif item.type != "exp" and _mentions_variable(item, name, source):
+            return UNDECIDED_BINDING
+    return None
+
+
+def _let_statement_binding(statement, name: str, source: bytes):
+    for candidate in _descendant_binds(statement, name, source):
+        return _binding_body(candidate)
+    for group in statement.children:
+        if group.type != "local_binds":
+            continue
+        for candidate in group.children:
+            if candidate.type != "bind":
+                continue
+            parts = significant_children(candidate)
+            if parts and parts[0].type != "variable" and _mentions_variable(parts[0], name, source):
+                return UNDECIDED_BINDING
+    return None
+
+
+def _mentions_variable(node, name: str, source: bytes) -> bool:
+    if node.type == "variable":
+        return text_of(node, source) == name
+    return any(_mentions_variable(child, name, source) for child in node.children)
 
 
 def _descendant_binds(node, name: str, source: bytes, depth: int = 0):

@@ -2168,6 +2168,99 @@ run = campaignI18n $ scope "resolutions" do
     )
 
 
+def test_a_rebound_narrative_key_reaches_each_use_from_its_nearest_bind() -> None:
+    # A later `key <-` shadows the earlier one only for the statements after it.
+    registry = registry_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ scope "rebound" do
+  narrative <- getNarrative
+  key <- narrativeKey "first" narrative.one
+  p key
+  key <- narrativeKey "second" narrative.two
+  scope "later" $ p key
+""",
+        }
+    )
+    keys = {entry["key"] for entry in registry["keys"]}
+    for expected in ("standalone.testCampaign.rebound.first", "standalone.testCampaign.rebound.later.second"):
+        check(expected in keys, f"a rebound narrativeKey lost {expected}: {sorted(keys)}")
+    for unexpected in ("standalone.testCampaign.rebound.later.first", "standalone.testCampaign.rebound.second"):
+        check(unexpected not in keys, f"a rebound narrativeKey reached the wrong use: {unexpected}")
+    check(
+        not any(site["emitter"] == "p" for site in registry["dynamicSites"]["sites"]),
+        f"a rebound narrativeKey use is still dynamic: {registry['dynamicSites']['sites']}",
+    )
+
+
+def test_a_use_before_a_do_bind_does_not_read_the_later_bind() -> None:
+    # `p key` before `key <-` sees the outer `where` key, or nothing at all.
+    registry = registry_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ scope "early" do
+  narrative <- getNarrative
+  p key
+  key <- narrativeKey "later" narrative.one
+  p key
+ where
+  key = "outer"
+
+unbound = campaignI18n $ scope "unbound" do
+  narrative <- getNarrative
+  p other
+  other <- narrativeKey "afterwards" narrative.two
+  pure ()
+""",
+        }
+    )
+    keys = {entry["key"] for entry in registry["keys"]}
+    for expected in ("standalone.testCampaign.early.outer", "standalone.testCampaign.early.later"):
+        check(expected in keys, f"a use around a do bind lost {expected}: {sorted(keys)}")
+    check(
+        "standalone.testCampaign.unbound.afterwards" not in keys,
+        f"a use before its do bind read the later bind: {sorted(keys)}",
+    )
+    check(
+        any(site["emitter"] == "p" for site in registry["dynamicSites"]["sites"]),
+        f"a use before its only do bind is no longer dynamic: {registry['dynamicSites']['sites']}",
+    )
+
+
+def test_let_and_where_bindings_stay_recursive() -> None:
+    # `let`/`where` groups are recursive: a binding may name a later one.
+    keys = keys_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ scope "recursive" do
+  let
+    outer = inner
+    inner = "fromLet"
+  p outer
+  p fromWhere
+ where
+  fromWhere = laterWhere
+  laterWhere = "fromWhere"
+""",
+        }
+    )
+    for leaf in ("fromLet", "fromWhere"):
+        expected = f"standalone.testCampaign.recursive.{leaf}"
+        check(expected in keys, f"a recursive binding lost {expected}: {sorted(keys)}")
+
+
 def test_the_registry_digest_covers_the_extracted_surface_not_the_input_files() -> None:
     card = """module Test.Card where
 
@@ -2609,6 +2702,9 @@ TESTS = (
     test_a_parenthesised_narrative_key_bound_in_do_reaches_its_emitter,
     test_a_wrapped_narrative_key_bound_in_do_stays_dynamic,
     test_a_let_bound_narrative_key_is_not_read_as_a_key,
+    test_a_rebound_narrative_key_reaches_each_use_from_its_nearest_bind,
+    test_a_use_before_a_do_bind_does_not_read_the_later_bind,
+    test_let_and_where_bindings_stay_recursive,
     test_the_registry_digest_covers_the_extracted_surface_not_the_input_files,
     test_dynamic_sites_are_line_independent,
     test_sites_are_named_by_file_and_top_level_binding,
