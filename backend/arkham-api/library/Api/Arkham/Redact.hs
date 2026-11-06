@@ -67,10 +67,16 @@ collects the card ids the viewer is not entitled to see:
 less every id that is public or already the viewer's: ids in any
 investigator's @meta.revealedCards@ (Bob Jenkins reveals hands to the table),
 the @cardId@ of every entity in play, the cards in investigators' @discard@
-piles, @activeCard@ and @skillTest@ (committed cards are shown to the table),
-the cards held by the investigators the viewer controls (their @modifiers@,
-@meta@ and @formMeta@ aside) and by the viewer's own scenario-level search,
-and any string in the viewer's own @question@ entries. Those ids are then removed from:
+piles, @activeCard@, the skill test's @committedCards@ (shown to the table;
+the rest of the encoded skill test, its modifiers included, is not a source of
+public ids), the revealed top card of a deck whose top is revealed (even if a
+private search copied it), the found and drawn cards of any @Revealing@
+search (scenario-level or an investigator's; @Searching@ and @Looking@ stay
+private, and another seat's investigator @search@ is still emptied as above),
+the cards held by the investigators the viewer controls (their
+@modifiers@, @meta@ and @formMeta@ aside) and by the viewer's own
+scenario-level search, and any string in the viewer's own @question@ entries.
+Those ids are then removed from:
 
   * the top-level @cards@ registry (the entry is dropped; cards in play stay);
   * top-level @focusedCards@, @highlightedCards@ and each zone list of
@@ -307,9 +313,11 @@ hiddenCardIds viewer = \case
             <> concatMap (cardIdsIn . Object) ownSearches
             <> concatMap (\o -> foldMap allStrings (KeyMap.lookup "meta" o >>= revealedCards)) investigators
             <> concatMap (cardIdsIn . (`at` "discard")) investigators
+            <> concatMap revealedDeckTop investigators
+            <> concatMap revealingResults (scenarioSearch <> [s | o <- investigators, Object s <- [o `at` "search"]])
             <> [i | k <- entityMapKeys, Object es <- [game `at` k], Object e <- KeyMap.elems es, String i <- [e `at` "cardId"]]
             <> cardIdsIn (game `at` "activeCard")
-            <> cardIdsIn (game `at` "skillTest")
+            <> committedCards (game `at` "skillTest")
             <> ownQuestions game
      in Set.fromList collected `Set.difference` Set.fromList visible
   _ -> mempty
@@ -320,6 +328,22 @@ hiddenCardIds viewer = \case
   revealedCards = \case
     Object meta -> KeyMap.lookup "revealedCards" meta
     _ -> Nothing
+  -- The top card of a deck whose top is revealed: 'hideZones' keeps it, and a
+  -- search (which copies the deck, leaving it intact) must not hide it again.
+  revealedDeckTop o
+    | topCardRevealed o, Array cards <- o `at` "deck", Just top <- cards V.!? 0 = cardIdsIn top
+    | otherwise = []
+  -- A Revealing search shows its cards to the table; Searching and Looking
+  -- searches are private.
+  revealingResults s
+    | s `at` "searchType" == String "Revealing" = foldMap (cardIdsIn . (s `at`)) searchResultKeys
+    | otherwise = []
+  -- Only the cards committed to the skill test are public: the rest of the
+  -- encoded skill test carries its full modifiers (whose card payloads can be
+  -- another seat's hidden cards) and value breakdown.
+  committedCards = \case
+    Object st -> cardIdsIn (st `at` "committedCards")
+    _ -> []
   ownQuestions game = case game `at` "question" of
     Object questions ->
       concat

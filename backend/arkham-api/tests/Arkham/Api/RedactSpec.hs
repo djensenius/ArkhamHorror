@@ -509,6 +509,36 @@ prohibitionIds = \case
   Aeson.Array entries -> [i | Aeson.Array e <- toList entries, Aeson.String i : _ <- [toList e]]
   _ -> error "prohibitions are not an array"
 
+-- | The encoded card a game's @cards@ registry holds for an id.
+registryCard :: Aeson.Value -> Text -> Aeson.Value
+registryCard game i = fromJustNote "card not in registry" $ case topKey "cards" game of
+  Aeson.Object cards -> KeyMap.lookup (Key.fromText i) cards
+  _ -> Nothing
+
+-- | Change the scenario-level search.
+overScenarioSearch :: (Aeson.Object -> Aeson.Object) -> Aeson.Value -> Aeson.Value
+overScenarioSearch f = \case
+  Aeson.Object top
+    | Just (Aeson.Object mode) <- KeyMap.lookup "mode" top
+    , Just (Aeson.Object scenario) <- KeyMap.lookup "That" mode
+    , Just (Aeson.Object s) <- KeyMap.lookup "search" scenario ->
+        let scenario' = KeyMap.insert "search" (Aeson.Object (f s)) scenario
+         in Aeson.Object (KeyMap.insert "mode" (Aeson.Object (KeyMap.insert "That" (Aeson.Object scenario') mode)) top)
+  _ -> error "overScenarioSearch: no scenario search"
+
+-- | Change an investigator's own @search@.
+overOwnSearch :: (Aeson.Object -> Aeson.Object) -> Aeson.Object -> Aeson.Object
+overOwnSearch f inv = case KeyMap.lookup "search" inv of
+  Just (Aeson.Object s) -> KeyMap.insert "search" (Aeson.Object (f s)) inv
+  _ -> error "overOwnSearch: no search"
+
+-- | A search's found cards: these cards, all from the deck.
+foundFromDeck :: [Aeson.Value] -> Aeson.Object -> Aeson.Object
+foundFromDeck cards = KeyMap.insert "searchFoundCards" (Aeson.object ["FromDeck" .= cards])
+
+withSearchType :: Text -> Aeson.Object -> Aeson.Object
+withSearchType t = KeyMap.insert "searchType" (Aeson.String t)
+
 spec :: Spec
 spec = describe "Api.Arkham.Redact.redactFor" do
   it "adds no handCount by default, and otherwise redacts the same way" $ withTable \table@Table {..} -> liftIO do
@@ -911,3 +941,72 @@ spec = describe "Api.Arkham.Redact.redactFor" do
       (h1 `elem` registryKeys (asA inPlay)) `shouldBe` True
       (h2 `elem` registryKeys (asA inPlay)) `shouldBe` True
       (d0 `elem` registryKeys (asA inPlay)) `shouldBe` False
+
+  it "keeps a hidden card named in a skill-test modifier hidden, and committed cards public (s)" $ withTable \table -> do
+    Planted {..} <- plantHidden table
+    let Table {..} = table
+    liftIO do
+      -- The encoded skill test carries its full modifiers: one names B's hand
+      -- card h1 as its card payload. h2 (also B's) is committed to the test.
+      let modifierNaming i =
+            Aeson.object
+              [ "source" .= Aeson.object ["tag" .= ("GameSource" :: Text)]
+              , "type" .= toJSON CannotBeFlipped
+              , "activeDuringSetup" .= False
+              , "card" .= registryCard plantedGame i
+              , "effect" .= Aeson.Null
+              ]
+          skillTest =
+            Aeson.object
+              [ "committedCards" .= Aeson.object ["daisy" .= [registryCard plantedGame h2]]
+              , "modifiers" .= [modifierNaming h1]
+              ]
+          original = setTop "skillTest" skillTest plantedGame
+          skillTestModifierCards v = case topKey "skillTest" v of
+            Aeson.Object st
+              | Just (Aeson.Array ms) <- KeyMap.lookup "modifiers" st ->
+                  [c | Aeson.Object m <- toList ms, Just c <- [KeyMap.lookup "card" m]]
+            _ -> error "no skill test modifiers"
+      for_ [ViewerSpectator, ViewerSeats (Set.singleton tableA)] \v -> do
+        let redacted = redactFor v original
+        (v, h1 `elem` registryKeys redacted) `shouldBe` (v, False)
+        (v, skillTestModifierCards redacted) `shouldBe` (v, [Aeson.Null])
+        (v, h2 `elem` registryKeys redacted) `shouldBe` (v, True)
+      -- B still sees its own card in the modifier.
+      skillTestModifierCards (redactFor (ViewerSeats (Set.singleton tableB)) original)
+        `shouldBe` [registryCard plantedGame h1]
+
+  it "keeps the cards of a Revealing search public, and a private search's hidden (t)" $ withTable \table -> do
+    Planted {..} <- plantHidden table
+    let Table {..} = table
+    liftIO do
+      -- B's scenario-level search found h2; B's own search found h1.
+      let withB t =
+            overScenarioSearch (withSearchType t)
+              . overSeat tableB (overOwnSearch (withSearchType t . foundFromDeck [registryCard plantedGame h1]))
+              $ plantedGame
+          revealed = withB "Revealing"
+      for_ [ViewerSpectator, ViewerSeats (Set.singleton tableA)] \v -> do
+        let redacted = redactFor v revealed
+        (v, all (`elem` registryKeys redacted) [h1, h2]) `shouldBe` (v, True)
+        (v, zoneCards (field' "searchFoundCards" (scenarioSearchOf redacted))) `shouldBe` (v, [[h2]])
+        for_ ["Searching", "Looking"] \t -> do
+          let private = redactFor v (withB t)
+          (v, t, filter (`elem` [h1, h2]) (registryKeys private)) `shouldBe` (v, t, [])
+          (v, t, zoneCards (field' "searchFoundCards" (scenarioSearchOf private))) `shouldBe` (v, t, [[]])
+
+  it "keeps a revealed deck top visible even when a private search also found it (u)" $ withTable \table -> do
+    Planted {..} <- plantHidden table
+    let Table {..} = table
+    revealed <- withTopCardRevealed table tableB
+    liftIO do
+      let card = registryCard revealed
+          original =
+            setTop "focusedCards" (toJSON [card d0, card h1])
+              . overSeat tableB (overOwnSearch (withSearchType "Searching" . foundFromDeck [card d0, card h1]))
+              $ revealed
+      for_ [ViewerSpectator, ViewerSeats (Set.singleton tableA)] \v -> do
+        let redacted = redactFor v original
+        (v, d0 `elem` registryKeys redacted) `shouldBe` (v, True)
+        (v, h1 `elem` registryKeys redacted) `shouldBe` (v, False)
+        (v, cardIdsOf (topKey "focusedCards" redacted)) `shouldBe` (v, [d0])
