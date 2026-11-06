@@ -36,6 +36,7 @@ import Api.Arkham.Export
 import Api.Arkham.Helpers
 import Api.Arkham.Types.Game (ClaimSeatPost (..))
 import Api.Arkham.Types.MultiplayerVariant
+import Api.Arkham.Viewer (RedactedGame (..), viewerForUser)
 import Api.Handler.Arkham.CustomCards (forRendering, setPayloadEtag, userCustomCards)
 import Api.Handler.Arkham.Games.Shared (broadcastEventChanged, withGameAccess)
 import Arkham.Card.CardCode
@@ -76,6 +77,15 @@ import UnliftIO.Exception (catch, throwIO, try)
 
 normalizeJsonInvestigatorId :: Text -> Text
 normalizeJsonInvestigatorId iid = if "c" `T.isPrefixOf` iid then iid else "c" <> iid
+
+{- | Seat rows are written in two formats: deck selection stores the bare code
+("01001"), claim seat and import the 'c'-prefixed one ("c01001"). Compare
+seats through this, as 'Shared' does for achievements, so a deck-selected
+seat still counts as taken. It strips at most one leading 'c', so a malformed
+code such as "cc01001" still matches no seat.
+-}
+seatCode :: Text -> Text
+seatCode t = fromMaybe t (T.stripPrefix "c" t)
 
 isGzipped :: BS.ByteString -> Bool
 isGzipped bs = BS.take 2 bs == BS.pack [0x1f, 0x8b]
@@ -434,7 +444,11 @@ getApiV1ArkhamGameReloadR gameId = do
   for_ stepIds \stepId -> do
     try @_ @SomeException (runDB $ Persist.get stepId >>= traverse_ (Persist.replace stepId))
 
-postApiV1ArkhamGamesImportR :: Handler (PublicGame ArkhamGameId)
+{- | Import an export as a new game. The response is redacted for the
+importer's seats like any other read ('viewerForUser'): the importer holds
+every seat row the import inserts, so in practice they see the whole game.
+-}
+postApiV1ArkhamGamesImportR :: Handler (RedactedGame (PublicGame ArkhamGameId))
 postApiV1ArkhamGamesImportR = do
   userId <- getRequestUserId
   mVariantOverride <- lookupGetParam "multiplayerVariant"
@@ -641,7 +655,10 @@ postApiV1ArkhamGamesImportR = do
       traverse_
         (uncurry addHeader)
         (replayImportResponseHeaders serverBuildIdentity importReceipt)
+      -- Read after the import committed, so it sees the inserted seat rows.
+      gameView <- runDB $ viewerForUser userId (entityKey importedGame)
       pure
+        $ RedactedGame gameView
         $ toPublicGame
           importedGame
           -- An import's rows come straight from the export, so hand them over
@@ -690,19 +707,15 @@ getApiV1ArkhamGameOpenSeatsR gameId = do
         players <- from $ table @ArkhamPlayer
         where_ $ players.arkhamGameId ==. val gameId
         pure players.investigatorId
-    pure $ filter (`notElem` assignedInvestigators) allInvestigators
+    let takenSeats = map seatCode assignedInvestigators
+    pure $ filter ((`notElem` takenSeats) . seatCode) allInvestigators
 
 postApiV1ArkhamGameClaimSeatR :: ArkhamGameId -> Handler ()
 postApiV1ArkhamGameClaimSeatR gameId = do
   userId <- getRequestUserId
   ClaimSeatPost {investigatorId = rawId} <- requireCheckJsonBody
+  -- Compare both ends through 'seatCode', so either stored seat format counts.
   let investigatorId = normalizeJsonInvestigatorId rawId
-      -- Seat rows are written in two formats: deck selection stores the bare
-      -- code ("01001"), claim seat and import the 'c'-prefixed one ("c01001").
-      -- Compare both ends stripped, as 'Shared' does for achievements, so a
-      -- deck-selected seat still counts as taken. Strip at most one 'c', so a
-      -- malformed code such as "cc01001" still matches no seat.
-      seatCode t = fromMaybe t (T.stripPrefix "c" t)
   mReservedEvent <- runDB do
     -- Lock the game first, so concurrent claims (and joins) for this game run
     -- one at a time and every check below sees the committed seats.

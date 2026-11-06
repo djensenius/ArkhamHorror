@@ -6,3 +6,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directories:
+      - /tools/contract-validators/openapi
+      - /tools/contract-validators/asyncapi
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2

@@ -5,7 +5,7 @@ import Arkham.Agenda.CardDefs.TheBlobThatAteEverything qualified as Agendas
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Campaign.Option (CampaignOption (PlayWithTheBlobThatAteEverythingElse))
 import Arkham.Card (Card (..), lookupCardDef)
-import Arkham.Card.CardCode (CardCode)
+import Arkham.Card.CardCode (CardCode, cardCodeExactEq)
 import Arkham.Card.EncounterCard (lookupEncounterCard)
 import Arkham.Card.Id (unsafeMakeCardId)
 import Arkham.DamageEffect (damageAssignmentAmount, nonAttack)
@@ -362,12 +362,15 @@ instance RunMessage TheBlobThatAteEverything where
             maybe (error "Unknown Replicating Aberration card code") pure $ lookupCardDef (cardCode :: CardCode)
           cardId <- unsafeMakeCardId <$> getRandom
           let card = EncounterCard $ lookupEncounterCard cardDef cardId
+          -- Exact: Eq CardCode matches the two sides of a card, so "89010b"
+          -- == "89010a", yet the nine Replicating Aberrations are distinct cards.
+          let isAberration = cardCodeExactEq cardCode
           placement <- case target :: Target of
             LocationTarget lid -> pure $ AtLocation lid
             InvestigatorTarget iid -> pure $ InThreatArea iid
             EnemyTarget eid -> do
               placement' <- field EnemyPlacement eid
-              when (cardCode == "89010a") do
+              when (isAberration "89010a") do
                 lead <- getLead
                 push $ Discard (Just lead) (toSource attrs) (EnemyTarget eid)
               pure placement'
@@ -381,8 +384,8 @@ instance RunMessage TheBlobThatAteEverything where
               pure eid
             _ -> error "Replicating Aberration target is not in play"
           exhaustEnemy (toSource attrs) eid
-          when (cardCode == "89010f") $ createTreacheryAt_ Treacheries.alienFoodChain (AttachedToEnemy eid)
-          when (cardCode == "89010h") $ case target of
+          when (isAberration "89010f") $ createTreacheryAt_ Treacheries.alienFoodChain (AttachedToEnemy eid)
+          when (isAberration "89010h") $ case target of
             EnemyTarget spottedEnemy -> do
               foodChains <- select $ treacheryIs Treacheries.alienFoodChain
               for_ foodChains \foodChain -> whenM (fieldMap TreacheryPlacement (== AttachedToEnemy spottedEnemy) foodChain) do

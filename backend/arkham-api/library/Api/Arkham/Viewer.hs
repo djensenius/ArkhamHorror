@@ -10,6 +10,7 @@ module Api.Arkham.Viewer (
   gameViewFor,
   viewerForUser,
   Redacted (..),
+  RedactedGame (..),
   redactGameField,
 ) where
 
@@ -80,6 +81,19 @@ instance ToJSON a => ToJSON (Redacted a) where
   toJSON (Redacted FullView a) = toJSON a
   toJSON (Redacted (RedactedView viewer) a) = redactGameField viewer (toJSON a)
   toEncoding (Redacted FullView a) = toEncoding a
+  toEncoding redacted = toEncoding (toJSON redacted)
+
+{- | A response that is itself a game ('Arkham.Game.PublicGame': the pending
+game, create and import responses), redacted as a whole for a 'GameView' when
+encoded. 'FullView' encodes exactly as the wrapped value does.
+-}
+data RedactedGame a = RedactedGame GameView a
+  deriving stock (Show)
+
+instance ToJSON a => ToJSON (RedactedGame a) where
+  toJSON (RedactedGame FullView a) = toJSON a
+  toJSON (RedactedGame (RedactedView viewer) a) = redactFor viewer (toJSON a)
+  toEncoding (RedactedGame FullView a) = toEncoding a
   toEncoding redacted = toEncoding (toJSON redacted)
 
 -- | Redact the value under a response object's @game@ key, if there is one.

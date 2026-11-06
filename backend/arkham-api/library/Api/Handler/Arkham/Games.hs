@@ -19,6 +19,7 @@ module Api.Handler.Arkham.Games (
   postApiV1ArkhamGamePlayabilityR,
   withGameParticipantIn,
   gameParticipantGate,
+  withSpectatableGameIn,
 ) where
 
 import Api.Arkham.Epic (lookupGameEvent)
@@ -27,7 +28,12 @@ import Api.Arkham.Redact (Viewer (ViewerSpectator))
 import Api.Arkham.Types.Game
 import Api.Arkham.Types.GameStep
 import Api.Arkham.Types.MultiplayerVariant
-import Api.Arkham.Viewer (GameView (RedactedView), Redacted (..), viewerForUser)
+import Api.Arkham.Viewer (
+  GameView (RedactedView),
+  Redacted (..),
+  RedactedGame (..),
+  viewerForUser,
+ )
 import Api.Handler.Arkham.CustomCards (userCustomCards)
 import Api.Handler.Arkham.Games.Shared
 import Api.Handler.Arkham.Games.Summary (
@@ -199,12 +205,12 @@ on the home page's watch list, not whether this read is allowed.
 
 The socket is 'spectatorStream', so a watcher cannot answer the game's
 questions. The read is always the spectator view, even for a caller who holds
-a seat: this route is not authenticated.
+a seat: this route is not authenticated. 'withSpectatableGame' checks the game
+exists first, so an unknown id answers 404 without opening a room for it.
 -}
 getApiV1ArkhamGameSpectateR :: ArkhamGameId -> Handler (Redacted GetGameJson)
-getApiV1ArkhamGameSpectateR gameId = do
-  servePongAware $ spectatorStream gameId
-  runDB do
+getApiV1ArkhamGameSpectateR gameId =
+  withSpectatableGame gameId $ runDB do
     g <- get404 gameId
     let Game {..} = g.currentData
     gameLog <- getGameLogTail gameId gameLogTailSize
@@ -217,6 +223,47 @@ getApiV1ArkhamGameSpectateR gameId = do
         g.variant
         (PublicGame gameId g.name gameLog.entries g.currentData)
         (entityKey . fst <$> mEvt)
+
+{- | Gate the spectator WebSocket upgrade and the REST read behind a check
+that the game exists.
+
+Existence only, not access: anyone holding the id may watch. The lookup is a
+single indexed column, like 'getApiV1ArkhamGameStepR'. Without it an upgrade
+for an unknown id would be accepted and would open (and subscribe) a room,
+bump the watcher count and publish it, for a game that is not there. The REST
+continuation still uses @get404@, which covers a game deleted between this
+check and that read.
+-}
+withSpectatableGame :: ArkhamGameId -> Handler a -> Handler a
+withSpectatableGame gameId =
+  withSpectatableGameIn
+    (runDB $ spectatableGameExists gameId)
+    (servePongAware $ spectatorStream gameId)
+    notFound
+
+spectatableGameExists :: ArkhamGameId -> SqlPersistT Handler Bool
+spectatableGameExists gameId = do
+  ids <- select do
+    games <- from $ table @ArkhamGame
+    where_ $ games.id ==. val gameId
+    limit 1
+    pure games.id
+  pure $ not (null ids)
+
+{- | Run the existence lookup first; only an existing game may attempt the
+spectator upgrade (a no-op unless the request is a WebSocket handshake) and
+then the REST continuation. A missing game takes @reject@ (@notFound@ in
+production) and runs neither.
+
+The effect-parameterized boundary is shared by production and tests, as with
+'withGameParticipantIn'.
+-}
+withSpectatableGameIn :: Monad m => m Bool -> m () -> m a -> m a -> m a
+withSpectatableGameIn lookupExists attemptUpgrade reject continue = do
+  found <- lookupExists
+  if found
+    then attemptUpgrade >> continue
+    else reject
 
 {- | The home page's list.
 
@@ -374,8 +421,10 @@ data SpectatableGameActivity = SpectatableGameActivity
   deriving stock (Show, Generic)
   deriving anyclass ToJSON
 
--- | New Game
-postApiV1ArkhamGamesR :: Handler (PublicGame ArkhamGameId)
+{- | New Game. The response is redacted for the creator's seats like any other
+read ('viewerForUser'); a creator holding every seat row sees it all.
+-}
+postApiV1ArkhamGamesR :: Handler (RedactedGame (PublicGame ArkhamGameId))
 postApiV1ArkhamGamesR = do
   userId <- getRequestUserId
   CreateGamePost {..} <- requireCheckJsonBody
@@ -423,7 +472,8 @@ postApiV1ArkhamGamesR = do
 
     replace gameId ag'
     insert_ $ ArkhamStep gameId (Choice mempty updatedQueue) 0 (ActionDiff [])
-    pure $ toPublicGame (Entity gameId ag') mempty
+    gameView <- viewerForUser userId gameId
+    pure $ RedactedGame gameView $ toPublicGame (Entity gameId ag') mempty
 
 putApiV1ArkhamGameR :: ArkhamGameId -> Handler ()
 putApiV1ArkhamGameR gameId = do
