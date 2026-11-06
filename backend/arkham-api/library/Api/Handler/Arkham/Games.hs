@@ -23,9 +23,11 @@ module Api.Handler.Arkham.Games (
 
 import Api.Arkham.Epic (lookupGameEvent)
 import Api.Arkham.Helpers
+import Api.Arkham.Redact (Viewer (ViewerSpectator))
 import Api.Arkham.Types.Game
 import Api.Arkham.Types.GameStep
 import Api.Arkham.Types.MultiplayerVariant
+import Api.Arkham.Viewer (GameView (RedactedView), Redacted (..), viewerForUser)
 import Api.Handler.Arkham.CustomCards (userCustomCards)
 import Api.Handler.Arkham.Games.Shared
 import Api.Handler.Arkham.Games.Summary (
@@ -55,6 +57,7 @@ import Arkham.Source
 import Arkham.Window (mkWhen)
 import Arkham.Window qualified as Window
 import Conduit
+import Control.Monad.Logger (logWarnN)
 import Control.Monad.Random (mkStdGen)
 import Control.Monad.Random.Class (getRandom)
 import Data.Coerce
@@ -66,6 +69,7 @@ import Entity.Answer
 import Entity.Arkham.GameRaw
 import Entity.Arkham.Step
 import Import hiding (Value, delete, exists, on, (==.))
+import UnliftIO.Exception (catchAny)
 
 {- | Step counter only: one indexed Int column, no game JSON touched, no lock.
 
@@ -149,7 +153,10 @@ gameParticipantGate (Just (Entity playerId _)) attemptUpgrade _reject onAuthoriz
   attemptUpgrade
   onAuthorized playerId
 
-getApiV1ArkhamGameR :: ArkhamGameId -> Handler GetGameJson
+{- | The game for one of its players, redacted to what that caller's seats
+may see ('viewerForUser'): a player holding every seat sees it all.
+-}
+getApiV1ArkhamGameR :: ArkhamGameId -> Handler (Redacted GetGameJson)
 getApiV1ArkhamGameR gameId = do
   userId <- getRequestUserId
   withGameParticipant userId gameId \playerId -> runDB do
@@ -162,7 +169,9 @@ getApiV1ArkhamGameR gameId = do
           WithFriends -> coerce playerId
           Solo -> gameActivePlayerId
     mEvt <- lookupGameEvent gameId
+    gameView <- viewerForUser userId gameId
     pure
+      $ Redacted gameView
       $ GetGameJson
         (Just player)
         g.variant
@@ -189,9 +198,10 @@ shared still works. @allowSpectators@ governs whether the game is *advertised*
 on the home page's watch list, not whether this read is allowed.
 
 The socket is 'spectatorStream', so a watcher cannot answer the game's
-questions.
+questions. The read is always the spectator view, even for a caller who holds
+a seat: this route is not authenticated.
 -}
-getApiV1ArkhamGameSpectateR :: ArkhamGameId -> Handler GetGameJson
+getApiV1ArkhamGameSpectateR :: ArkhamGameId -> Handler (Redacted GetGameJson)
 getApiV1ArkhamGameSpectateR gameId = do
   servePongAware $ spectatorStream gameId
   runDB do
@@ -201,6 +211,7 @@ getApiV1ArkhamGameSpectateR gameId = do
     let player = gameActivePlayerId
     mEvt <- lookupGameEvent gameId
     pure
+      $ Redacted (RedactedView ViewerSpectator)
       $ GetGameJson
         (Just player)
         g.variant
@@ -452,18 +463,35 @@ that delete actually removed the row, after the transaction has committed.
 Closing it unconditionally let any signed-in account that knew a game id
 evict everyone playing it. A caller with no seat and a missing game both get
 the same 200 no-op, so the response does not reveal whether the game exists.
+
+A seated player may delete an Epic group game. Its group row cascades away
+with the game, so the event is looked up in the same transaction before the
+delete, and once a delete has removed the row the event's watchers and the
+remaining group rooms get 'EventChanged' to refetch the roster. That goes out
+before the room is closed, because closing it can throw on a Redis
+unsubscribe. The broadcast reads the remaining groups in its own query after
+the delete has committed, so a synchronous failure there is logged and
+swallowed: the room is still closed and the caller still gets the 200 for the
+delete that happened. Asynchronous exceptions still propagate.
 -}
 deleteApiV1ArkhamGameR :: ArkhamGameId -> Handler ()
 deleteApiV1ArkhamGameR gameId = do
   userId <- getRequestUserId
-  deleted <- runDB $ deleteCount do
-    games <- from $ table @ArkhamGame
-    where_ $ games.id ==. val gameId
-    where_ $ exists do
-      players <- from $ table @ArkhamPlayer
-      where_ $ players.arkhamGameId ==. games.id
-      where_ $ players.userId ==. val userId
-  when (deleted > 0) $ deleteRoom gameId
+  (mEvt, deleted) <- runDB do
+    mEvt <- lookupGameEvent gameId
+    deleted <- deleteCount do
+      games <- from $ table @ArkhamGame
+      where_ $ games.id ==. val gameId
+      where_ $ exists do
+        players <- from $ table @ArkhamPlayer
+        where_ $ players.arkhamGameId ==. games.id
+        where_ $ players.userId ==. val userId
+    pure (mEvt, deleted)
+  when (deleted > 0) do
+    for_ mEvt \(Entity eventId _, _) ->
+      broadcastEventChanged eventId `catchAny` \e ->
+        logWarnN $ "EventChanged after deleting game " <> tshow gameId <> " failed: " <> tshow e
+    deleteRoom gameId
 
 data PlayabilityRequest = PlayabilityRequest
   { investigatorId :: InvestigatorId

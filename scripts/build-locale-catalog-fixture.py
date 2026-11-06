@@ -17,11 +17,15 @@ by a committed, narrative-free authority file under
     locale-catalog-chunk-<sha256>.json   the rendered chunks, content-addressed
     locale-catalog-manifest.json         the v1 manifest, derived from the above
 
-`generatorSha256` and `schemasSha256` are the digests of the *real* inputs --
-every repository-local module this generator executes (its own bytes plus the
-`scripts/` import closure, `strict_json` included) and the published v1 schemas
--- rather than of a committed description of them, so editing any of them
-really does move the catalog revision, as it does in production.
+`schemasSha256` is the digest of the *real* published v1 schemas, so editing
+them really does move the catalog revision. `generatorSha256` is derived from
+the generator's identity alone -- its schema-pinned name and
+`GENERATOR_VERSION` -- so editing tooling (this script, its `scripts/` import
+closure, the launchers, mise.toml, the workflows, the Dockerfile, ...) never
+reaches governed bytes and never forces a contract revision bump. Those tooling
+bytes are pinned instead by the non-governed, committed
+`scripts/locale_catalog_tooling_lock.json`, which `--check` requires to match
+exactly (see `tooling_lock_bytes()`).
 
 Every digest, count, path, `outputSha256` and provenance value in that manifest
 is *computed here* from those bytes -- nothing is asserted by hand. `--check`
@@ -29,10 +33,15 @@ recomputes the whole set and requires the committed bytes to match exactly, so
 a single edited byte anywhere in the chain fails, and `--self-test` proves that
 by mutating each claimed field in turn.
 
-The chain deliberately contains no production input, so publishing new catalog
-content never touches it. It does depend on `contracts/manifest.json`'s
-`schemaRevision` (the real generator records the same binding), so a contract
-revision bump is regenerated with `mise run contracts:catalog-fixture`.
+The chain deliberately reads no production input, so publishing new catalog
+content never touches it. The one production-shaped part, the `cardNames` pack,
+is a hand-pinned copy of the Night of the Zealot card names (en and de, plus
+the card-only `pl` locale) that
+`frontend/tests/localeCatalogCardNames.test.mjs` proves equal to what the real
+generator resolves from `frontend/public/cards_<locale>.json`. The chain does
+depend on `contracts/manifest.json`'s `schemaRevision` (the real generator
+records the same binding), so a contract revision bump is regenerated with
+`mise run contracts:catalog-fixture`.
 """
 
 import argparse
@@ -59,15 +68,18 @@ CAPABILITIES_FIXTURES = (
 )
 CATALOG_SCHEMA_DIR = ROOT / "frontend" / "schemas" / "locale-catalog" / "v1"
 
-# The generator's own sources and the schema set it renders against, hashed as
-# themselves rather than described by a committed stand-in: `generatorSha256`
-# is the digest of every repository-local module this script executes (see
-# `generator_sources()`), `schemasSha256` the digest of the published v1
-# schemas. Editing either changes the catalog revision, which is exactly what
-# the production generator's provenance means -- and is why a change to this
-# script is followed by `mise run contracts:catalog-fixture-write`.
+# The generator's own sources and execution environment (see
+# `generator_sources()`) are tooling: their per-file digests live in the
+# non-governed TOOLING_LOCK, checked by `--check`, so a tooling edit moves that
+# reviewed lock rather than a governed contract hash. `schemasSha256` stays the
+# digest of the published v1 schemas, so a schema edit still changes the
+# catalog revision. `generatorSha256` is derived from the generator name and
+# GENERATOR_VERSION only (see `derive_generator_sha256()`); bump
+# GENERATOR_VERSION when a generator change alters what the fixture means.
 GENERATOR_ENTRY = "scripts/build-locale-catalog-fixture.py"
 RUNTIME_PROFILE = "scripts/locale_catalog_python_runtime.json"
+TOOLING_LOCK = "scripts/locale_catalog_tooling_lock.json"
+TOOLING_LOCK_FORMAT_VERSION = 1
 GENERATOR_EXECUTION_SOURCES = (
     "mise.toml",
     "pyproject.toml",
@@ -245,9 +257,10 @@ def runtime_identity() -> dict[str, object]:
 # ---------------------------------------------------------------------------
 # The synthetic catalog's inputs. Identifier-shaped values only: this fixture
 # carries no prose, and nothing here is derived from frontend/src/locales/**.
+# The card names below are the one exception: card data, not prose.
 # ---------------------------------------------------------------------------
 
-LOCALES = ("de", "en", "pt-BR")
+LOCALES = ("de", "en", "pl", "pt-BR")
 DEFAULT_LOCALE = "en"
 
 SOURCE_MESSAGES: dict[str, dict[str, dict[str, str]]] = {
@@ -268,6 +281,185 @@ SOURCE_MESSAGES: dict[str, dict[str, dict[str, str]]] = {
     "de": {"core": {"continue": "core.continue.de"}},
     "pt-BR": {"core": {"continue": "core.continue.pt-BR"}},
 }
+
+# The `cardNames` pack: what `cardNames.<code>` answers in en and de for the
+# Night of the Zealot investigators (01001-01005), the basic-weakness enemies a
+# DrewPlayerEnemy label names (01101-01103), and every location, enemy, story
+# asset and treachery in the core-box encounter sets (discoverClueAt, enemy
+# logs, add-Lita-to-deck, drew/heal labels). 01121 shows a bare code answered
+# by its `a` record, 01121b a real `b` record, and 01001b the lent `b` alias.
+# pt-BR has no card pack, so it falls back to en; the card-only pl locale
+# below has nothing else. These are card data, never
+# backend-emitted keys, so the backend registry leaves them out.
+#
+# The table is pinned by hand so card-data refreshes do not move the fixture.
+# frontend/tests/localeCatalogCardNames.test.mjs requires it to be exactly this
+# code set, with the names the real generator resolves from
+# frontend/public/cards_en.json and cards_de.json. If an upstream sync renames
+# a pinned card there, that test fails: update the names here, rewrite the
+# fixtures (`mise run contracts:catalog-fixture-write`, then
+# `mise run contracts:manifest-hashes`) and bump `schemaRevision`.
+CARD_NAMES_PACK = "cardNames"
+CARD_NAMES: dict[str, tuple[str, str]] = {
+    "01001": ("Roland Banks", "Roland Banks"),
+    "01001b": ("Roland Banks", "Roland Banks"),
+    "01002": ("Daisy Walker", "Daisy Walker"),
+    "01003": ("\"Skids\" O'Toole", "\u201eSkids\u201c O\u2019Toole"),
+    "01004": ("Agnes Baker", "Agnes Baker"),
+    "01005": ("Wendy Adams", "Wendy Adams"),
+    "01101": ("Mob Enforcer", "Mobvollstrecker"),
+    "01102": ("Silver Twilight Acolyte", "Akolyth der Silberloge der D\u00e4mmerung"),
+    "01103": ("Stubborn Detective", "Sturer Detective"),
+    "01111": ("Study", "Arbeitszimmer"),
+    "01112": ("Hallway", "Flur"),
+    "01113": ("Attic", "Dachboden"),
+    "01114": ("Cellar", "Keller"),
+    "01115": ("Parlor", "Wohnzimmer"),
+    "01116": ("Ghoul Priest", "Ghulpriester"),
+    "01117": ("Lita Chantler", "Lita Chantler"),
+    "01118": ("Flesh-Eater", "Fleischfresser"),
+    "01119": ("Icy Ghoul", "Eisghul"),
+    "01121": ("Predator or Prey?", "J\u00e4ger oder Beute?"),
+    "01121b": ("The Masked Hunter", "Der Maskierte J\u00e4ger"),
+    "01124": ("Your House", "Dein Haus"),
+    "01125": ("Rivertown", "Hafenviertel"),
+    "01126": ("Southside", "S\u00fcdstadt"),
+    "01127": ("Southside", "S\u00fcdstadt"),
+    "01128": ("St. Mary's Hospital", "St. Mary's Hospital"),
+    "01129": ("Miskatonic University", "Miskatonic Universit\u00e4t"),
+    "01130": ("Downtown", "Innenstadt"),
+    "01131": ("Downtown", "Innenstadt"),
+    "01132": ("Easttown", "Oststadt"),
+    "01133": ("Graveyard", "Friedhof"),
+    "01134": ("Northside", "Nordstadt"),
+    "01135": ("Hunting Shadow", "Hetzender Schatten"),
+    "01136": ("False Lead", "Falsche F\u00e4hrte"),
+    "01137": ("\"Wolf-Man\" Drew", "Drew, der \u201eWolfsmensch\u201d"),
+    "01138": ("Herman Collins", "Herman Collins"),
+    "01139": ("Peter Warren", "Peter Warren"),
+    "01140": ("Victoria Devereux", "Victoria Devereux"),
+    "01141": ("Ruth Turner", "Ruth Turner"),
+    "01149": ("Main Path", "Hauptweg"),
+    "01150": ("Arkham Woods", "W\u00e4lder von Arkham"),
+    "01151": ("Arkham Woods", "W\u00e4lder von Arkham"),
+    "01152": ("Arkham Woods", "W\u00e4lder von Arkham"),
+    "01153": ("Arkham Woods", "W\u00e4lder von Arkham"),
+    "01154": ("Arkham Woods", "W\u00e4lder von Arkham"),
+    "01155": ("Arkham Woods", "W\u00e4lder von Arkham"),
+    "01156": ("Ritual Site", "Ritualort"),
+    "01157": ("Um\u00f4rdhoth", "Um\u00f4rdhoth"),
+    "01158": ("Um\u00f4rdhoth's Wrath", "Um\u00f4rdhoths Zorn"),
+    "01159": ("Swarm of Rats", "Rattenschwarm"),
+    "01160": ("Ghoul Minion", "Ghuldiener"),
+    "01161": ("Ravenous Ghoul", "Gefr\u00e4\u00dfiger Ghul"),
+    "01162": ("Grasping Hands", "Packende H\u00e4nde"),
+    "01163": ("Rotting Remains", "Verrottende \u00dcberreste"),
+    "01164": ("Frozen in Fear", "Starr vor Angst"),
+    "01165": ("Dissonant Voices", "Missklingende Stimmen"),
+    "01166": ("Ancient Evils", "B\u00f6ses aus uralter Zeit"),
+    "01167": ("Crypt Chill", "Grabesk\u00e4lte"),
+    "01168": ("Obscuring Fog", "Verh\u00fcllender Nebel"),
+    "01169": ("Acolyte", "Akolyth"),
+    "01170": ("Wizard of the Order", "Hexenmeister des Ordens"),
+    "01171": ("Mysterious Chanting", "Geheimnisvolle Ges\u00e4nge"),
+    "01172": ("Hunting Nightgaunt", "Jagender Dunkeld\u00fcrrer"),
+    "01173": ("On Wings of Darkness", "Auf den Schwingen der Dunkelheit"),
+    "01174": ("Locked Door", "Verschlossene T\u00fcr"),
+    "01175": ("Screeching Byakhee", "Kreischendes Byakhee"),
+    "01176": ("The Yellow Sign", "Das Gelbe Zeichen"),
+    "01177": ("Yithian Observer", "Yith-Beobachter"),
+    "01178": ("Offer of Power", "Verlockende Macht"),
+    "01179": ("Relentless Dark Young", "Unbarmherziges Dunkles Junges"),
+    "01180": ("Goat Spawn", "Ausgeburt der Ziege"),
+    "01181": ("Young Deep One", "Junges Tiefes Wesen"),
+    "01182": ("Dreams of R'lyeh", "Tr\u00e4ume von R'lyeh"),
+}
+SOURCE_MESSAGES["en"][CARD_NAMES_PACK] = {f"{CARD_NAMES_PACK}.{code}": en for code, (en, _) in CARD_NAMES.items()}
+SOURCE_MESSAGES["de"][CARD_NAMES_PACK] = {f"{CARD_NAMES_PACK}.{code}": de for code, (_, de) in CARD_NAMES.items()}
+
+# `pl` is a card-only locale, as the real catalog publishes pl, pt, ru and uk:
+# its only keys are the same Night of the Zealot card names, resolved from
+# frontend/public/cards_pl.json, and every other key falls back to en. Pinned
+# and proven exactly like the en and de names above.
+CARD_ONLY_CARD_NAMES: dict[str, dict[str, str]] = {
+    "pl": {
+        "01001": "Roland Banks",
+        "01001b": "Roland Banks",
+        "01002": "Daisy Walker",
+        "01003": "\"\u015alizg\" O'Toole",
+        "01004": "Agnes Baker",
+        "01005": "Wendy Adams",
+        "01101": "Mafijny egzekutor d\u0142ug\u00f3w",
+        "01102": "Akolita Srebrnego \u015awitu",
+        "01103": "Uparty detektyw",
+        "01111": "Gabinet",
+        "01112": "Hol",
+        "01113": "Strych",
+        "01114": "Piwnica",
+        "01115": "Salon",
+        "01116": "Kap\u0142an ghouli",
+        "01117": "Lita Chantler",
+        "01118": "Po\u017ceracz cia\u0142",
+        "01119": "Lodowy Ghoul",
+        "01121": "My\u015bliwy czy zwierzyna?",
+        "01121b": "Zamaskowany \u0142owca",
+        "01124": "Tw\u00f3j dom",
+        "01125": "Rivertown",
+        "01126": "Southside",
+        "01127": "Southside",
+        "01128": "Szpital \u015bw Marii",
+        "01129": "Uniwersytet Miskatonic",
+        "01130": "Downtown",
+        "01131": "Downtown",
+        "01132": "Easttown",
+        "01133": "Cmentarz",
+        "01134": "Northside",
+        "01135": "Prze\u015bladuj\u0105cy cie\u0144",
+        "01136": "Fa\u0142szywy trop",
+        "01137": "Drew \"Cz\u0142owiek-wilk\"",
+        "01138": "Herman Collins",
+        "01139": "Peter Warren",
+        "01140": "Victoria Devereux",
+        "01141": "Ruth Turner",
+        "01149": "G\u0142\u00f3wna \u015bcie\u017cka",
+        "01150": "Lasy Arkham",
+        "01151": "Lasy Arkham",
+        "01152": "Lasy Arkham",
+        "01153": "Lasy Arkham",
+        "01154": "Lasy Arkham",
+        "01155": "Lasy Arkham",
+        "01156": "Miejsce rytua\u0142u",
+        "01157": "Um\u00f4rdhoth",
+        "01158": "Gniew Um\u00f4rdhotha",
+        "01159": "R\u00f3j szczur\u00f3w",
+        "01160": "Ghoul s\u0142ugus",
+        "01161": "Wyg\u0142odnia\u0142y ghoul",
+        "01162": "Chwytaj\u0105ce d\u0142onie",
+        "01163": "Gnij\u0105ce szcz\u0105tki",
+        "01164": "Sparali\u017cowany ze strachu",
+        "01165": "Kakofonia g\u0142os\u00f3w",
+        "01166": "Pradawne z\u0142o",
+        "01167": "Grobowy ch\u0142\u00f3d",
+        "01168": "G\u0119sta mg\u0142a",
+        "01169": "Akolita",
+        "01170": "Czarownik bractwa",
+        "01171": "Tajemnicze pie\u015bni",
+        "01172": "Poluj\u0105ce Skrzydlate Dzieci\u0119 Nocy",
+        "01173": "Na skrzyd\u0142ach ciemno\u015bci",
+        "01174": "Zamkni\u0119te drzwi",
+        "01175": "Wrzeszcz\u0105cy Byakhee",
+        "01176": "\u017b\u00f3\u0142ty Znak",
+        "01177": "Yithian obserwator",
+        "01178": "Oferta pot\u0119gi",
+        "01179": "Nieust\u0119pliwe Mroczne M\u0142ode",
+        "01180": "Kozi pomiot",
+        "01181": "M\u0142oda Istota z G\u0142\u0119bin",
+        "01182": "Sny o R'lyeh",
+    },
+}
+for _locale, _names in CARD_ONLY_CARD_NAMES.items():
+    require(set(_names) == set(CARD_NAMES), f"the {_locale} card-only fixture names a different code set")
+    SOURCE_MESSAGES[_locale] = {CARD_NAMES_PACK: {f"{CARD_NAMES_PACK}.{code}": name for code, name in _names.items()}}
 
 # A key the registry says the backend emits that no locale translates, so the
 # catalog publishes a real, non-empty `backend.untranslatedKeys` gap.
@@ -298,6 +490,8 @@ UNSUPPORTED_KEY = "shuffleRemainder"
 LANGUAGE_RESOLUTION = (
     ("de", "de"),
     ("en", "en"),
+    ("pl", "pl"),
+    ("pl-PL", "pl"),
     ("pt", "pt-BR"),
     ("pt-BR", "pt-BR"),
 )
@@ -315,7 +509,12 @@ def build_sources() -> dict[str, bytes]:
 
 def build_backend_registry() -> bytes:
     emitted = sorted(
-        {key for packs in SOURCE_MESSAGES["en"].values() for key in packs}
+        {
+            key
+            for pack, messages in SOURCE_MESSAGES["en"].items()
+            if pack != CARD_NAMES_PACK
+            for key in messages
+        }
         | {UNTRANSLATED_KEY, UNSUPPORTED_KEY}
     )
     registry = {
@@ -396,6 +595,87 @@ def read_repository_files(relative_paths: tuple[str, ...]) -> list[tuple[str, by
         require(path.is_file(), f"missing provenance input {relative_path}")
         entries.append((relative_path, path.read_bytes()))
     return entries
+
+
+def derive_generator_sha256(generator_name: str, generator_version: str) -> str:
+    """The fixture's `generatorSha256`: a reproducible digest of the generator's
+    identity, spelled as `derive_provenance_sha256` spells it. No tooling file
+    contents reach it, so a tooling edit cannot move governed bytes; the
+    tooling is pinned by TOOLING_LOCK instead.
+    """
+    return sha256_hex(f"{generator_name}@{generator_version}".encode("utf-8"))
+
+
+def tooling_lock_bytes(entries: list[tuple[str, bytes]]) -> bytes:
+    """The exact committed bytes TOOLING_LOCK must hold for these tooling
+    files: a sorted path -> sha256 map plus a format version, in this
+    script's one canonical JSON spelling with a trailing newline.
+    """
+    paths = [path for path, _ in entries]
+    require(len(paths) == len(set(paths)), f"{TOOLING_LOCK} inputs name a path twice")
+    return canonical_bytes(
+        {
+            "formatVersion": TOOLING_LOCK_FORMAT_VERSION,
+            "files": {path: sha256_hex(data) for path, data in sorted(entries)},
+        }
+    )
+
+
+def tooling_lock_failure(expected: bytes, found: bytes | None) -> str | None:
+    """Compare the committed lock against the tooling's actual digests,
+    returning a failure message that names TOOLING_LOCK (and prints the
+    expected bytes, for a reviewed hand update) rather than raising, so the
+    self-tests can drive this exact comparison over mutated locks.
+    """
+    if found == expected:
+        return None
+    detail = "the file is missing or not a regular file"
+    if found is not None:
+        try:
+            committed = strict_json.strict_json_loads(found, source=TOOLING_LOCK)
+        except strict_json.StrictJSONError as error:
+            committed = None
+            detail = f"it is not strict JSON ({error})"
+        if committed is not None:
+            wanted = json.loads(expected)
+            if not (
+                isinstance(committed, dict)
+                and set(committed) == {"formatVersion", "files"}
+                and committed["formatVersion"] == wanted["formatVersion"]
+                and isinstance(committed["files"], dict)
+            ):
+                detail = f"it is not a format-version {wanted['formatVersion']} tooling lock"
+            else:
+                actual, recorded = wanted["files"], committed["files"]
+                changed = sorted(path for path in set(actual) & set(recorded) if actual[path] != recorded[path])
+                missing = sorted(set(actual) - set(recorded))
+                unexpected = sorted(set(recorded) - set(actual))
+                if changed or missing or unexpected:
+                    detail = (
+                        f"changed {changed}, missing {missing}, unexpected {unexpected}"
+                    )
+                else:
+                    detail = "its digests match but its bytes are not the canonical spelling"
+    return (
+        f"{TOOLING_LOCK} does not match the locale-catalog tooling digests: {detail}. "
+        "This lock is not a governed contract artifact, so no schemaRevision bump is needed; "
+        f"review the tooling change, then replace {TOOLING_LOCK} with exactly:\n"
+        + expected.decode("utf-8")
+    )
+
+
+def read_tooling_lock() -> bytes | None:
+    path = ROOT / TOOLING_LOCK
+    if path.is_symlink() or not path.is_file():
+        return None
+    return path.read_bytes()
+
+
+def check_tooling_lock() -> None:
+    failure = tooling_lock_failure(
+        tooling_lock_bytes(read_repository_files(generator_sources())), read_tooling_lock()
+    )
+    require(failure is None, failure or "")
 
 
 def catalog_constants() -> dict[str, str]:
@@ -583,7 +863,7 @@ def build_all() -> dict[str, bytes]:
     source_entries = [(path, data) for path, data in files.items() if path.startswith(f"{FIXTURE_PREFIX}source-")]
     output_sha256 = fileset_digest(list(chunk_files.items()))
     locale_sources_sha256 = fileset_digest(source_entries)
-    generator_sha256 = fileset_digest(read_repository_files(generator_sources()))
+    generator_sha256 = derive_generator_sha256(constants["generatorName"], GENERATOR_VERSION)
     schemas_sha256 = fileset_digest(read_repository_files(SCHEMA_SOURCES))
     artifact_sha256 = sha256_hex(files[f"{FIXTURE_PREFIX}backend-registry.json"])
 
@@ -1013,10 +1293,13 @@ def run_generator_boundary_self_tests() -> None:
 
 
 def run_provenance_input_self_tests(manifest: dict) -> None:
-    """`generatorSha256` and `schemasSha256` are digests of real repository
-    bytes, so prove they move: appending one byte to this script or to either
-    published v1 schema, renaming an input, or changing only the generator
-    version must each produce a different revision.
+    """`schemasSha256` is a digest of real repository bytes and
+    `generatorSha256` a digest of the generator's identity, so prove each
+    moves the revision: appending one byte to either published v1 schema,
+    renaming or dropping one, changing the generator name or version, a locale
+    source or the contract revision must each produce a different revision.
+    The generator's tooling bytes are the lock's job, proven separately by
+    `run_tooling_lock_self_tests`.
     """
     sources = generator_sources()
     generator_inputs = read_repository_files(sources)
@@ -1026,18 +1309,19 @@ def run_provenance_input_self_tests(manifest: dict) -> None:
     runtime = runtime_identity()
 
     require(
-        provenance["generatorSha256"] == fileset_digest(generator_inputs),
-        "Self-test failure: generatorSha256 is not the digest of this generator's own sources",
+        provenance["generatorSha256"]
+        == derive_generator_sha256(constants["generatorName"], provenance["generator"]["version"]),
+        "Self-test failure: generatorSha256 is not derived from the generator name and version",
     )
     require(
         GENERATOR_ENTRY in sources and "scripts/strict_json.py" in sources,
-        "Self-test failure: the generator source closure must contain this module and every local "
-        f"helper it executes; got {sources}",
+        "Self-test failure: the tooling lock's source closure must contain this module and every "
+        f"local helper it executes; got {sources}",
     )
     for source in sources:
         require(
             (ROOT / source).is_file(),
-            f"Self-test failure: the generator source closure names a missing file {source}",
+            f"Self-test failure: the tooling lock's source closure names a missing file {source}",
         )
     require(
         provenance["schemasSha256"] == fileset_digest(schema_inputs),
@@ -1045,7 +1329,7 @@ def run_provenance_input_self_tests(manifest: dict) -> None:
     )
     require(
         RUNTIME_PROFILE in sources and runtime["python"]["version"] == "3.14.7",
-        "Self-test failure: generator provenance omitted the validated runtime identity",
+        "Self-test failure: the tooling lock omitted the validated runtime identity",
     )
 
     baseline = derive_provenance_sha256(
@@ -1081,42 +1365,34 @@ def run_provenance_input_self_tests(manifest: dict) -> None:
         arguments.update(overrides)
         return derive_provenance_sha256(**arguments)
 
-    edited_generator = fileset_digest([(path, data + b"\n") for path, data in generator_inputs])
-    edited_helper = fileset_digest(
-        [
-            (path, data + b"\n" if path != GENERATOR_ENTRY else data)
-            for path, data in generator_inputs
-        ]
-    )
-    added_local_import = fileset_digest(
-        generator_inputs + [("scripts/new_helper.py", b"# a new local helper\n")]
-    )
-    dropped_helper = fileset_digest(
-        [(path, data) for path, data in generator_inputs if path == GENERATOR_ENTRY]
-    )
-    renamed_helper = fileset_digest(
-        [
-            (path if path == GENERATOR_ENTRY else path + ".moved", data)
-            for path, data in generator_inputs
-        ]
-    )
     edited_schemas = fileset_digest([(path, data + b"\n") for path, data in schema_inputs])
     renamed_schemas = fileset_digest(
         [(path + ".moved", data) for path, data in schema_inputs]
     )
     partial_schemas = fileset_digest(schema_inputs[:1])
+    bumped_generator = derive_generator_sha256(constants["generatorName"], "9.9.9")
+    renamed_generator = derive_generator_sha256("something-else", provenance["generator"]["version"])
+    edited_sources = fileset_digest(
+        [
+            (name, data + b" ")
+            for name, data in build_sources().items()
+        ]
+    )
 
     for label, digest in (
-        ("an edited generator source", perturbed(generator_sha256=edited_generator)),
-        ("an edited generator helper", perturbed(generator_sha256=edited_helper)),
-        ("a newly imported local helper", perturbed(generator_sha256=added_local_import)),
-        ("a dropped generator helper", perturbed(generator_sha256=dropped_helper)),
-        ("a renamed generator helper", perturbed(generator_sha256=renamed_helper)),
         ("an edited v1 schema", perturbed(schemas_sha256=edited_schemas)),
         ("a renamed v1 schema", perturbed(schemas_sha256=renamed_schemas)),
         ("a dropped v1 schema", perturbed(schemas_sha256=partial_schemas)),
-        ("a different generator version", perturbed(generator_version="9.9.9")),
-        ("a different generator name", perturbed(generator_name="something-else")),
+        ("an edited locale source", perturbed(locale_sources_sha256=edited_sources)),
+        (
+            "a different generator version",
+            perturbed(generator_version="9.9.9", generator_sha256=bumped_generator),
+        ),
+        (
+            "a different generator name",
+            perturbed(generator_name="something-else", generator_sha256=renamed_generator),
+        ),
+        ("a different generator digest", perturbed(generator_sha256=bumped_generator)),
         ("a different contract revision", perturbed(contract_revision="0.0.1")),
     ):
         require(
@@ -1125,21 +1401,111 @@ def run_provenance_input_self_tests(manifest: dict) -> None:
             "actually bound into the catalog revision",
         )
 
-    for label, digest in (
-        ("an edited generator source", edited_generator),
-        ("an edited generator helper", edited_helper),
-        ("a newly imported local helper", added_local_import),
-        ("a dropped generator helper", dropped_helper),
-        ("a renamed generator helper", renamed_helper),
-    ):
-        require(
-            digest != provenance["generatorSha256"],
-            f"Self-test failure: {label} produced the same generator fileset digest",
-        )
+    require(
+        bumped_generator != provenance["generatorSha256"]
+        and renamed_generator != provenance["generatorSha256"],
+        "Self-test failure: a different generator name or version produced the same generatorSha256",
+    )
     require(
         edited_schemas != provenance["schemasSha256"]
         and renamed_schemas != provenance["schemasSha256"],
         "Self-test failure: a mutated schema input produced the same fileset digest",
+    )
+    require(
+        edited_sources != provenance["localeSourcesSha256"],
+        "Self-test failure: an edited locale source produced the same fileset digest",
+    )
+
+    run_tooling_lock_self_tests(generator_inputs)
+
+
+def run_tooling_lock_self_tests(generator_inputs: list[tuple[str, bytes]]) -> None:
+    """The tooling is pinned by TOOLING_LOCK, not by governed bytes. Prove both
+    halves: every way of perturbing a tooling input (an edited workflow,
+    launcher, generator source or helper, an added, dropped or renamed file)
+    fails the lock check with a message that names the lock, while the governed
+    fixture derivation -- which reads no tooling bytes -- is byte-identical.
+    """
+    expected = tooling_lock_bytes(generator_inputs)
+    committed = read_tooling_lock()
+    require(
+        tooling_lock_failure(expected, committed) is None,
+        "self-test precondition: the committed tooling lock must match before mutations can "
+        "prove anything",
+    )
+    paths = [path for path, _ in generator_inputs]
+    workflow = ".github/workflows/contracts.yml"
+    require(
+        workflow in paths and GENERATOR_ENTRY in paths and RUNTIME_PROFILE in paths,
+        "Self-test failure: the tooling lock does not cover the workflows, this generator and the "
+        "runtime profile",
+    )
+
+    def edited(target: str) -> list[tuple[str, bytes]]:
+        return [(path, data + b"\n" if path == target else data) for path, data in generator_inputs]
+
+    perturbations: list[tuple[str, list[tuple[str, bytes]]]] = [
+        (f"an edited {path}", edited(path))
+        for path in (
+            workflow,
+            "mise.toml",
+            "Dockerfile",
+            "scripts/run-locale-catalog-python.sh",
+            GENERATOR_ENTRY,
+            "scripts/strict_json.py",
+        )
+    ]
+    perturbations += [
+        ("an added tooling file", generator_inputs + [("scripts/new_helper.py", b"VALUE = 1\n")]),
+        ("a dropped tooling file", [entry for entry in generator_inputs if entry[0] != workflow]),
+        (
+            "a renamed tooling file",
+            [(path + ".moved" if path == workflow else path, data) for path, data in generator_inputs],
+        ),
+    ]
+    for label, inputs in perturbations:
+        failure = tooling_lock_failure(tooling_lock_bytes(inputs), committed)
+        require(
+            failure is not None and TOOLING_LOCK in failure,
+            f"Self-test failure: {label} was not caught by the tooling lock check, or the "
+            "failure did not name the lock",
+        )
+
+    lock = json.loads(expected)
+    first = sorted(lock["files"])[0]
+    lock_mutations: list[tuple[str, bytes | None]] = [
+        ("a missing lock", None),
+        ("an appended byte", expected + b" "),
+        ("a non-canonical spelling", json.dumps(lock, sort_keys=True).encode("utf-8") + b"\n"),
+        ("a duplicate key", expected.replace(b'"formatVersion"', b'"formatVersion": 1, "formatVersion"', 1)),
+        ("a different format version", canonical_bytes({**lock, "formatVersion": 2})),
+        ("an extra field", canonical_bytes({**lock, "generatorSha256": "0" * 64})),
+        ("a mutated digest", canonical_bytes({**lock, "files": {**lock["files"], first: "0" * 64}})),
+        (
+            "a dropped entry",
+            canonical_bytes({**lock, "files": {k: v for k, v in lock["files"].items() if k != first}}),
+        ),
+        ("an extra entry", canonical_bytes({**lock, "files": {**lock["files"], "zz/extra": "0" * 64}})),
+    ]
+    for label, found in lock_mutations:
+        failure = tooling_lock_failure(expected, found)
+        require(
+            failure is not None and TOOLING_LOCK in failure,
+            f"Self-test failure: {label} in {TOOLING_LOCK} survived the tooling lock check",
+        )
+
+    # The governed half: tooling bytes never reach the derivation, so the
+    # generator digest is a function of name and version alone. The
+    # end-to-end proof -- an edited workflow in a probe tree fails this check
+    # naming the lock while the rewritten governed fixtures stay byte-identical
+    # -- is `test_tooling_lock_end_to_end` in
+    # scripts/test_locale_catalog_python_boundary.py.
+    constants = catalog_constants()
+    require(
+        derive_generator_sha256(constants["generatorName"], GENERATOR_VERSION)
+        == json.loads(build_all()[f"{FIXTURE_PREFIX}manifest.json"])["provenance"]["generatorSha256"],
+        "Self-test failure: the fixture's generatorSha256 is not derived from the generator "
+        "identity alone",
     )
 
 
@@ -1164,6 +1530,7 @@ def main() -> None:
 
     if arguments.check:
         check(files)
+        check_tooling_lock()
         run_self_tests(files)
         print(
             f"locale-catalog fixture: {len(files)} committed artifacts re-derived and verified "

@@ -113,6 +113,44 @@ jobs:
     name: Serving and rollout behavior
     runs-on: ubuntu-latest
     steps:
+      # Building the final production image has run the hosted runner out of
+      # disk inside the Docker build (`No space left on device`). Drop
+      # preinstalled SDKs this job never uses. Docker, mise and the rest of
+      # /opt/hostedtoolcache are kept. Runs before checkout, so the repository
+      # does not exist yet. It uses the runner's normal bash rather than the
+      # sealed default shell, which discards GITHUB_WORKSPACE.
+      - name: Free runner disk space
+        working-directory: /
+        shell: bash
+        run: |
+          set -eu
+          df -h /
+          if [ "$(df --output=source / | tail -1)" != "$(df --output=source "$GITHUB_WORKSPACE" | tail -1)" ]; then
+            df -h "$GITHUB_WORKSPACE"
+          fi
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/share/swift \
+            /usr/local/share/chromium \
+            /opt/microsoft \
+            /opt/google \
+            /usr/local/julia* \
+            /opt/az
+          df -h /
+          # Log Docker's data root and its free space; never fail if Docker
+          # is not running.
+          docker_root="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)"
+          if [ -n "$docker_root" ]; then
+            echo "Docker root dir: $docker_root"
+            sudo df -h "$docker_root" || true
+          else
+            echo "Docker root dir unavailable"
+          fi
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false

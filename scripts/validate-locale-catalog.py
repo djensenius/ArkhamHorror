@@ -62,8 +62,9 @@ REQUIRED_KEY_FIXTURES = (
 )
 
 # Files a clean-clone build needs. Everything else in the worktree (installed
-# packages, generated output, card exports) is deliberately excluded, so the
-# copy proves the generator depends only on committed sources.
+# packages, generated output, slimmed card exports) is deliberately excluded, so
+# the copy proves the generator depends only on committed sources. The
+# committed per-locale card files are the source of the cardNames pack.
 CLEAN_CLONE_PREFIXES = (
     "frontend/src/",
     "frontend/homebrew/",
@@ -71,6 +72,11 @@ CLEAN_CLONE_PREFIXES = (
     "frontend/schemas/",
     "contracts/",
 )
+CLEAN_CLONE_PATTERNS = (re.compile(r"frontend/public/cards_[a-z]{2}(?:-[a-z]{2})?\.json"),)
+# Catalog locales whose card file has another name: the web's Portuguese card
+# data is cards_po.json, published as the card-only locale pt. Keep in step
+# with CARD_ONLY_LOCALES in frontend/scripts/locale-catalog/card-names.mjs.
+CARD_SOURCE_ALIASES = {"pt": "po"}
 CLEAN_CLONE_FILES = (
     "frontend/package.json",
     "frontend/package-lock.json",
@@ -730,8 +736,8 @@ def validate_backend_requirements(files: dict[str, bytes], manifest: dict) -> No
         "the manifest records a different backend registry than the committed one",
     )
     require(
-        backend["sourceSha256"] == artifact["source"]["sha256"],
-        "the manifest records a different backend source digest than the registry",
+        backend["sourceSha256"] == artifact["payloadSha256"],
+        "the manifest records a different backend payload digest than the registry",
     )
     require(backend["emittedKeys"] == len(emitted), "the manifest miscounts the backend's emitted keys")
 
@@ -874,6 +880,11 @@ def validate_provenance(provenance_path: Path, manifest: dict, tracked: set[str]
         covered.add(schema.relative_to(ROOT).as_posix())
     for generator in (FRONTEND / "scripts" / "locale-catalog").glob("*.mjs"):
         covered.add(generator.relative_to(ROOT).as_posix())
+    # Each catalog locale's card data feeds its cardNames pack. The card-only
+    # pt locale reads cards_po.json (CARD_ONLY_LOCALES in card-names.mjs).
+    for locale in manifest["locales"]:
+        tag = locale["locale"].lower()
+        covered.add(f"frontend/public/cards_{CARD_SOURCE_ALIASES.get(tag, tag)}.json")
 
     for relative in sorted(covered):
         require(relative in tracked, f"{relative} is not tracked by git")
@@ -889,7 +900,11 @@ def validate_clean_clone(
     reproduce the worktree build byte for byte."""
     clone = workspace / "clean-clone"
     for relative in sorted(tracked):
-        if not (relative.startswith(CLEAN_CLONE_PREFIXES) or relative in CLEAN_CLONE_FILES):
+        if not (
+            relative.startswith(CLEAN_CLONE_PREFIXES)
+            or relative in CLEAN_CLONE_FILES
+            or any(pattern.fullmatch(relative) for pattern in CLEAN_CLONE_PATTERNS)
+        ):
             continue
         target = clone / relative
         target.parent.mkdir(parents=True, exist_ok=True)

@@ -29,9 +29,32 @@
 # (normal cascade), which is exactly what the missing dependency edge would have
 # given us.
 #
+# Note that Stack rebuilding arkham-api does not help by itself. A changed
+# cards-discover is a build-tool dependency, so Stack does unregister and rebuild
+# arkham-api, but GHC's per-module check still skips every unchanged one-line
+# generated source and relinks the executable with the stale code. Only the
+# dropped artifacts force those modules to recompile.
+#
+# We also remove Stack's per-component record of the source hashes it last built
+# with (.stack-work/dist/*/ghc-*/stack-build-caches). That covers the case where
+# Stack skips arkham-api altogether, e.g. when an earlier, interrupted build
+# already installed the new cards-discover: the record still matches the tree,
+# so without removing it the missing objects would go unnoticed. Removing it is
+# harmless otherwise.
+#
 # Set DRY_RUN=1 to print what would be removed.
 #
 # Usage: drop-stale-generated.sh <arkham-api-dir> <cards-discover-dir>
+#
+# Docker runs this from scripts/docker-build-api.sh. A local build reuses its
+# .stack-work the same way, so after pulling a cards-discover change, run from
+# backend/ before building:
+#
+#   sh scripts/drop-stale-generated.sh arkham-api cards-discover
+#
+# `stack build --force-dirty` alone does not help: GHC still sees the unchanged
+# one-line source and keeps the stale module. The blunt fallback is
+# `stack clean arkham-api`, which recompiles all ~9,400 modules.
 set -eu
 
 API=${1:?arkham-api package directory}
@@ -48,14 +71,28 @@ else
 fi
 
 # Only the generator's hand-written sources: .stack-work below it holds build
-# products whose contents are not stable between builds.
-hash=$(
-  find "$DISCOVER/app" "$DISCOVER/library" -type f -name '*.hs' \
-    | LC_ALL=C sort \
-    | xargs cat \
-    | $checksum \
-    | cut -d' ' -f1
-)
+# products whose contents are not stable between builds. The leading tag
+# versions the stamp: bumping it forces one drop on every existing cache (v2:
+# caches stamped before stack-build-caches was dropped may still be stale).
+#
+# No pipelines here: a pipeline reports only its last command's status, so an
+# unreadable source would be hashed as partial input instead of stopping set -e
+# before the stamp is written. Paths are read whole, so spaces are fine.
+sources=$(find "$DISCOVER/app" "$DISCOVER/library" -type f -name '*.hs')
+sources=$(printf '%s\n' "$sources" | LC_ALL=C sort)
+input=$(mktemp)
+trap 'rm -f "$input"' EXIT
+{
+  echo 'drop-stale-generated v2'
+  while IFS= read -r source; do
+    [ -n "$source" ] || continue
+    cat "$source"
+  done <<EOF
+$sources
+EOF
+} > "$input"
+hash=$($checksum < "$input")
+hash=${hash%% *}
 
 previous=$(cat "$STAMP" 2>/dev/null || true)
 
@@ -85,6 +122,16 @@ for build in "$WORK"/dist/*/ghc-*/build; do
       fi
     done
   done
+done
+
+# Stack's record of what it last built; see the header for why it must go too.
+for caches in "$WORK"/dist/*/ghc-*/stack-build-caches; do
+  [ -d "$caches" ] || continue
+  if [ "${DRY_RUN:-}" = 1 ]; then
+    echo "   would remove $caches"
+  else
+    rm -rf "$caches"
+  fi
 done
 
 if [ "${DRY_RUN:-}" != 1 ]; then
