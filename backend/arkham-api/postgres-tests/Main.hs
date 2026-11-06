@@ -51,6 +51,7 @@ import Postgres.PendingJoinSpec qualified as PendingJoinSQL
 import Postgres.ConcurrencySpec qualified as ConcurrencySQL
 import Postgres.DeleteSpec qualified as DeleteSQL
 import Postgres.EventDeleteSpec qualified as EventDeleteSQL
+import Postgres.EventReplicateSpec qualified as EventReplicateSQL
 import Postgres.MainStreetSwapSpec qualified as MainStreetSwapSQL
 import Postgres.EndToEndSpec qualified as EndToEndSQL
 import Postgres.ThirdEditionSpec qualified as ThirdEditionSQL
@@ -91,6 +92,7 @@ main = withHarness \harness -> withProductionApp harness \app ->
     PendingJoinSQL.spec harness app seedUser
     EventDeleteSQL.spec harness app seedUser
     MainStreetSwapSQL.spec harness app seedUser
+    EventReplicateSQL.spec harness app seedUser
     CustomCardArtSQL.spec harness app
     RedactRestSQL.spec harness app seedUser
 
