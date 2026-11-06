@@ -167,13 +167,21 @@ jobs:
             echo "::notice::Docker root dir unavailable; measuring / instead"
             docker_root=/
           fi
-          free_gib="$(sudo df -BG --output=avail "$docker_root" | tail -1 | tr -dc 0-9 || true)"
-          if [ -z "$free_gib" ]; then
+          # Compare exact bytes: `df -BG` rounds up, so 39.5 GiB free would
+          # report 40G and pass a 40 GiB budget.
+          free_bytes="$(sudo df -B1 --output=avail "$docker_root" | tail -1 | tr -d '[:space:]' || true)"
+          # Require a plain decimal integer that fits bash's 64-bit arithmetic.
+          if ! [[ "$free_bytes" =~ ^[0-9]{1,18}$ ]]; then
             echo "::error::Could not read free space for $docker_root"
             exit 1
           fi
+          free_bytes=$((10#$free_bytes))
+          min_bytes=$((SERVING_MIN_FREE_GIB * 1024 * 1024 * 1024))
+          # Log GiB rounded down to one decimal so free space is never overstated.
+          free_tenths=$((free_bytes * 10 / (1024 * 1024 * 1024)))
+          free_gib="$((free_tenths / 10)).$((free_tenths % 10))"
           echo "Free space on $docker_root: ${free_gib} GiB (budget: ${SERVING_MIN_FREE_GIB} GiB)"
-          if [ "$free_gib" -lt "$SERVING_MIN_FREE_GIB" ]; then
+          if [ "$free_bytes" -lt "$min_bytes" ]; then
             echo "::error::Only ${free_gib} GiB free on $docker_root; the serving image build needs at least ${SERVING_MIN_FREE_GIB} GiB"
             exit 1
           fi
