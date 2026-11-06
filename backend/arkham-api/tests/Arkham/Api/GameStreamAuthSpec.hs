@@ -29,6 +29,10 @@ TASK-2.67 adds the same shape for spectating: 'withSpectatableGameIn' runs
 the game-existence lookup before the spectator upgrade, so an unknown id is
 rejected without opening a room, and the spectate route delegates to it
 without requiring sign-in.
+
+TASK-2.92 gives the admin game stream the same gate: 'withAdminGameIn' runs
+the game-existence lookup before the admin's participant-stream upgrade, so
+an unknown id is rejected without opening (and then holding) a room.
 -}
 module Arkham.Api.GameStreamAuthSpec (spec) where
 
@@ -37,6 +41,7 @@ import Api.Handler.Arkham.Games (
   withGameParticipantIn,
   withSpectatableGameIn,
  )
+import Api.Handler.Arkham.Games.Admin (withAdminGameIn)
 import Arkham.Prelude
 import Data.List qualified as List
 import Data.Text qualified as T
@@ -81,24 +86,34 @@ attemptUpgrade effects = do
   record effects "answerSubmitted"
 
 -- | Read the real source of "Api.Handler.Arkham.Games", for the static
--- structure assertions below. @stack test@\/@cabal test@ always run with
--- the package directory (@backend\/arkham-api@) as the working directory,
--- but tries a couple of other plausible working directories too (repo
--- root, and @backend\/@) so this test doesn't spuriously fail if it is
--- ever invoked a different way, instead of silently trusting a single
--- hard-coded relative path.
+-- structure assertions below.
 readGamesHsSource :: IO Text
-readGamesHsSource = go candidatePaths
+readGamesHsSource = readLibrarySource "Api/Handler/Arkham/Games.hs"
+
+-- | Read the real source of "Api.Handler.Arkham.Games.Admin" (TASK-2.92).
+readAdminHsSource :: IO Text
+readAdminHsSource = readLibrarySource "Api/Handler/Arkham/Games/Admin.hs"
+
+-- | Read a module's source, given its path under @library\/@. @stack
+-- test@\/@cabal test@ always run with the package directory
+-- (@backend\/arkham-api@) as the working directory, but tries a couple of
+-- other plausible working directories too (repo root, and @backend\/@) so
+-- this test doesn't spuriously fail if it is ever invoked a different way,
+-- instead of silently trusting a single hard-coded relative path.
+readLibrarySource :: FilePath -> IO Text
+readLibrarySource modulePath = go candidatePaths
  where
   candidatePaths :: [FilePath]
   candidatePaths =
-    [ "library/Api/Handler/Arkham/Games.hs"
-    , "backend/arkham-api/library/Api/Handler/Arkham/Games.hs"
-    , "arkham-api/library/Api/Handler/Arkham/Games.hs"
+    [ "library/" <> modulePath
+    , "backend/arkham-api/library/" <> modulePath
+    , "arkham-api/library/" <> modulePath
     ]
   go [] =
     error
-      $ "GameStreamAuthSpec: could not find Games.hs under any of the candidate paths (tried relative to cwd): "
+      $ "GameStreamAuthSpec: could not find "
+      <> modulePath
+      <> " under any of the candidate paths (tried relative to cwd): "
       <> show candidatePaths
   go (path : rest) = do
     exists <- doesFileExist path
@@ -281,6 +296,92 @@ spec = do
       T.count "servePongAware" wiringBody `shouldBe` 1
       T.count "spectatorStream" wiringBody `shouldBe` 1
       T.isInfixOf "servePongAware $ spectatorStream gameId" wiringBody `shouldBe` True
+
+  describe "withAdminGameIn (admin stream existence check, TASK-2.92)" do
+    it "looks up the game before rejecting an unknown id without attempting the upgrade" do
+      effects <- newStreamEffects
+      withAdminGameIn
+        (record effects "existenceLookup" >> pure False)
+        (attemptUpgrade effects)
+        (record effects "rejected")
+        (record effects "continuation")
+      readIORef effects.steps `shouldReturn` ["existenceLookup", "rejected"]
+
+    it "looks up the game before upgrading, then runs the REST continuation, for an existing game" do
+      effects <- newStreamEffects
+      withAdminGameIn
+        (record effects "existenceLookup" >> pure True)
+        (attemptUpgrade effects)
+        (record effects "rejected")
+        (record effects "continuation")
+      readIORef effects.steps
+        `shouldReturn`
+          [ "existenceLookup"
+          , "roomJoined"
+          , "memberCountIncremented"
+          , "snapshotDelivered"
+          , "answerSubmitted"
+          , "continuation"
+          ]
+
+    it "runs the continuation after the lookup for an existing game when the upgrade is a no-op (plain GET)" do
+      effects <- newStreamEffects
+      withAdminGameIn
+        (record effects "existenceLookup" >> pure True)
+        (pure ())
+        (record effects "rejected")
+        (record effects "continuation")
+      readIORef effects.steps `shouldReturn` ["existenceLookup", "continuation"]
+
+  describe "static structure of the admin game handler (TASK-2.92)" do
+    it "delegates the admin game handler to the existence gate" do
+      src <- readAdminHsSource
+      let ls = T.lines src
+          -- The handler's own top-level block: its signature line up to the
+          -- next unindented line that does not belong to it.
+          start = case List.findIndex ("getApiV1AdminGameR ::" `T.isPrefixOf`) ls of
+            Just i -> i
+            Nothing -> error "no getApiV1AdminGameR signature in Admin.hs"
+          isOwnLine l =
+            T.null l
+              || " " `T.isPrefixOf` l
+              || "getApiV1AdminGameR" `T.isPrefixOf` l
+          adminBody = T.unlines $ takeWhile isOwnLine $ drop start ls
+          normalized = T.unwords $ T.words adminBody
+
+      T.isInfixOf "withAdminGame gameId" normalized `shouldBe` True
+      T.isInfixOf "get404 gameId" normalized `shouldBe` True
+      T.count "servePongAware" adminBody `shouldBe` 0
+      T.count "gameStream" adminBody `shouldBe` 0
+
+    it "wires the existence lookup, then the participant upgrade, then notFound into the gate" do
+      src <- readAdminHsSource
+      let ls = T.lines src
+          -- The top-level block of withAdminGame, sliced as above. A single
+          -- servePongAware, after withAdminGameIn, means nothing upgrades
+          -- before the gate runs its lookup.
+          start = case List.findIndex ("withAdminGame ::" `T.isPrefixOf`) ls of
+            Just i -> i
+            Nothing -> error "no withAdminGame signature in Admin.hs"
+          isOwnLine l =
+            T.null l
+              || " " `T.isPrefixOf` l
+              || "withAdminGame " `T.isPrefixOf` l
+          wiringBody = T.unwords $ T.words $ T.unlines $ takeWhile isOwnLine $ drop start ls
+          positionOf needle
+            | needle `T.isInfixOf` wiringBody = T.length $ fst $ T.breakOn needle wiringBody
+            | otherwise = error $ "withAdminGame does not mention: " <> T.unpack needle
+          order =
+            map
+              positionOf
+              ["withAdminGameIn", "adminGameExists", "servePongAware", "notFound"]
+
+      order `shouldBe` List.sort order
+      T.count "servePongAware" wiringBody `shouldBe` 1
+      T.count "gameStream" wiringBody `shouldBe` 1
+      -- The admin keeps the participant stream, not the spectator one.
+      T.count "spectatorStream" wiringBody `shouldBe` 0
+      T.isInfixOf "servePongAware $ gameStream gameId" wiringBody `shouldBe` True
 
   describe "static structure of Api.Handler.Arkham.Games" do
     it "authenticates, delegates participant authorization, and preserves the authorized multiplayer identity" do

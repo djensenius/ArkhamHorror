@@ -34,7 +34,7 @@ import Entity.Arkham.Game
 import Entity.Arkham.Player
 import Entity.User (UserId)
 import Foundation (App)
-import Network.HTTP.Types (Status, hContentType, status200, status404)
+import Network.HTTP.Types (Header, Status, hContentType, status200, status404, status500)
 import Postgres.Harness
 import Postgres.Production (authorizationFor, routeRequest)
 import Relude
@@ -111,6 +111,27 @@ spec harness app seedUser = describe "REST game reads are redacted per viewer" d
       maybe (expectationFailure "bad game id" >> error "bad game id") pure
         $ fromPathPiece @ArkhamGameId (UUID.toText $ UUID.fromWords 0x2267 0 0 0)
     fst <$> routeRequest app "GET" (gamePath missing "/spectate") [] "" `shouldReturn` status404
+
+  it "answers 404 to the admin game read for an unknown id, even on a WebSocket handshake (TASK-2.92)" $
+    withConnection harness \connection -> do
+      gameId <- seedGame connection 10 "admin-stream" Solo
+      admin <- seedUser connection "admin-stream-admin"
+      transaction connection $
+        rawExecute "UPDATE users SET admin = TRUE WHERE id = ?" [toPersistValue admin]
+      missing <-
+        maybe (expectationFailure "bad game id" >> error "bad game id") pure
+          $ fromPathPiece @ArkhamGameId (UUID.toText $ UUID.fromWords 0x2292 0 0 0)
+      authorization <- authorizationFor app admin
+      let adminGet target headers =
+            fst <$> routeRequest app "GET" (adminGamePath target) (authorization : headers) ""
+      -- WaiTest cannot hand a socket to a raw response, so an attempted
+      -- upgrade answers yesod's 500 fallback rather than switching protocols:
+      -- the existing game shows the handshake still reaches the upgrade, and
+      -- the unknown id that the existence check refuses it first.
+      adminGet gameId [] `shouldReturn` status200
+      adminGet gameId webSocketHandshake `shouldReturn` status500
+      adminGet missing [] `shouldReturn` status404
+      adminGet missing webSocketHandshake `shouldReturn` status404
 
   it "redacts a replay step for a seated player, and shows a seatless admin the spectator view" $
     withConnection harness \connection -> do
@@ -249,6 +270,18 @@ seatOwners connection gameId =
 
 gamePath :: ArkhamGameId -> Text -> ByteString
 gamePath gameId suffix = encodeUtf8 $ "/api/v1/arkham/games/" <> toPathPiece gameId <> suffix
+
+adminGamePath :: ArkhamGameId -> ByteString
+adminGamePath gameId = encodeUtf8 $ "/api/v1/admin/games/" <> toPathPiece gameId
+
+-- | The client's half of a WebSocket opening handshake (RFC 6455, 4.1).
+webSocketHandshake :: [Header]
+webSocketHandshake =
+  [ ("Upgrade", "websocket")
+  , ("Connection", "Upgrade")
+  , ("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+  , ("Sec-WebSocket-Version", "13")
+  ]
 
 -- | Take a seat whose arkham_players id is the investigator's playerId.
 seat :: SqlBackend -> Word32 -> ArkhamGameId -> UserId -> Word32 -> IO ()
