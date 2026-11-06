@@ -1971,6 +1971,25 @@ run = campaignI18n $ do
         check(expected in keys, f"heading emitters did not emit {expected}: {sorted(keys)}")
 
 
+def test_a_narrative_resolution_emits_its_title_and_body_with_xp() -> None:
+    modules = {
+        "Test/Helpers.hs": HELPERS,
+        "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ scope "resolutions" $ narrativeResolution "resolution1" Nothing (pure 1)
+""",
+    }
+    for suffix in ("title", "body"):
+        key = f"standalone.testCampaign.resolutions.resolution1.{suffix}"
+        variables = variable_types_of(modules, key)
+        check(
+            variables == {"xp": "integer"},
+            f"narrativeResolution did not emit {key} with an integer xp: {variables}",
+        )
+
+
 def test_the_registry_digest_covers_the_extracted_surface_not_the_input_files() -> None:
     card = """module Test.Card where
 
@@ -2260,6 +2279,23 @@ def test_committed_registry_properties() -> None:
     ):
         check(key in keys, f"registry lost a cited key: {key}")
 
+    # Resolutions emitted through narrativeResolution (Arkham/Helpers/Narrative.hs).
+    for prefix in (
+        "theDunwichLegacy.theEssexCountyExpress.resolutions.resolution1",
+        "theDunwichLegacy.whereDoomAwaits.resolutions.resolution1",
+        "theDunwichLegacy.theHouseAlwaysWins.resolutions.resolution3",
+    ):
+        for suffix in ("title", "body"):
+            key = f"{prefix}.{suffix}"
+            entry = by_key.get(key)
+            check(entry is not None, f"registry lost a narrativeResolution key: {key}")
+            if entry is not None:
+                types = {variable["name"]: variable["type"] for variable in entry["variables"]}
+                check(
+                    types.get("xp") == "integer",
+                    f"narrativeResolution key {key} lost its integer xp: {types}",
+                )
+
     # `chooseAmount' iid "additionalActions" "$actions"` is an amount label, not
     # a root-level key.
     check("actions" not in keys, "the $actions false positive is back")
@@ -2366,6 +2402,7 @@ TESTS = (
     test_a_presentation_emitter_keeps_a_module_from_being_waived,
     test_only_known_caller_scope_alias_reasons_are_classified,
     test_a_heading_story_emits_its_title_and_body,
+    test_a_narrative_resolution_emits_its_title_and_body_with_xp,
     test_the_registry_digest_covers_the_extracted_surface_not_the_input_files,
     test_dynamic_sites_are_line_independent,
     test_sites_are_named_by_file_and_top_level_binding,
