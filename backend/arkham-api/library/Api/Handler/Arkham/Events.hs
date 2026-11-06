@@ -613,7 +613,10 @@ postApiV1ArkhamEventSwapMainStreetR eid = do
 {- | The status and stable error code for a refused Main Street swap: 400 for a
 malformed request, 404 for an event, group or game that does not exist, 409 for
 groups not ready to swap (@main-street-not-ready@, including a readiness that
-an earlier swap spent) or whose readiness no longer holds (@main-street-stale@).
+an earlier swap spent, a game not playing its investigation phase and a game
+with a skill test in progress), whose
+readiness no longer holds (@main-street-stale@), or whose game already holds
+the investigator it would receive (@main-street-conflict@).
 -}
 mainStreetSwapErrorStatus :: MainStreetSwapError -> (Status.Status, Text)
 mainStreetSwapErrorStatus = \case
@@ -627,6 +630,7 @@ mainStreetSwapErrorStatus = \case
   SwapNoMainStreet _ -> (Status.status409, "main-street-stale")
   SwapInvestigatorMissing _ -> (Status.status409, "main-street-stale")
   SwapInvestigatorMoved _ -> (Status.status409, "main-street-stale")
+  SwapInvestigatorConflict _ -> (Status.status409, "main-street-conflict")
 
 {- | Whether any agenda currently in play in the group's game is at or past
 @stage@. Used as the in-lock idempotency guard for the time-up forcing: a group
