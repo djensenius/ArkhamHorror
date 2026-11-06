@@ -16,7 +16,7 @@
     "scripts/extract-backend-i18n-keys.py": "d406e99fd455d8bac23e803e1dcca602791e3e4e0b4cd6ff2c76f83c5da57442",
     "scripts/extract_backend_i18n_keys.py": "b9bf295c3e8a412955345438a8ba0765cf9d0761ef153503b396a3ff4cc1c615",
     "scripts/generate-locale-catalog.py": "d2fd1fb8df6909a170041e635c4fc841b176e2e41432cdb3f8f90b2011c5685e",
-    "scripts/json_schema_subset.py": "66b6ec37213b0acd649d3e22c8d8004d4d1b3efc53900aeebf5013bdc06a44ed",
+    "scripts/json_schema_subset.py": "5d0db2286a5150a76236f4cae4d6ee38a110010d8c0c4fefe0f1128f3d261458",
     "scripts/locale-catalog-python-sealed.sh": "956ab7faa84b3dd72fa33bf926b2bd186d270726be52b697b3a301b8519f646b",
     "scripts/locale_catalog_python_boundary.py": "014ac78c359598d343e9586035e51790e4537dcd49cc9ff429bf916aeef15b49",
     "scripts/locale_catalog_python_runtime.json": "7cc26e0cca3d5a3eb0f27b1e7d1946dd5da54cea123584a9b666cfbcc700f668",

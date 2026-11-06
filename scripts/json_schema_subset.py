@@ -7,9 +7,13 @@ generator executes but cannot hash. A module in `scripts/` is part of the
 generator's import closure, so its bytes are sha256-pinned by the non-governed
 `scripts/locale_catalog_tooling_lock.json` exactly as the generator's own are.
 The runtime profile `scripts/locale_catalog_python_runtime.json`, whose bytes
-that lock also pins, sha256-pins the uv and Node binaries; the Python
-interpreter itself is pinned only by path identity (see the profile's
-`has_path_identity` check), not by its bytes.
+that lock also pins, sha256-pins the uv and Node binaries. For Python it pins
+the implementation and version (CPython 3.14.7), the stdlib identity, and the
+sha256 of the stdlib source tree and of every stdlib module (`stdlibModules`),
+and records the sha256 of the upstream source tarball
+(`distribution.upstream`). Only the interpreter binary's own bytes are not
+hashed: its install, binary and stdlib paths are checked by
+`has_path_identity` in `scripts/build-locale-catalog-fixture.py`.
 
 The subset is deliberately tiny and deliberately __fail-closed__: every
 keyword, every `$ref` spelling and every `$schema` dialect this module does not
