@@ -1,7 +1,7 @@
 module Arkham.Api.ViewerSpec (spec) where
 
 import Api.Arkham.Redact (Viewer (..), redactFor)
-import Api.Arkham.Viewer (GameView (..), Redacted (..), gameViewFor, redactGameField)
+import Api.Arkham.Viewer (GameView (..), Redacted (..), RedactedGame (..), gameViewFor, redactGameField)
 import Arkham.Id (PlayerId (..))
 import Arkham.Prelude
 import Data.Aeson qualified as Aeson
@@ -20,20 +20,20 @@ bob = toSqlKey 2
 seat :: Word32 -> PlayerId
 seat = PlayerId . UUID.fromWords 0x2221 0 0
 
--- | A response with a game whose two investigators each hold a hand.
-response :: Value
-response =
+-- | A game whose two investigators each hold a hand.
+game :: Value
+game =
   object
-    [ "playerId" .= seat 1
-    , "game"
+    [ "investigators"
         .= object
-          [ "investigators"
-              .= object
-                [ "01001" .= object ["playerId" .= seat 1, "hand" .= [1 :: Int, 2]]
-                , "01002" .= object ["playerId" .= seat 2, "hand" .= [3 :: Int]]
-                ]
+          [ "01001" .= object ["playerId" .= seat 1, "hand" .= [1 :: Int, 2]]
+          , "01002" .= object ["playerId" .= seat 2, "hand" .= [3 :: Int]]
           ]
     ]
+
+-- | A response carrying 'game'.
+response :: Value
+response = object ["playerId" .= seat 1, "game" .= game]
 
 spec :: Spec
 spec = describe "Api.Arkham.Viewer" do
@@ -96,6 +96,38 @@ spec = describe "Api.Arkham.Viewer" do
     it "leaves a response with no game untouched" do
       let other = object ["totalSteps" .= (3 :: Int)]
       redactGameField ViewerSpectator other `shouldBe` other
+
+  describe "RedactedGame" do
+    it "encodes FullView exactly as the wrapped game" do
+      toJSON (RedactedGame FullView game) `shouldBe` game
+      encode (RedactedGame FullView game) `shouldBe` encode game
+
+    it "redacts the whole game, the same way through toJSON and toEncoding" do
+      let viewer = ViewerSeats (Set.singleton (seat 1))
+          expected = redactFor viewer game
+      toJSON (RedactedGame (RedactedView viewer) game) `shouldBe` expected
+      Aeson.decode (encode (RedactedGame (RedactedView viewer) game)) `shouldBe` Just expected
+      -- The other seat's hand really is gone, and the caller's is intact.
+      expected
+        `shouldBe` object
+          [ "investigators"
+              .= object
+                [ "01001" .= object ["playerId" .= seat 1, "hand" .= [1 :: Int, 2]]
+                , "01002" .= object ["playerId" .= seat 2, "hand" .= ([] :: [Int])]
+                ]
+          ]
+
+    it "keeps the governed get-game fixture's game unchanged for every view" do
+      -- No pending-game fixture exists; the get-game fixture's game is the
+      -- same PublicGame shape the pending, create and import responses carry.
+      fixture <- loadContractJson "contracts/fixtures/get-game.json" :: IO Value
+      fixtureGame <- maybe (expectationFailure "get-game fixture has no game" >> error "no game") pure (lookupGame fixture)
+      let fixtureSeat = PlayerId (UUID.fromWords 0 0 0 1)
+      for_
+        [ViewerSpectator, ViewerSeats (Set.singleton fixtureSeat), ViewerSeats (Set.singleton (seat 9))]
+        \viewer -> do
+          toJSON (RedactedGame (RedactedView viewer) fixtureGame) `shouldBe` fixtureGame
+          Aeson.decode (encode (RedactedGame (RedactedView viewer) fixtureGame)) `shouldBe` Just fixtureGame
  where
   lookupGame = \case
     Aeson.Object o -> KeyMap.lookup "game" o
