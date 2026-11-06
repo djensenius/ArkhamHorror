@@ -105,6 +105,13 @@ spec harness app seedUser = describe "REST game reads are redacted per viewer" d
       for_ [alice, carol] \caller ->
         zonesOf <$> request caller (gamePath gameId "/spectate") `shouldReturn` (status200, hidden)
 
+  it "answers 404 to spectate for a game id that does not exist (TASK-2.67)" do
+    -- No game is ever seeded under this id, and spectate needs no sign-in.
+    missing <-
+      maybe (expectationFailure "bad game id" >> error "bad game id") pure
+        $ fromPathPiece @ArkhamGameId (UUID.toText $ UUID.fromWords 0x2267 0 0 0)
+    fst <$> routeRequest app "GET" (gamePath missing "/spectate") [] "" `shouldReturn` status404
+
   it "redacts a replay step for a seated player, and shows a seatless admin the spectator view" $
     withConnection harness \connection -> do
       gameId <- seedGame connection 5 "redact-replay" WithFriends
