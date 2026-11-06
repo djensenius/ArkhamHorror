@@ -24,6 +24,9 @@ mise install
 mise run contracts:validate
 ```
 
+The OpenAPI and AsyncAPI validators install from committed lockfiles; see
+`tools/contract-validators/README.md` to bump them.
+
 Runtime changes must also pass the relevant Haskell and container checks already
 defined in `.github/workflows`.
 

@@ -10,8 +10,10 @@ through "Arkham.Card.CustomCard"'s registry the way it resolves any other.
 module Arkham.Custom.Overlay (
   DeckOverlay (..),
   applyOverlay,
+  applySeatOverlay,
   investigatorOverlay,
   needsOverlayInvestigator,
+  samePrintedInvestigator,
   overlaySignatures,
   overlaySetAside,
   setAsideMetaKey,
@@ -21,6 +23,7 @@ module Arkham.Custom.Overlay (
 import Arkham.Card
 import Arkham.Decklist.Type
 import Arkham.Id
+import Arkham.Investigator.Cards (allInvestigatorCards)
 import Arkham.Prelude
 import Data.Aeson.Types (parseMaybe)
 import Data.Map.Strict qualified as Map
@@ -97,18 +100,31 @@ signaturesOf iid = filter restrictedToThem . Map.keys
     Nothing -> False
     Just def -> Signature iid `elem` cdDeckRestrictions def
 
+{- | The same investigator, either code being a printing of the other (an
+alternate such as Revised Core Roland, @01501@, of @01001@). The card map is keyed
+by every printing, so the lookup is symmetric.
+-}
+samePrintedInvestigator :: InvestigatorId -> InvestigatorId -> Bool
+samePrintedInvestigator iid other =
+  iid == other
+    || maybe False ((toCardCode iid `elem`) . (.cardCodes)) (lookup (toCardCode other) allInvestigatorCards)
+
 applyOverlay :: DeckOverlay -> ArkhamDBDecklist -> ArkhamDBDecklist
 applyOverlay overlay decklist =
   decklist {slots = slots', investigator_code = investigator', meta = meta'}
  where
   investigator' = fromMaybe (investigator_code decklist) (overlayInvestigator overlay)
 
-  {- An alternate front outranks the deck's own investigator ('decklistInvestigatorId'),
-  so leaving one in place would hand the engine the investigator this just swapped away.
-  Only touched when the swap happens, and only to drop that one key. -}
+  {- The parallel faces belong to the deck's investigator, and an alternate front
+  outranks the deck's own code ('decklistInvestigatorId'), so leaving them over a
+  swap would seat the investigator this just swapped away. An overlay naming that
+  same investigator (any printing of its code, or its seated face) keeps both; any
+  other drops both. -}
   meta' = case overlayInvestigator overlay of
-    Nothing -> meta decklist
-    Just _ -> withoutAlternateFront <$> meta decklist
+    Just iid
+      | not (any (samePrintedInvestigator iid) [investigator_code decklist, decklistInvestigatorId decklist]) ->
+          withoutParallelFaces <$> meta decklist
+    _ -> meta decklist
 
   withoutOldSignatures = case overlayInvestigator overlay of
     Nothing -> slots decklist
@@ -136,11 +152,29 @@ applyOverlay overlay decklist =
     Map.filter (> 0)
       $ Map.foldrWithKey (\cardCode n m -> Map.adjust (subtract n) cardCode m) added (overlayRemove overlay)
 
-withoutAlternateFront :: Text -> Text
-withoutAlternateFront raw = fromMaybe raw do
+{- | 'applyOverlay' for every path that seats a deck. An overlay that names an
+investigator over a front this app cannot build (the predicate, e.g.
+'isKnownInvestigator', which this module cannot import) drops the parallel faces
+first, so that investigator is seated rather than the deck rejected. A known
+parallel front is kept, and a list with no investigator overlay is untouched.
+-}
+applySeatOverlay
+  :: (InvestigatorId -> Bool) -> Maybe DeckOverlay -> ArkhamDBDecklist -> ArkhamDBDecklist
+applySeatOverlay isKnown overlay decklist = maybe id applyOverlay overlay decklist'
+ where
+  decklist'
+    | isNothing (overlayInvestigator =<< overlay) = decklist
+    | isKnown (decklistInvestigatorId decklist) = decklist
+    | otherwise = decklist {meta = withoutParallelFaces <$> meta decklist}
+
+-- | Meta that will not parse as an object is left exactly as it came.
+withoutParallelFaces :: Text -> Text
+withoutParallelFaces raw = fromMaybe raw do
   m <- decodeMeta raw
-  guard $ Map.member "alternate_front" m
-  pure $ encodeMeta (Map.delete "alternate_front" m)
+  guard $ any (`Map.member` m) faces
+  pure $ encodeMeta (foldr Map.delete m faces)
+ where
+  faces = ["alternate_front", "alternate_back"]
 
 decodeMeta :: Text -> Maybe (Map Text Value)
 decodeMeta raw = decode (encodeUtf8 $ fromStrict raw)

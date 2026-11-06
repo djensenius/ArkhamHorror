@@ -151,6 +151,41 @@ jobs:
             echo "Docker root dir unavailable"
           fi
 
+      # Fail early, with a clear message, when the runner has too little free
+      # space on Docker's filesystem for the production image build (GHC, the
+      # Haskell dependencies and the API all build inside Docker). After the
+      # cleanup above, current runners measured 113 GiB free on a 145 GiB disk.
+      - name: Check runner disk budget
+        working-directory: /
+        shell: bash
+        env:
+          SERVING_MIN_FREE_GIB: "40"
+        run: |
+          set -eu
+          docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+          if [ -z "$docker_root" ] || [ ! -d "$docker_root" ]; then
+            echo "::notice::Docker root dir unavailable; measuring / instead"
+            docker_root=/
+          fi
+          # Compare exact bytes: `df -BG` rounds up, so 39.5 GiB free would
+          # report 40G and pass a 40 GiB budget.
+          free_bytes="$(sudo df -B1 --output=avail "$docker_root" | tail -1 | tr -d '[:space:]' || true)"
+          # Require a plain decimal integer that fits bash's 64-bit arithmetic.
+          if ! [[ "$free_bytes" =~ ^[0-9]{1,18}$ ]]; then
+            echo "::error::Could not read free space for $docker_root"
+            exit 1
+          fi
+          free_bytes=$((10#$free_bytes))
+          min_bytes=$((SERVING_MIN_FREE_GIB * 1024 * 1024 * 1024))
+          # Log GiB rounded down to one decimal so free space is never overstated.
+          free_tenths=$((free_bytes * 10 / (1024 * 1024 * 1024)))
+          free_gib="$((free_tenths / 10)).$((free_tenths % 10))"
+          echo "Free space on $docker_root: ${free_gib} GiB (budget: ${SERVING_MIN_FREE_GIB} GiB)"
+          if [ "$free_bytes" -lt "$min_bytes" ]; then
+            echo "::error::Only ${free_gib} GiB free on $docker_root; the serving image build needs at least ${SERVING_MIN_FREE_GIB} GiB"
+            exit 1
+          fi
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
@@ -185,3 +220,17 @@ jobs:
         run: docker build --target app --tag "arkham-locale-serving:${{ github.sha }}" .
       - name: Verify the exact production image nginx, config, and static tree
         run: ARKHAM_PRODUCTION_IMAGE="arkham-locale-serving:${{ github.sha }}" mise run locale-catalog:serving
+      # Log disk usage after the image build, even on failure, so the budget
+      # above can be compared with real usage. Log only; nothing is deleted.
+      - name: Report runner disk usage
+        if: always()
+        working-directory: /
+        shell: bash
+        run: |
+          df -h / || true
+          docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+          if [ -n "$docker_root" ]; then
+            echo "Docker root dir: $docker_root"
+            sudo df -h "$docker_root" || true
+          fi
+          docker system df || true

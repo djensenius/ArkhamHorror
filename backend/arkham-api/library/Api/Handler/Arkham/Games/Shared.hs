@@ -13,6 +13,7 @@ import Api.Arkham.Epic (
   lookupGameEvent,
   mkEpicEnv,
   modifySharedStateLockedWith,
+  upsertUndoFloorMonotonic,
  )
 import Api.Arkham.Helpers
 import Api.Arkham.Types.Game
@@ -555,7 +556,7 @@ is written) and the game lock and worker are freed. A request handler answers
 it as a 500; callers that catch per group and log (the Epic shared-state sync
 and time-up forcing) skip that group. The post-swap re-ask in
 'swapMainStreetInvestigators' also runs under it, through
-'runMessagesInGroupCore', after the swap has committed: on expiry only the
+'runMessagesInGroupCoreWith', after the swap has committed: on expiry only the
 re-ask's transaction rolls back, its catch-all logs a warning, and the
 committed swap stays. Search Honeycomb / logs for this to find poison games.
 -}
@@ -626,7 +627,6 @@ updateGameWithAnswerRejectionWith database customCards response gameId mRoom = d
   ( ArkhamGame {..}
     , publishLog
     , mSharedUpdate
-    , actAdvanced
     , newAchievements
     , mPhaseChanged
     , mAnswerRejection
@@ -662,7 +662,7 @@ updateGameWithAnswerRejectionWith database customCards response gameId mRoom = d
     reply <- handleAnswer gameJson playerId response
     case reply of
       -- Nothing happened, so the log to publish is the one already there.
-      Unhandled reason -> pure (g, oldLogEntries, Nothing, False, [], [], Just reason, False)
+      Unhandled reason -> pure (g, oldLogEntries, Nothing, [], [], Just reason, False)
       Handled answerMessages -> do
         -- Epic Multiplayer: if this game is a group within an event, build an
         -- EpicEnv so Shared* messages emitted during the action are captured as
@@ -893,13 +893,20 @@ updateGameWithAnswerRejectionWith database customCards response gameId mRoom = d
                 pure [achievement | or completions]
               pure $ ordNub $ directEarns <> soloEarns <> progressEarns <> soloProgressEarns
 
+        -- Epic Multiplayer: wall off undo across an IN-GROUP act advance. Each
+        -- group advances its own act via the normal AdvanceAct flow (no
+        -- cross-group injection); when this action advanced the act, raise the
+        -- per-game undo floor to the new step IN THIS TRANSACTION, so the step
+        -- never commits without its floor (the other groups follow on their own
+        -- turns via 'ActAdvanceGen'). Monotonic: never lowers a higher floor.
+        when actAdvanced $ upsertUndoFloorMonotonic gameId (arkhamGameStep + 1)
+
         mark "persist"
 
         pure
           ( g'
           , publishLog
           , mSharedUpdate
-          , actAdvanced
           , newAchievements
           , case ge of
               Game {gamePhase = newPhase} -> phaseTransitions oldPhase newPhase enteredPhases
@@ -939,13 +946,6 @@ updateGameWithAnswerRejectionWith database customCards response gameId mRoom = d
 
   for_ newAchievements \achievement ->
     publishToRoom gameId $ GameAchievement (achievementName achievement)
-
-  -- Epic Multiplayer: wall off undo across an IN-GROUP act advance. Each group
-  -- advances its own act via the normal AdvanceAct flow (no cross-group injection);
-  -- when this action advanced the act, set the per-game undo floor to the committed
-  -- step so it can't be locally undone (the other groups follow on their own turns
-  -- via 'ActAdvanceGen'). 'arkhamGameStep' here is the post-commit (new) step.
-  when actAdvanced $ setGameUndoFloor gameId arkhamGameStep
 
   mark "publish"
   phases <- reverse <$> readIORef phasesRef
@@ -1350,12 +1350,32 @@ down-patch: every server-initiated group run (board sync, time-up forcing, the
 act-advance spend/flip) is reconciled forward and is NOT independently undoable
 — the act-advance spend/flip is instead walled off by the per-game undo FLOOR
 ('Api.Arkham.Epic.getGameUndoFloor'), and board syncs are re-derived on the
-next propagate. Returns the new 'ArkhamGame' (with its new step) so callers can
-read the post-run step (e.g. to set that floor).
+next propagate. Returns the new 'ArkhamGame' (with its new step). Leaves the
+undo floor alone; see 'runMessagesInGroupCoreWith'.
 -}
 runMessagesInGroupCore
   :: (Game -> Bool) -> [Message] -> ArkhamGameId -> Handler (Maybe ArkhamGame)
-runMessagesInGroupCore p msgs gid = do
+runMessagesInGroupCore = runMessagesInGroupCoreWith KeepUndoFloor
+
+-- | What a server-initiated group run does to the game's undo floor.
+data GroupRunUndoFloor
+  = -- | Leave the floor as it is.
+    KeepUndoFloor
+  | {- | Raise the floor to the run's new step in the transaction that writes
+    that step ('upsertUndoFloorMonotonic'), so the step never commits without
+    its floor and a higher floor is never lowered.
+    -}
+    RaiseUndoFloorToNewStep
+  deriving stock (Eq, Show)
+
+-- | 'runMessagesInGroupCore' with an explicit 'GroupRunUndoFloor'.
+runMessagesInGroupCoreWith
+  :: GroupRunUndoFloor
+  -> (Game -> Bool)
+  -> [Message]
+  -> ArkhamGameId
+  -> Handler (Maybe ArkhamGame)
+runMessagesInGroupCoreWith undoFloor p msgs gid = do
   now <- liftIO getCurrentTime
   mUpdate <- runDB $ atomicallyWithGame gid \ArkhamGame {..} ->
     case gameGameState arkhamGameCurrentData of
@@ -1396,6 +1416,9 @@ runMessagesInGroupCore p msgs gid = do
             (Choice mempty (producedQueue <> currentQueue))
             (arkhamGameStep + 1)
             (ActionDiff $ view actionDiffL updatedGame)
+        -- Under the game row lock taken above, then the floor row.
+        when (undoFloor == RaiseUndoFloorToNewStep)
+          $ upsertUndoFloorMonotonic gid (arkhamGameStep + 1)
         pure (Just game')
       _ -> pure Nothing
   for_ mUpdate \g' ->
@@ -1407,13 +1430,6 @@ runMessagesInGroupCore p msgs gid = do
 -- | 'runMessagesInGroupWhen' with no extra guard beyond the game being active.
 runMessagesInGroup :: [Message] -> ArkhamGameId -> Handler ()
 runMessagesInGroup = runMessagesInGroupWhen (const True)
-
-{- | Set (upsert) a group game's undo FLOOR to @step@: undo can no longer cross it
-(enforced in 'Api.Handler.Arkham.Undo'). Called for every group an act advance
-settled, with that group's post-advance persistence step. Floors only ever
-increase (each settlement runs at a later step), so an unconditional set is
-monotonic.
--}
 
 {- | Resolve the ELSE! Main Street group swap. InvestigatorAttrs contains the
 investigator's deck, hand, discard, resources, damage, trauma, logs, and
@@ -1506,11 +1522,7 @@ swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
       for_ firstUser \userId -> moveMembership userId firstGameId firstOrdinal secondOrdinal
       for_ secondUser \userId -> moveMembership userId secondGameId secondOrdinal firstOrdinal
       let swapped = [(firstGameId, firstSwapped), (secondGameId, secondSwapped)]
-      for_ swapped \(gameId, raw) ->
-        P.upsertBy
-          (UniqueGameUndoFloor gameId)
-          (ArkhamGameUndoFloor gameId (arkhamGameStep raw))
-          [ArkhamGameUndoFloorFloorStep P.=. arkhamGameStep raw]
+      for_ swapped \(gameId, raw) -> upsertUndoFloorMonotonic gameId (arkhamGameStep raw)
       pure (swapped, shared)
 
   for_ committed \(swapped, shared) -> do
@@ -1528,12 +1540,12 @@ swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
   -- turn investigator's PlayerWindow) for the investigators now in it; the
   -- incoming player brought no question from the game it left. The undo
   -- floor moves up to the re-asked step, so undo cannot return to the
-  -- question-less swap step. A game that is not active is left as the swap
-  -- wrote it. A failure is logged and never undoes the committed swap.
+  -- question-less swap step; it is raised in the re-ask's own transaction, so
+  -- no re-asked step commits without its floor. A game that is not active is
+  -- left as the swap wrote it. A failure is logged and never undoes the
+  -- committed swap.
   reask gameId =
-    ( runMessagesInGroupCore (const True) [] gameId
-        >>= traverse_ (setGameUndoFloor gameId . arkhamGameStep)
-    )
+    void (runMessagesInGroupCoreWith RaiseUndoFloorToNewStep (const True) [] gameId)
       `catch` \(e :: SomeException) ->
         $(logWarn) $ "Main Street swap re-ask failed for " <> tshow gameId <> ": " <> tshow e
 
@@ -1898,14 +1910,15 @@ assetBelongsTo iid asset =
     || attr assetPlacement asset
     `elem` [InPlayArea iid, InThreatArea iid, StillInHand iid, AttachedToInvestigator iid]
 
+{- | Raise a group game's undo FLOOR to @step@ in its own transaction: undo can
+no longer cross it (enforced in 'Api.Handler.Arkham.Undo'). Called for every
+group an organizer settlement floored, with that group's current step. The
+write is monotonic ('upsertUndoFloorMonotonic'): a floor another writer already
+raised higher (e.g. a Main Street re-ask that committed after this step was
+read) is kept, never lowered.
+-}
 setGameUndoFloor :: ArkhamGameId -> Int -> Handler ()
-setGameUndoFloor gid step =
-  runDB
-    $ void
-    $ P.upsertBy
-      (UniqueGameUndoFloor gid)
-      (ArkhamGameUndoFloor gid step)
-      [ArkhamGameUndoFloorFloorStep P.=. step]
+setGameUndoFloor gid step = runDB $ upsertUndoFloorMonotonic gid step
 
 {- | Server-initiated sync of one (other) group's game state to the current
 shared counters, so its BOARD (countermeasures, blob health) reflects the
@@ -1941,8 +1954,8 @@ epicActFingerprint game = sort [attr (.id) act | act <- toList (entitiesActs (ga
 {- | Floor undo for EVERY group in the event at its CURRENT persistence step,
 making a consuming act advance a global checkpoint: no group can undo across it (so
 no contributor can rewind a now-consumed pool placement), while every group's
-actions AFTER it stay undoable. Floors are monotonic (always set at a later step
-than any prior floor). Called only after the organizer consumes the pool in
+actions AFTER it stay undoable. Floors are monotonic ('setGameUndoFloor' never
+lowers one). Called only after the organizer consumes the pool in
 'settleOrganizerAdvance'.
 -}
 floorAllGroupsAtCurrentStep :: ArkhamEpicEventId -> Handler ()
