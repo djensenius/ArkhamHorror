@@ -79,6 +79,24 @@ constructor.
   and the response identifies the current active player for rendering. Its
   WebSocket upgrade is server-enforced read-only: spectator frames are ignored
   without being decoded or applied to the game.
+- The spectate route checks that the game exists before anything else. An
+  unknown game ID answers `404` before any WebSocket upgrade, so it never
+  opens or joins a game room, subscribes to its updates, or changes a watcher
+  count. A game deleted between that check and the read also answers `404`.
+- The spectate read always returns the spectator view of `PublicGame`, even
+  when the caller holds a seat, because the route is not authenticated. That
+  view is redacted for a viewer who controls no investigator. Every
+  investigator's hidden zones are emptied: `deck`, `hand`, `sideDeck`, `decks`,
+  `drawnCards`, `cardsUnderneath` and `excludeFromMulligan`. `drawing` and
+  `discarding` become `null`, and the found and drawn cards of a search in
+  progress are cleared. Log entries addressed to a single player are dropped.
+  The top card of `deck` stays when a modifier reveals it, and `deckSize` is
+  unchanged. This redaction is not complete yet. WebSocket `GameUpdate` frames
+  on the same route are not redacted (TASK-2.22.2). The REST redaction does not
+  yet cover `cards`, `question`/`questionPresentation`,
+  `foundCards`/`focusedCards`, modifier card payloads, investigator
+  `meta`/`formMeta` or the encounter deck order (TASK-2.22.5). Until those
+  tasks land, spectators can still see hidden information through them.
 - The `PublicGame` schema governs all 58 top-level snapshot fields shared by
   REST game reads and WebSocket `GameUpdate`. Deep entity, question, target,
   source, and campaign unions remain intentionally broad until their dedicated
@@ -1691,7 +1709,9 @@ a governed CI input change: the "Serving and rollout behavior" job in
 input, now frees runner disk before building the production image, which
 changes the synthetic catalog fixture digests. `nativeClientMinimumRevision`
 stays `0.1.57`; clients pinned to `0.1.57` through `0.1.60` are unaffected and
-need not repin.
+need not repin. A later tooling-only change (TASK-2.47, no revision bump) makes
+the job fail early when Docker's filesystem has less than 40 GiB free, and log
+`df` and `docker system df` after the image build, even when it fails.
 
 #### i18n registry payload digest (revision 0.1.62)
 
@@ -2073,7 +2093,14 @@ the `Dockerfile` and the workflows) is pinned by the committed, non-governed
 `scripts/locale_catalog_tooling_lock.json`. Editing tooling or widening a
 capability-lint grant moves that lock, which `contracts:catalog-fixture` and
 the python-boundary tamper tests check in CI. It needs a reviewed lock update
-(the failing check prints the exact expected bytes) but no revision bump. A
+(the failing check prints the exact expected bytes) but no revision bump.
+Because that lock is enforced only by the code it pins, the remaining gate is
+review: `.github/CODEOWNERS` (`* @djensenius`) already assigns the lock,
+`scripts/build-locale-catalog-fixture.py` and `.github/workflows/` to the
+owner, so a narrower entry would add nothing. A change from anyone else
+requests owner review, but GitHub does not request it on the owner's own pull
+requests and branch protection does not require code-owner review, so
+reviewing a lock update is a process gate GitHub does not enforce. A
 change to public generator output (the synthetic chunks, sources, backend
 registry, manifest, the v1 schemas through `schemasSha256`, or the generator
 version) still changes governed bytes and still requires a bump. The drift

@@ -24,10 +24,10 @@ captures, branches and loops so that reaching a sensitive module indirectly is
 reported too.
 
 The grant tables live in this file, which is itself a declared source: it is
-linted like every other source, and its bytes are folded into the
-locale-catalog fixture provenance digest through `all_executable_sources()`, so
-a grant cannot be widened without moving a governed contract hash and showing
-up in review. Its digest is also recorded in
+linted like every other source, and through `all_executable_sources()` its
+bytes are pinned by the non-governed `scripts/locale_catalog_tooling_lock.json`,
+so a grant cannot be widened without a lock update that shows up in review.
+Its digest is also recorded in
 `scripts/locale_catalog_python_runtime.json` and checked by the pinned runner
 before the lint is imported; that is drift detection over a reviewed file, not
 an authorization root.
@@ -118,9 +118,10 @@ ENTRY_POINTS = frozenset(
 # `scripts/locale_catalog_python_runtime.json` and checked by the pinned runner.
 # All of it is trusted committed code; the digests are an identity and drift
 # record, so that changing one of these files is a coordinated, reviewed edit
-# rather than a silent difference between what ran and what is recorded. They
-# stay ordinary governed sources too -- linted like any other and folded into
-# provenance.
+# rather than a silent difference between what ran and what is recorded. The
+# Python ones stay ordinary declared sources too, linted like any other, and
+# the `scripts/` ones are also pinned by the non-governed
+# `scripts/locale_catalog_tooling_lock.json`; none reaches fixture provenance.
 TRUSTED_SOURCES = frozenset(
     {
         "frontend/scripts/locale-catalog/generator-launcher.mjs",

@@ -17,7 +17,7 @@ import Arkham.Campaigns.TheInnsmouthConspiracy.Memory
 import Arkham.Card
 import Arkham.Classes.Entity
 import Arkham.Cost
-import Arkham.Custom.Overlay (DeckOverlay, applyOverlay, decklistCustomCards)
+import Arkham.Custom.Overlay (DeckOverlay, decklistCustomCards)
 import Arkham.Decklist
 import Arkham.Entities
 import Arkham.Game
@@ -537,7 +537,7 @@ handleAnswer game playerId = \case
     -- the one that sticks.
     reply <-
       loadChosenDeck game playerId (arkhamDeckOverlayAttachmentId deck) (arkhamDeckOverlay deck)
-        $ maybe id applyOverlay mOverlay (arkhamDeckPlayList deck)
+        $ arkhamDeckPlayListFor mOverlay deck
     -- Only a deck that was actually seated counts as used; a rejected mid-campaign
     -- join must not reorder the decks page.
     case reply of
