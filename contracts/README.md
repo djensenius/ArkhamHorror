@@ -99,8 +99,10 @@ constructor.
   This redaction is not complete yet. WebSocket `GameUpdate` frames on the
   same route are not redacted (TASK-2.22.2). The REST redaction does not yet
   cover `question`/`questionPresentation`, the encounter deck order, shared
-  scenario decks or the other id channels listed there as not yet filtered.
-  Until it does, spectators can still see hidden information through them.
+  scenario decks or the other known channels listed there as not yet
+  filtered, and it does not check fields it does not name for hidden ids.
+  Until it covers them, spectators can still see hidden information through
+  those channels.
 - The `PublicGame` schema governs all 58 top-level snapshot fields shared by
   REST game reads and WebSocket `GameUpdate`. Deep entity, question, target,
   source, and campaign unions remain intentionally broad until their dedicated
@@ -1870,8 +1872,13 @@ order of the live `deck`.
 The snapshot's `log` tail drops structured rows (and child entries) whose
 `audience` is `OnlyPlayer` for a seat the viewer does not hold, and
 structured entries with no readable audience; spectators see only
-`Everyone` entries there. Legacy rows carry no audience and are kept. The
-log routes below apply the same rule, only stricter about malformed rows.
+`Everyone` entries there. Legacy rows carry no audience and are kept. So is
+a stored row whose payload no longer decodes as a structured entry (for
+example because its `audience` is missing or malformed): the server serves
+it as a legacy row, its flat `body`, whatever its audience. The log routes
+below apply the same rule but are stricter about such rows: they drop one
+unless its payload is an object whose `audience` is missing, `Everyone` or
+`OnlyPlayer` for one of the caller's seats.
 
 Current status:
 
@@ -1898,10 +1905,15 @@ Current status:
   also serve administrators for any game; `/full-export` is admin-only).
   The `/admin` routes return game summaries and room data, not game
   snapshots.
-- Not yet filtered for hidden ids: `question` and `questionPresentation`,
-  the encounter deck order, shared scenario decks, `usedAbilities` sources,
-  entity and scenario `meta`, `searchFoundStrategy`, the campaign's
-  `otherCampaignAttrs` and the viewer's own `meta`.
+- Known channels not yet filtered for hidden ids: `question` and
+  `questionPresentation`, the encounter deck order, shared scenario decks,
+  `usedAbilities` sources, entity and scenario `meta`,
+  `searchFoundStrategy`, the campaign's `otherCampaignAttrs` and the
+  viewer's own `meta`. The list is not exhaustive: a field not named above
+  as emptied or filtered (for example `removedFromPlay`, `concealed`,
+  `enemyAttackTargets`, `skillTestResults`, `scenarioSteps` or the
+  `phaseHistory`/`roundHistory`/`turnHistory` maps) is not checked for
+  hidden ids.
 - WebSocket `GameUpdate` frames remain unredacted until TASK-2.22.2.
 - The server does not emit `handCount` yet (`defaultRedactOptions` keeps
   `includeHandCount = False`); a follow-up of TASK-2.22.3 turns it on for
