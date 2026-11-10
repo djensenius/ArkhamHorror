@@ -91,12 +91,16 @@ constructor.
   `discarding` become `null`, and the found and drawn cards of a search in
   progress are cleared. Log entries addressed to a single player are dropped.
   The top card of `deck` stays when a modifier reveals it, and `deckSize` is
-  unchanged. This redaction is not complete yet. WebSocket `GameUpdate` frames
-  on the same route are not redacted (TASK-2.22.2). The REST redaction does not
-  yet cover `cards`, `question`/`questionPresentation`,
-  `foundCards`/`focusedCards`, modifier card payloads, investigator
-  `meta`/`formMeta` or the encounter deck order (TASK-2.22.5). Until those
-  tasks land, spectators can still see hidden information through them.
+  unchanged. Except where they are public, the ids of those cards are also
+  removed from `cards`, `foundCards`/`focusedCards`/`highlightedCards`,
+  modifier card payloads, investigator `meta`/`formMeta` and the other
+  collections listed under
+  [Redacted game views](#redacted-game-views-and-handcount-revision-0165).
+  This redaction is not complete yet. WebSocket `GameUpdate` frames on the
+  same route are not redacted (TASK-2.22.2). The REST redaction does not yet
+  cover `question`/`questionPresentation`, the encounter deck order, shared
+  scenario decks or the other id channels listed there as not yet filtered.
+  Until it does, spectators can still see hidden information through them.
 - The `PublicGame` schema governs all 58 top-level snapshot fields shared by
   REST game reads and WebSocket `GameUpdate`. Deep entity, question, target,
   source, and campaign unions remain intentionally broad until their dedicated
