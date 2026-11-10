@@ -1806,11 +1806,11 @@ before the server emits it. No route, capability or existing field changes.
 
 The exact redaction today, from `backend/arkham-api/library/Api/Arkham/Redact.hs`
 (not governed: later slices may hide more without a revision bump, because
-the schemas only promise that hidden zones may be empty). For every
-investigator in `investigators`, `otherInvestigators`, `killedInvestigators`
-and `retiredInvestigators` that the viewer does not control (control is the
-investigator's `playerId` matching one of the viewer's seats; the nil player
-id is nobody's seat):
+the schemas say only that a snapshot may be redacted for the caller's
+seat(s)). For every investigator in `investigators`, `otherInvestigators`,
+`killedInvestigators` and `retiredInvestigators` that the viewer does not
+control (control is the investigator's `playerId` matching one of the
+viewer's seats; the nil player id is nobody's seat):
 
 - `hand`, `sideDeck`, `decks`, `drawnCards`, `cardsUnderneath` and
   `excludeFromMulligan` are emptied in place (an array becomes `[]`, an
@@ -1822,10 +1822,52 @@ id is nobody's seat):
 - `search.searchFoundCards` and `search.searchDrawnCards` are emptied; the
   rest of `search` stays.
 
-In the snapshot's `log` tail only, structured rows (and child entries)
-whose `audience` is `OnlyPlayer` for a seat the viewer does not hold are
-dropped; spectators see only `Everyone` entries there. The separate log
-routes listed below are not filtered this way.
+The card ids in those zones (of these investigators and of the campaign's
+`meta.otherCampaignPlayers` entries the viewer does not control), and the
+found and drawn cards of a scenario-level `search` run by an investigator
+the viewer does not control, are hidden ids, less the public ones listed
+below. The server also removes hidden ids from the rest of the snapshot, so
+these collections are not complete in a redacted snapshot either:
+
+- the top-level `cards` registry (a hidden card's entry is dropped);
+- top-level `focusedCards`, `highlightedCards` and each zone list of
+  `foundCards` (zone keys stay), and the found and drawn cards of another
+  seat's scenario-level `search`;
+- every `modifiers` list: the top-level `modifiers` (a pair whose target
+  names a hidden id is dropped) and those of each investigator, in-play
+  entity (location, enemy, asset, act, agenda, treachery, event, story,
+  skill), the skill test and the focused and skill-test chaos tokens. A
+  modifier whose `card` is hidden gets `card: null`; one that still names a
+  hidden id is dropped;
+- `meta` and `formMeta` of every investigator the viewer does not control
+  (a hidden id is removed from an array, becomes `null` as an object value,
+  and is dropped as an object key);
+- `playProhibitions`, `commitProhibitions`, `cannotDiscoverClues` and
+  `cannotSpendClues` of every investigator, the viewer's own included (an
+  entry naming a hidden id is dropped; any other value naming one becomes
+  `null`);
+- the campaign's `meta.otherCampaignPlayers` (the other half of a split
+  campaign): an entry the viewer does not control gets the same zone
+  emptying and hidden-id scrub as an investigator above, and no
+  `handCount`.
+
+An id is never hidden when it is public or the viewer's own: the `cardId`
+of anything in play, a card in any investigator's `discard` or
+`meta.revealedCards`, the `activeCard`, the skill test's `committedCards`
+(not the rest of the skill test), a revealed deck top, the found and drawn
+cards of a `Revealing` search (`Searching` and `Looking` stay private), any
+card held by an investigator the viewer controls (outside its `modifiers`,
+`meta` and `formMeta`) or by the viewer's own scenario-level search, and
+any string in the viewer's own `question` entries. The campaign's `decks`
+and the scenario's `playerDecks` stay complete: they are the deck lists
+chosen at setup, which show composition (public at the table), not the
+order of the live `deck`.
+
+The snapshot's `log` tail drops structured rows (and child entries) whose
+`audience` is `OnlyPlayer` for a seat the viewer does not hold, and
+structured entries with no readable audience; spectators see only
+`Everyone` entries there. Legacy rows carry no audience and are kept. The
+log routes below apply the same rule, only stricter about malformed rows.
 
 Current status:
 
@@ -1836,14 +1878,26 @@ Current status:
   playing all seats) gets the full view, which is never redacted and never
   carries `handCount`. An administrator who holds no seat in the game gets
   the spectator view from the replay route.
+- The log routes `GET /arkham/games/{gameId}/log/before/{seq}`
+  (scrollback), `/log/sections` and `/log/export` check game membership and
+  filter for the caller's seats by the `log` tail's rule: rows in the query
+  (so a scrollback page is not cut short), child entries afterwards.
+  `/log/before` returns a page of `LogRow`s, `/log/export` a step range of
+  them (JSON by default, plain text with `format=trace`), and
+  `/log/sections` the scenario sections found in the rows the caller may
+  read. A caller who gets the full view gets every row, unfiltered. Which
+  callers get the full view may narrow later (for example to Solo games
+  only); clients should not rely on it.
 - Not redacted: the game export routes under `/arkham/games/{gameId}`
   (`/export`, `/scenario-export` and `/full-export`), which return the stored
   game rather than a `PublicGame` snapshot (`/export` and `/scenario-export`
   also serve administrators for any game; `/full-export` is admin-only).
-  The log routes `GET /arkham/games/{gameId}/log/before/{seq}` (scrollback)
-  and `/log/export` check game membership only and return structured rows
-  with no audience filter, until TASK-2.22.5 P1 filters them. The `/admin`
-  routes return game summaries and room data, not game snapshots.
+  The `/admin` routes return game summaries and room data, not game
+  snapshots.
+- Not yet filtered for hidden ids: `question` and `questionPresentation`,
+  the encounter deck order, shared scenario decks, `usedAbilities` sources,
+  entity and scenario `meta`, `searchFoundStrategy`, the campaign's
+  `otherCampaignAttrs` and the viewer's own `meta`.
 - WebSocket `GameUpdate` frames remain unredacted until TASK-2.22.2.
 - The server does not emit `handCount` yet (`defaultRedactOptions` keeps
   `includeHandCount = False`); a follow-up of TASK-2.22.3 turns it on for
