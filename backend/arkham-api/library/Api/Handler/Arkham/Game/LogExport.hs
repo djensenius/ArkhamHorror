@@ -27,6 +27,7 @@ module Api.Handler.Arkham.Game.LogExport (
 ) where
 
 import Api.Arkham.Helpers
+import Api.Arkham.Viewer (GameView, viewerForUser)
 import Arkham.Card.CardCode
 import Arkham.Log.Entry
 import Conduit
@@ -37,7 +38,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Database.Esqueleto.Experimental hiding (update, (==.))
 import Database.Esqueleto.Experimental qualified as E
-import Database.Persist qualified as Persist
+import Database.Esqueleto.Internal.Internal (Mode (SELECT), rawSelectSource)
 import Entity.Arkham.LogEntry
 import Import hiding (delete, exists, on, (==.))
 import Json
@@ -86,12 +87,17 @@ Matched on @body@ rather than on the JSON payload: a structured row's @body@ is
 key itself (@$log.scenarioBegins(scenario=...)@). That keeps this a cheap
 prefix match on one column instead of a jsonb traversal, and the game filter
 carries the index.
+
+A redacted viewer only gets banners its audience filter lets through
+('logRowVisibleSql'), as for every other log read; the narrator's banners are
+for everyone, so in practice this drops nothing.
 -}
-scenarioBanners :: ArkhamGameId -> DB [(Int, Maybe Aeson.Value)]
-scenarioBanners gameId = do
+scenarioBanners :: GameView -> ArkhamGameId -> DB [(Int, Maybe Aeson.Value)]
+scenarioBanners gameView gameId = do
   rows <- select do
     e <- from $ table @ArkhamLogEntry
     where_ $ e.arkhamGameId E.==. val gameId
+    for_ (redactedLogViewer gameView) \viewer -> where_ $ logRowVisibleSql viewer e
     -- Parenthesised: `like` is infixr 2, as Admin/Users.hs notes.
     where_ $ e.body `like` (val "$log.scenarioBegins" ++. (%))
     orderBy [asc e.step, asc e.id]
@@ -131,20 +137,23 @@ getApiV1ArkhamGameLogSectionsR gameId = do
   userId <- getRequestUserId
   runDB do
     void $ getBy404 (UniquePlayer userId gameId)
-    toSections <$> scenarioBanners gameId
+    gameView <- viewerForUser userId gameId
+    toSections <$> scenarioBanners gameView gameId
 
 {- | A step range of the log.
 
 @fromStep@ (inclusive) and @untilStep@ (exclusive) come from a 'LogSection';
 both absent is the whole game. @format@ is @json@ (the rows, which is what the
 client renders a transcript from) or @trace@ (the server's own lossy text).
+Either way the rows are the caller's view of them, filtered like the
+scrollback (see 'logRowSource').
 -}
 getApiV1ArkhamGameLogExportR :: ArkhamGameId -> Handler TypedContent
 getApiV1ArkhamGameLogExportR gameId = do
   userId <- getRequestUserId
-  ge <- runDB do
+  (ge, gameView) <- runDB do
     void $ getBy404 (UniquePlayer userId gameId)
-    get404 gameId
+    (,) <$> get404 gameId <*> viewerForUser userId gameId
   mFrom <- parseStep "fromStep"
   mUntil <- parseStep "untilStep"
   mScenario <- lookupGetParam "scenario"
@@ -154,12 +163,12 @@ getApiV1ArkhamGameLogExportR gameId = do
     "trace" -> do
       addHeader "Content-Disposition" $ "attachment; filename=" <> base <> ".txt"
       respondSource "text/plain; charset=utf-8"
-        $ traceSource ge.name mScenario (logRowSource gameId mFrom mUntil)
+        $ traceSource ge.name mScenario (logRowSource gameView gameId mFrom mUntil)
         .| sendChunks
     _ -> do
       addHeader "Content-Disposition" $ "attachment; filename=" <> base <> ".json"
       respondSource "application/json"
-        $ jsonSource ge.name mScenario mFrom mUntil (logRowSource gameId mFrom mUntil)
+        $ jsonSource ge.name mScenario mFrom mUntil (logRowSource gameView gameId mFrom mUntil)
         .| sendChunks
  where
   parseStep p = (>>= (readMaybe . T.unpack)) <$> lookupGetParam p
@@ -171,18 +180,24 @@ Streamed, and ordered by @(step, id)@ like every other log read. A campaign's
 log is thousands of rows with a JSON payload on each; holding one scenario in
 memory would be fine, but holding a whole campaign to build one response body
 is the kind of thing that only shows up in production.
+
+Filtered for the caller exactly as @\/log\/before@ is: rows another seat's
+audience hides are left out by 'logRowVisibleSql', and children by
+'logRowForView'. A full view gets every row.
 -}
 logRowSource
-  :: ArkhamGameId -> Maybe Int -> Maybe Int -> ConduitT () ArkhamLogEntry Handler ()
-logRowSource gameId mFrom mUntil = do
-  let filters =
-        [ArkhamLogEntryArkhamGameId Persist.==. gameId]
-          <> maybe [] (\s -> [ArkhamLogEntryStep Persist.>=. s]) mFrom
-          <> maybe [] (\s -> [ArkhamLogEntryStep Persist.<. s]) mUntil
-  acquire <-
-    lift $ runDB $ Persist.selectSourceRes filters [Asc ArkhamLogEntryStep, Asc ArkhamLogEntryId]
+  :: GameView -> ArkhamGameId -> Maybe Int -> Maybe Int -> ConduitT () LogRow Handler ()
+logRowSource gameView gameId mFrom mUntil = do
+  acquire <- lift $ runDB $ rawSelectSource SELECT do
+    e <- from $ table @ArkhamLogEntry
+    where_ $ e.arkhamGameId E.==. val gameId
+    for_ mFrom \s -> where_ $ e.step E.>=. val s
+    for_ mUntil \s -> where_ $ e.step E.<. val s
+    for_ (redactedLogViewer gameView) \viewer -> where_ $ logRowVisibleSql viewer e
+    orderBy [asc e.step, asc e.id]
+    pure e
   (_, rows) <- allocateAcquire acquire
-  rows .| mapC entityVal
+  rows .| mapC (toLogRow . entityVal) .| concatMapC (logRowForView gameView)
 
 {- | The rows as JSON, in an envelope saying what was exported.
 
@@ -196,7 +211,7 @@ jsonSource
   -> Maybe Text
   -> Maybe Int
   -> Maybe Int
-  -> ConduitT () ArkhamLogEntry Handler ()
+  -> ConduitT () LogRow Handler ()
   -> ConduitT () BS.ByteString Handler ()
 jsonSource gameName mScenario mFrom mUntil rows = do
   yieldBS "{\"gameName\":"
@@ -215,7 +230,7 @@ jsonSource gameName mScenario mFrom mUntil rows = do
     isFirst <- liftIO $ readIORef isFirstRef
     unless isFirst $ yieldBS ","
     liftIO $ writeIORef isFirstRef False
-    yieldLBS $ encode $ toLogRow row
+    yieldLBS $ encode row
   yieldBS "]}"
 
 {- | The server's own text rendering: 'logEntryToLines', which is what
@@ -227,13 +242,13 @@ brace DSL, because there is no locale here -- see the module header.
 traceSource
   :: Text
   -> Maybe Text
-  -> ConduitT () ArkhamLogEntry Handler ()
+  -> ConduitT () LogRow Handler ()
   -> ConduitT () BS.ByteString Handler ()
 traceSource gameName mScenario rows = do
   yieldLine $ "# " <> gameName
   for_ mScenario \scenario -> yieldLine $ "# " <> scenario
   yieldLine ""
-  rows .| awaitForever \row -> case toLogRow row of
+  rows .| awaitForever \case
     LogRowStructured entry -> traverse_ yieldLine (logEntryToLines entry)
     LogRowLegacy body _ -> yieldLine body
 

@@ -1990,6 +1990,277 @@ run = campaignI18n $ scope "resolutions" $ narrativeResolution "resolution1" Not
         )
 
 
+NARRATIVE_KEY_SCENARIO = """module Test.Scenario where
+
+import Test.Helpers
+
+run r = campaignI18n $ scope "resolutions" do
+  narrative <- getNarrative
+  case r of
+    1 -> do
+      key <- narrativeKey "resolution1" narrative.resolution1
+      resolutionWithXp key $ gainXp
+    _ -> do
+      other <- narrativeKey "resolution2" narrative.resolution2
+      resolutionWithXp other $ gainXp
+"""
+
+
+def test_a_narrative_key_bound_in_do_reaches_its_emitter_with_xp() -> None:
+    modules = {"Test/Helpers.hs": HELPERS, "Test/Scenario.hs": NARRATIVE_KEY_SCENARIO}
+    registry = registry_of(modules)
+    by_key = {entry["key"]: entry for entry in registry["keys"]}
+    for resolution in ("resolution1", "resolution2"):
+        for suffix in ("title", "body"):
+            key = f"standalone.testCampaign.resolutions.{resolution}.{suffix}"
+            entry = by_key.get(key)
+            check(entry is not None, f"narrativeKey binding did not emit {key}: {sorted(by_key)}")
+            if entry is not None:
+                types = {variable["name"]: variable["type"] for variable in entry["variables"]}
+                check(types == {"xp": "integer"}, f"{key} lost its integer xp: {types}")
+    check(
+        not any(
+            site["emitter"] == "resolutionWithXp" for site in registry["dynamicSites"]["sites"]
+        ),
+        f"a resolved narrativeKey binding is still dynamic: {registry['dynamicSites']['sites']}",
+    )
+
+
+def test_a_narrative_key_bound_in_do_reaches_a_local_helper() -> None:
+    keys = keys_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Campaign.hs": """module Test.Campaign where
+
+import Test.Helpers
+
+run = campaignI18n $ scope "interlude2" do
+  narrative <- getNarrative
+  let interlude k = story $ setTitle "title" >> p k
+  interlude "body"
+  armitageKey <- narrativeKey "drHenryArmitage" narrative.armitage
+  interlude armitageKey
+  interlude "professorWarrenRice"
+""",
+        }
+    )
+    for leaf in ("title", "body", "drHenryArmitage", "professorWarrenRice"):
+        expected = f"standalone.testCampaign.interlude2.{leaf}"
+        check(expected in keys, f"narrativeKey through a local helper missing {expected}: {sorted(keys)}")
+
+
+def test_an_emitter_bound_to_a_narrative_key_with_reverse_bind() -> None:
+    keys = keys_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Campaign.hs": """module Test.Campaign where
+
+import Test.Helpers
+
+run = campaignI18n $ scope "interlude4" do
+  narrative <- getNarrative
+  story . i18n =<< narrativeKey "rightfulKeeper" narrative.rightfulKeeper
+  (story . i18n) =<< narrativeKey "parenthesised" narrative.other
+  story . i18n =<< pure "notANarrativeKey"
+""",
+        }
+    )
+    for leaf in ("rightfulKeeper", "parenthesised"):
+        expected = f"standalone.testCampaign.interlude4.{leaf}"
+        check(expected in keys, f"i18n =<< narrativeKey missing {expected}: {sorted(keys)}")
+    check(
+        "standalone.testCampaign.interlude4.notANarrativeKey" not in keys,
+        f"=<< from something other than narrativeKey was read as a key: {sorted(keys)}",
+    )
+
+
+def test_a_parenthesised_narrative_key_bound_in_do_reaches_its_emitter() -> None:
+    # Parentheses around the bound action do not change what the bind yields.
+    registry = registry_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run r = campaignI18n $ scope "resolutions" do
+  narrative <- getNarrative
+  case r of
+    1 -> do
+      key <- (narrativeKey "resolution1" narrative.resolution1)
+      resolutionWithXp key $ gainXp
+    _ -> do
+      other <- ((narrativeKey "resolution2" narrative.resolution2))
+      resolutionWithXp other $ gainXp
+""",
+        }
+    )
+    by_key = {entry["key"]: entry for entry in registry["keys"]}
+    for resolution in ("resolution1", "resolution2"):
+        for suffix in ("title", "body"):
+            key = f"standalone.testCampaign.resolutions.{resolution}.{suffix}"
+            entry = by_key.get(key)
+            check(entry is not None, f"parenthesised narrativeKey bind did not emit {key}: {sorted(by_key)}")
+            if entry is not None:
+                types = {variable["name"]: variable["type"] for variable in entry["variables"]}
+                check(types == {"xp": "integer"}, f"{key} lost its integer xp: {types}")
+    check(
+        not any(
+            site["emitter"] == "resolutionWithXp" for site in registry["dynamicSites"]["sites"]
+        ),
+        f"a parenthesised narrativeKey bind is still dynamic: {registry['dynamicSites']['sites']}",
+    )
+
+
+def test_a_wrapped_narrative_key_bound_in_do_stays_dynamic() -> None:
+    # Parentheses holding more than the narrativeKey application change the
+    # bound value, so the base key is not what the bind yields.
+    registry = registry_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run r = campaignI18n $ scope "resolutions" do
+  narrative <- getNarrative
+  case r of
+    1 -> do
+      key <- (narrativeKey "resolution1" narrative.resolution1 <&> suffixed)
+      resolutionWithXp key $ gainXp
+    _ -> do
+      other <- (wrap (narrativeKey "resolution2" narrative.resolution2))
+      resolutionWithXp other $ gainXp
+""",
+        }
+    )
+    keys = {entry["key"] for entry in registry["keys"]}
+    check(
+        not any("resolution1" in key or "resolution2" in key for key in keys),
+        f"a wrapped narrativeKey bind was read as a key: {sorted(keys)}",
+    )
+    check(
+        any(site["emitter"] == "resolutionWithXp" for site in registry["dynamicSites"]["sites"]),
+        f"a wrapped narrativeKey bind is no longer dynamic: {registry['dynamicSites']['sites']}",
+    )
+
+
+def test_a_let_bound_narrative_key_is_not_read_as_a_key() -> None:
+    # `let key = narrativeKey ...` binds the action, not the key it yields.
+    registry = registry_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ scope "resolutions" do
+  narrative <- getNarrative
+  let key = narrativeKey "resolution1" narrative.resolution1
+  resolutionWithXp key $ gainXp
+""",
+        }
+    )
+    keys = {entry["key"] for entry in registry["keys"]}
+    check(
+        not any("resolution1" in key for key in keys),
+        f"a let-bound narrativeKey action was read as a key: {sorted(keys)}",
+    )
+
+
+def test_a_rebound_narrative_key_reaches_each_use_from_its_nearest_bind() -> None:
+    # A later `key <-` shadows the earlier one only for the statements after it.
+    registry = registry_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ scope "rebound" do
+  narrative <- getNarrative
+  key <- narrativeKey "first" narrative.one
+  p key
+  key <- narrativeKey "second" narrative.two
+  scope "later" $ p key
+""",
+        }
+    )
+    keys = {entry["key"] for entry in registry["keys"]}
+    for expected in ("standalone.testCampaign.rebound.first", "standalone.testCampaign.rebound.later.second"):
+        check(expected in keys, f"a rebound narrativeKey lost {expected}: {sorted(keys)}")
+    for unexpected in ("standalone.testCampaign.rebound.later.first", "standalone.testCampaign.rebound.second"):
+        check(unexpected not in keys, f"a rebound narrativeKey reached the wrong use: {unexpected}")
+    check(
+        not any(site["emitter"] == "p" for site in registry["dynamicSites"]["sites"]),
+        f"a rebound narrativeKey use is still dynamic: {registry['dynamicSites']['sites']}",
+    )
+
+
+def test_a_use_before_a_do_bind_does_not_read_the_later_bind() -> None:
+    # `p key` before `key <-` sees the outer `where` key, or nothing at all.
+    registry = registry_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ scope "early" do
+  narrative <- getNarrative
+  p key
+  key <- narrativeKey "later" narrative.one
+  p key
+ where
+  key = "outer"
+
+unbound = campaignI18n $ scope "unbound" do
+  narrative <- getNarrative
+  p other
+  other <- narrativeKey "afterwards" narrative.two
+  pure ()
+""",
+        }
+    )
+    keys = {entry["key"] for entry in registry["keys"]}
+    for expected in ("standalone.testCampaign.early.outer", "standalone.testCampaign.early.later"):
+        check(expected in keys, f"a use around a do bind lost {expected}: {sorted(keys)}")
+    check(
+        "standalone.testCampaign.unbound.afterwards" not in keys,
+        f"a use before its do bind read the later bind: {sorted(keys)}",
+    )
+    check(
+        any(site["emitter"] == "p" for site in registry["dynamicSites"]["sites"]),
+        f"a use before its only do bind is no longer dynamic: {registry['dynamicSites']['sites']}",
+    )
+
+
+def test_let_and_where_bindings_stay_recursive() -> None:
+    # `let`/`where` groups are recursive: a binding may name a later one.
+    keys = keys_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ scope "recursive" do
+  let
+    outer = inner
+    inner = "fromLet"
+  p outer
+  p fromWhere
+ where
+  fromWhere = laterWhere
+  laterWhere = "fromWhere"
+""",
+        }
+    )
+    for leaf in ("fromLet", "fromWhere"):
+        expected = f"standalone.testCampaign.recursive.{leaf}"
+        check(expected in keys, f"a recursive binding lost {expected}: {sorted(keys)}")
+
+
 def test_the_registry_digest_covers_the_extracted_surface_not_the_input_files() -> None:
     card = """module Test.Card where
 
@@ -2296,6 +2567,28 @@ def test_committed_registry_properties() -> None:
                     f"narrativeResolution key {key} lost its integer xp: {types}",
                 )
 
+    # Resolutions whose key is bound with narrativeKey (Arkham/Helpers/Narrative.hs).
+    for prefix in (
+        "theDunwichLegacy.theMiskatonicMuseum.resolutions.resolution1",
+        "theDunwichLegacy.theMiskatonicMuseum.resolutions.resolution2",
+        "theDunwichLegacy.extracurricularActivity.resolutions.resolution2",
+    ):
+        for suffix in ("title", "body"):
+            key = f"{prefix}.{suffix}"
+            entry = by_key.get(key)
+            check(entry is not None, f"registry lost a narrativeKey resolution: {key}")
+            if entry is not None:
+                types = {variable["name"]: variable["type"] for variable in entry["variables"]}
+                check(
+                    types.get("xp") == "integer",
+                    f"narrativeKey resolution {key} lost its integer xp: {types}",
+                )
+    for key in (
+        "theDunwichLegacy.interlude2.drHenryArmitage",
+        "theInnsmouthConspiracy.interlude4.rightfulKeeper",
+    ):
+        check(key in keys, f"registry lost a narrativeKey interlude key: {key}")
+
     # `chooseAmount' iid "additionalActions" "$actions"` is an amount label, not
     # a root-level key.
     check("actions" not in keys, "the $actions false positive is back")
@@ -2403,6 +2696,15 @@ TESTS = (
     test_only_known_caller_scope_alias_reasons_are_classified,
     test_a_heading_story_emits_its_title_and_body,
     test_a_narrative_resolution_emits_its_title_and_body_with_xp,
+    test_a_narrative_key_bound_in_do_reaches_its_emitter_with_xp,
+    test_a_narrative_key_bound_in_do_reaches_a_local_helper,
+    test_an_emitter_bound_to_a_narrative_key_with_reverse_bind,
+    test_a_parenthesised_narrative_key_bound_in_do_reaches_its_emitter,
+    test_a_wrapped_narrative_key_bound_in_do_stays_dynamic,
+    test_a_let_bound_narrative_key_is_not_read_as_a_key,
+    test_a_rebound_narrative_key_reaches_each_use_from_its_nearest_bind,
+    test_a_use_before_a_do_bind_does_not_read_the_later_bind,
+    test_let_and_where_bindings_stay_recursive,
     test_the_registry_digest_covers_the_extracted_surface_not_the_input_files,
     test_dynamic_sites_are_line_independent,
     test_sites_are_named_by_file_and_top_level_binding,

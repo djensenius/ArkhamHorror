@@ -77,6 +77,17 @@ spec harness app seedUser = describe "REST game reads are redacted per viewer" d
       zonesOf <$> request bob (gamePath gameId "")
         `shouldReturn` (status200, seatZones 1 (0, 0) (1, 2))
 
+  it "drops the other seat's hand and deck cards from the cards registry (GET game)" $
+    withConnection harness \connection -> do
+      gameId <- seedGame connection 10 "redact-registry" WithFriends
+      alice <- seedUser connection "redact-registry-alice"
+      bob <- seedUser connection "redact-registry-bob"
+      seat connection 10 gameId alice 1
+      seat connection 10 gameId bob 2
+      registryOf <$> request alice (gamePath gameId "") `shouldReturn` (status200, [1 .. 5])
+      registryOf <$> request bob (gamePath gameId "") `shouldReturn` (status200, [6, 7, 8])
+      registryOf <$> request alice (gamePath gameId "/spectate") `shouldReturn` (status200, [])
+
   it "still refuses GET game to a non-member" $
     withConnection harness \connection -> do
       gameId <- seedGame connection 2 "redact-get-stranger" WithFriends
@@ -308,7 +319,8 @@ seedGame :: SqlBackend -> Word32 -> Text -> MultiplayerVariant -> IO ArkhamGameI
 seedGame connection g label variant = do
   now <- currentTimeMicros
   let initial = Game.newCampaign "01" Nothing 1 2 Easy False
-      card n = lookupPlayerCard Assets.flashlight (unsafeMakeCardId $ UUID.fromWords 0x2221 1 0 n)
+      cardId n = unsafeMakeCardId $ UUID.fromWords 0x2221 1 0 n
+      card n = lookupPlayerCard Assets.flashlight (cardId n)
       investigator code n handIds deckIds =
         overAttrs
           (\attrs -> attrs
@@ -318,6 +330,7 @@ seedGame connection g label variant = do
           (lookupInvestigator code (PlayerId $ seatUuid g n))
       game = initial
         { Game.gamePlayerOrder = ["01001", "01002"]
+        , Game.gameCards = Map.fromList [(cardId n, PlayerCard (card n)) | n <- [1 .. 8]]
         , Game.gameEntities = initial.gameEntities
             { entitiesInvestigators = Map.fromList
                 [ ("01001", investigator "01001" 1 [1, 2] [3, 4, 5])
@@ -335,6 +348,20 @@ zonesOf (status, body) = (status, fromMaybe mempty zones)
     Object response <- decode body
     Object game <- KeyMap.lookup "game" response
     investigatorZones game
+
+-- | Which seeded cards (by number) the response's @cards@ registry holds.
+registryOf :: (Status, LByteString) -> (Status, [Word32])
+registryOf (status, body) = (status, fromMaybe [] numbers)
+ where
+  numbers = do
+    Object response <- decode body
+    Object game <- KeyMap.lookup "game" response
+    Object cards <- KeyMap.lookup "cards" game
+    pure
+      [ n
+      | n <- [1 .. 8]
+      , KeyMap.member (fromString . UUID.toString $ UUID.fromWords 0x2221 1 0 n) cards
+      ]
 
 -- | 'zonesOf' for a response that is itself the game (pending, create, import).
 gameZonesOf :: (Status, LByteString) -> (Status, Zones)

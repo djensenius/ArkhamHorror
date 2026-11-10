@@ -188,14 +188,16 @@ getApiV1ArkhamGameR gameId = do
 
 The game payload carries only the newest 'gameLogTailSize' entries, so this is
 how a reader reaches the rest. Membership is checked the same way the game read
-is, because the log can carry entries addressed to one seat.
+is, because the log can carry entries addressed to one seat; and the page is
+filtered for the caller's seats the way the game payload's log tail is.
 -}
 getApiV1ArkhamGameLogBeforeR :: ArkhamGameId -> Int -> Handler [LogRow]
 getApiV1ArkhamGameLogBeforeR gameId before = do
   userId <- getRequestUserId
   runDB do
     void $ getBy404 (UniquePlayer userId gameId)
-    (.entries) <$> getGameLogBefore gameId before gameLogTailSize
+    gameView <- viewerForUser userId gameId
+    (.entries) <$> getGameLogBefore gameView gameId before gameLogTailSize
 
 {- | Watch a game without a seat in it.
 
