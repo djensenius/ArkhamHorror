@@ -69,12 +69,14 @@ module Api.Arkham.Redact (
   redactFor,
   redactWith,
   viewerControls,
+  viewerSeats,
+  logRowFor,
   hiddenZoneKeys,
   investigatorMapKeys,
 ) where
 
 import Arkham.Id (PlayerId (PlayerId))
-import Arkham.Log.Entry (LogAudience (Everyone, OnlyPlayer))
+import Arkham.Log.Entry (LogAudience (Everyone, OnlyPlayer), LogEntry (..), LogRow (..))
 import Arkham.Modifier (ModifierType (TopCardOfDeckIsRevealed))
 import Data.Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -242,6 +244,22 @@ redactLogEntry viewer = \case
   children = \case
     Array entries -> Array (V.mapMaybe (redactLogEntry viewer) entries)
     _ -> Array mempty
+
+{- | The @log@ tail's rule ('redactLog') for one typed row, for the log reads
+that are not a game payload (the scrollback page and the log export): a
+structured row the viewer may not read is dropped, its children are pruned the
+same way, and a legacy row is kept.
+-}
+logRowFor :: Viewer -> LogRow -> Maybe LogRow
+logRowFor viewer = \case
+  LogRowStructured entry -> LogRowStructured <$> logEntryFor viewer entry
+  row@(LogRowLegacy _ _) -> Just row
+
+logEntryFor :: Viewer -> LogEntry -> Maybe LogEntry
+logEntryFor viewer entry
+  | audienceVisible viewer (toJSON entry.logEntryAudience) =
+      Just entry {logEntryChildren = mapMaybe (logEntryFor viewer) entry.logEntryChildren}
+  | otherwise = Nothing
 
 audienceVisible :: Viewer -> Value -> Bool
 audienceVisible viewer audience =

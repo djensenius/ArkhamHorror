@@ -359,6 +359,17 @@ spec = describe "Api.Arkham.Redact.redactFor" do
     logTexts (redactFor (ViewerSeats (Set.singleton tableB)) (toJSON tableGame))
       `shouldBe` ["everyone", "only B", "legacy", "parent", "child B"]
 
+  it "filters typed log rows (logRowFor) exactly as the log tail is redacted" $ withTable \Table {..} -> liftIO do
+    let rows = logRows tableA tableB
+        logOf = \case
+          Aeson.Object top -> KeyMap.lookup "log" top
+          _ -> Nothing
+        typed v = toJSON (mapMaybe (Redact.logRowFor v) rows)
+    for_ [ViewerSpectator, ViewerSeats (Set.singleton tableA), ViewerSeats (Set.singleton tableB)] \v ->
+      Just (typed v) `shouldBe` logOf (redactFor v (toJSON tableGame))
+    logTexts (Aeson.object ["log" .= typed (ViewerSeats (Set.singleton tableA))])
+      `shouldBe` ["everyone", "only A", "legacy", "parent"]
+
   it "gives the same result through toJSON and the toEncoding wire path (e)" $ withTable \Table {..} -> liftIO do
     let wire = fromJustNote "PublicGame encoding did not parse" (Aeson.decode (Aeson.encode tableGame))
     for_ [ViewerSpectator, ViewerSeats (Set.singleton tableA), ViewerSeats (Set.fromList [tableA, tableB])] \v ->
