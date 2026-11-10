@@ -17,6 +17,7 @@ module Api.Handler.Arkham.Games.Admin (
   deleteApiV1AdminRoomR,
   postApiV1AdminRoomProbeR,
   postApiV1AdminRoomSweepR,
+  withAdminGameIn,
 ) where
 
 import Api.Arkham.Epic (lookupGameEvent)
@@ -104,8 +105,7 @@ getActiveGames roomData = runDB do
   traverse (`tryGameDetailsEntry` 0) games
 
 getApiV1AdminGameR :: ArkhamGameId -> Handler GetGameJson
-getApiV1AdminGameR gameId = do
-  servePongAware $ gameStream gameId
+getApiV1AdminGameR gameId = withAdminGame gameId do
   g <- runDB $ get404 gameId
   let Game {..} = g.currentData
   gameLog <- runDB $ getGameLogTail gameId gameLogTailSize
@@ -117,6 +117,49 @@ getApiV1AdminGameR gameId = do
       g.variant
       (PublicGame gameId g.name gameLog.entries g.currentData)
       (entityKey . fst <$> mEvt)
+
+{- | Gate the admin WebSocket upgrade and the REST read behind a check that
+the game exists, as 'Api.Handler.Arkham.Games' does for spectators
+(TASK-2.92).
+
+The upgrade is still the participant stream, so an admin on an existing game
+keeps its room alive exactly as before. Without the check an upgrade for an
+unknown id opened (and subscribed) a room, bumped its member count and
+published the watcher count, and the admin's presence then kept that phantom
+room alive. The REST continuation keeps @get404@ for a game deleted between
+this check and that read.
+-}
+withAdminGame :: ArkhamGameId -> Handler a -> Handler a
+withAdminGame gameId =
+  withAdminGameIn
+    (runDB $ adminGameExists gameId)
+    (servePongAware $ gameStream gameId)
+    notFound
+
+-- | One indexed column, not the row: the row carries the whole game blob.
+adminGameExists :: ArkhamGameId -> SqlPersistT Handler Bool
+adminGameExists gameId = do
+  ids <- select do
+    games <- from $ table @ArkhamGame
+    where_ $ games.id ==. val gameId
+    limit 1
+    pure games.id
+  pure $ not (null ids)
+
+{- | Run the existence lookup first; only an existing game may attempt the
+admin upgrade (a no-op unless the request is a WebSocket handshake) and then
+the REST continuation. A missing game takes @reject@ (@notFound@ in
+production) and runs neither.
+
+The effect-parameterized boundary is shared by production and tests, as with
+'Api.Handler.Arkham.Games.withSpectatableGameIn'.
+-}
+withAdminGameIn :: Monad m => m Bool -> m () -> m a -> m a -> m a
+withAdminGameIn lookupExists attemptUpgrade reject continue = do
+  found <- lookupExists
+  if found
+    then attemptUpgrade >> continue
+    else reject
 
 getApiV1AdminFindGameR :: ArkhamPlayerId -> Handler GameDetailsEntry
 getApiV1AdminFindGameR playerId = do
