@@ -19,6 +19,7 @@ module Api.Handler.Arkham.Games (
   postApiV1ArkhamGamePlayabilityR,
   withGameParticipantIn,
   gameParticipantGate,
+  withSpectatableGameIn,
 ) where
 
 import Api.Arkham.Epic (lookupGameEvent)
@@ -187,14 +188,16 @@ getApiV1ArkhamGameR gameId = do
 
 The game payload carries only the newest 'gameLogTailSize' entries, so this is
 how a reader reaches the rest. Membership is checked the same way the game read
-is, because the log can carry entries addressed to one seat.
+is, because the log can carry entries addressed to one seat; and the page is
+filtered for the caller's seats the way the game payload's log tail is.
 -}
 getApiV1ArkhamGameLogBeforeR :: ArkhamGameId -> Int -> Handler [LogRow]
 getApiV1ArkhamGameLogBeforeR gameId before = do
   userId <- getRequestUserId
   runDB do
     void $ getBy404 (UniquePlayer userId gameId)
-    (.entries) <$> getGameLogBefore gameId before gameLogTailSize
+    gameView <- viewerForUser userId gameId
+    (.entries) <$> getGameLogBefore gameView gameId before gameLogTailSize
 
 {- | Watch a game without a seat in it.
 
@@ -204,12 +207,12 @@ on the home page's watch list, not whether this read is allowed.
 
 The socket is 'spectatorStream', so a watcher cannot answer the game's
 questions. The read is always the spectator view, even for a caller who holds
-a seat: this route is not authenticated.
+a seat: this route is not authenticated. 'withSpectatableGame' checks the game
+exists first, so an unknown id answers 404 without opening a room for it.
 -}
 getApiV1ArkhamGameSpectateR :: ArkhamGameId -> Handler (Redacted GetGameJson)
-getApiV1ArkhamGameSpectateR gameId = do
-  servePongAware $ spectatorStream gameId
-  runDB do
+getApiV1ArkhamGameSpectateR gameId =
+  withSpectatableGame gameId $ runDB do
     g <- get404 gameId
     let Game {..} = g.currentData
     gameLog <- getGameLogTail gameId gameLogTailSize
@@ -222,6 +225,47 @@ getApiV1ArkhamGameSpectateR gameId = do
         g.variant
         (PublicGame gameId g.name gameLog.entries g.currentData)
         (entityKey . fst <$> mEvt)
+
+{- | Gate the spectator WebSocket upgrade and the REST read behind a check
+that the game exists.
+
+Existence only, not access: anyone holding the id may watch. The lookup is a
+single indexed column, like 'getApiV1ArkhamGameStepR'. Without it an upgrade
+for an unknown id would be accepted and would open (and subscribe) a room,
+bump the watcher count and publish it, for a game that is not there. The REST
+continuation still uses @get404@, which covers a game deleted between this
+check and that read.
+-}
+withSpectatableGame :: ArkhamGameId -> Handler a -> Handler a
+withSpectatableGame gameId =
+  withSpectatableGameIn
+    (runDB $ spectatableGameExists gameId)
+    (servePongAware $ spectatorStream gameId)
+    notFound
+
+spectatableGameExists :: ArkhamGameId -> SqlPersistT Handler Bool
+spectatableGameExists gameId = do
+  ids <- select do
+    games <- from $ table @ArkhamGame
+    where_ $ games.id ==. val gameId
+    limit 1
+    pure games.id
+  pure $ not (null ids)
+
+{- | Run the existence lookup first; only an existing game may attempt the
+spectator upgrade (a no-op unless the request is a WebSocket handshake) and
+then the REST continuation. A missing game takes @reject@ (@notFound@ in
+production) and runs neither.
+
+The effect-parameterized boundary is shared by production and tests, as with
+'withGameParticipantIn'.
+-}
+withSpectatableGameIn :: Monad m => m Bool -> m () -> m a -> m a -> m a
+withSpectatableGameIn lookupExists attemptUpgrade reject continue = do
+  found <- lookupExists
+  if found
+    then attemptUpgrade >> continue
+    else reject
 
 {- | The home page's list.
 

@@ -2413,11 +2413,13 @@ for role in ("backend-registry", "source-", "chunk-", "manifest"):
         "count in its manifest must be backed by governed bytes",
     )
 
-# `generatorSha256` and `schemasSha256` are digests of real repository sources
-# (the fixture generator and the published v1 schemas) rather than of committed
-# stand-ins, so they are checked where they are derived --
+# `schemasSha256` is a digest of the real published v1 schemas and
+# `generatorSha256` a digest of the generator's name and GENERATOR_VERSION,
+# not of committed stand-ins, so they are checked where they are derived --
 # scripts/build-locale-catalog-fixture.py's own provenance self-tests, run by
-# `contracts:catalog-fixture` -- not against a governed descriptor here.
+# `contracts:catalog-fixture` -- not against a governed descriptor here. The
+# generator's tooling bytes are not governed: that same run checks them against
+# the non-governed scripts/locale_catalog_tooling_lock.json.
 
 # scripts/build-locale-catalog-fixture.py owns the derivation itself (and its
 # own mutation self-tests); `contracts:catalog-fixture` re-derives all of it.
