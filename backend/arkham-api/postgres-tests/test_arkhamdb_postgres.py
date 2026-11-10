@@ -94,11 +94,13 @@ class RealClusterTests(unittest.TestCase):
             psql, "-X", "-v", "ON_ERROR_STOP=1", "-Atc",
             "SELECT current_database(), current_setting('listen_addresses'), "
             "to_regclass('arkhamdb_accounts'), to_regclass('arkhamdb_pushes'), "
-            "to_regclass('idx_arkhamdb_pushes_game_outstanding');",
+            "to_regclass('idx_arkhamdb_pushes_game_outstanding'), "
+            "to_regclass('idx_arkham_players_game');",
         ])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(
-            "arkhamdb_test||arkhamdb_accounts|arkhamdb_pushes|idx_arkhamdb_pushes_game_outstanding",
+            "arkhamdb_test||arkhamdb_accounts|arkhamdb_pushes|idx_arkhamdb_pushes_game_outstanding"
+            "|idx_arkham_players_game",
             result.stdout,
         )
         self.assert_removed(result)
@@ -213,6 +215,62 @@ class RealClusterTests(unittest.TestCase):
             self.assertEqual(execute("-c", "SELECT completion_hash, encrypted_pending_tokens "
                                     "FROM arkhamdb_link_states WHERE nonce = 'user-migration-guard'"),
                              "guard-completion|encrypted-guard")
+
+    def test_players_game_index_migration_round_trip_and_foreign_name_collisions(self):
+        change = "arkham_players_game_index"
+        index = "idx_arkham_players_game"
+        game = "00000000-0000-4000-8000-000000002131"
+        with launcher.cluster(self.log_dir) as environment:
+            pg_bin = environment.get("ARKHAM_TEST_PG_BIN")
+            psql = str(Path(pg_bin) / "psql") if pg_bin else "psql"
+
+            def execute(*arguments, success=True):
+                result = subprocess.run(
+                    [psql, "-X", "--no-password", "-v", "ON_ERROR_STOP=1", "-At", *arguments],
+                    env=environment, text=True, capture_output=True, timeout=30,
+                )
+                if success:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                return result.stdout.strip()
+
+            def migration(kind, success=True):
+                return execute("-f", str(launcher.ROOT / "migrations" / kind / (change + ".sql")),
+                               success=success)
+
+            execute("-c", "INSERT INTO users (username, email, password_digest) "
+                    "VALUES ('players-index-migration-guard', 'players-guard@postgres-test.invalid', "
+                    "'not-a-password')")
+            execute("-c", "INSERT INTO arkham_games (id, name, current_data, multiplayer_variant) "
+                    f"VALUES ('{game}', 'players-index-guard', '{{}}', 'Solo')")
+            execute("-c", "INSERT INTO arkham_players (arkham_game_id, user_id, investigator_id) "
+                    f"SELECT '{game}', id, seat FROM users, (VALUES ('01001'), ('01002')) AS seats (seat) "
+                    "WHERE username = 'players-index-migration-guard'")
+            migration("verify")
+            migration("revert")
+            self.assertEqual(execute("-c", f"SELECT to_regclass('{index}') IS NULL"), "t")
+            migration("verify", success=False)
+            migration("deploy")
+            migration("verify")
+            migration("revert")
+            # Neither a different table nor an unowned same-shaped index may
+            # be adopted by deploy or removed by a failed migration's revert.
+            for target in ("users (id)", "arkham_players (arkham_game_id)"):
+                with self.subTest(target=target):
+                    execute("-c", f"CREATE INDEX {index} ON {target}")
+                    migration("deploy", success=False)
+                    migration("verify", success=False)
+                    migration("revert", success=False)
+                    self.assertEqual(execute("-c", f"SELECT to_regclass('{index}') IS NOT NULL"), "t")
+                    execute("-c", f"DROP INDEX {index}")
+            migration("deploy")
+            migration("verify")
+            self.assertEqual(execute("-c", "SELECT count(*) FROM users "
+                                    "WHERE username = 'players-index-migration-guard'"), "1")
+            self.assertEqual(execute("-c", "SELECT string_agg(investigator_id, ',' ORDER BY investigator_id) "
+                                    f"FROM arkham_players WHERE arkham_game_id = '{game}'"),
+                             "01001,01002")
 
     def test_timed_out_command_is_reaped_before_cluster_removal(self):
         result = self.launch([sys.executable, "-c", "import time; time.sleep(60)"], timeout=1)
