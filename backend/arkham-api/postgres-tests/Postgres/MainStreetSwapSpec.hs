@@ -6,12 +6,19 @@
 -- disposable database: one committed unit (both games and their step rows,
 -- seats, memberships, the spent readiness and the undo floors), refusals that
 -- change no row, and the canonical lock order against a double submit, a
--- reversed swap, gameplay and a concurrent event delete.
+-- reversed swap, gameplay and a concurrent event delete; and the undo floor
+-- the re-ask raises in its own transaction, which never moves down.
 module Postgres.MainStreetSwapSpec (spec) where
 
-import Api.Arkham.Epic (modifySharedStateLocked)
+import Api.Arkham.Epic (modifySharedStateLocked, upsertUndoFloorMonotonic)
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (WithFriends))
-import Api.Handler.Arkham.Games.Shared (MainStreetSwapSide (..), mainStreetSwapSide)
+import Api.Handler.Arkham.Games.Shared (
+  GroupRunUndoFloor (RaiseUndoFloorToNewStep),
+  MainStreetSwapSide (..),
+  mainStreetSwapSide,
+  runMessagesInGroupCoreWith,
+  setGameUndoFloor,
+ )
 import Arkham.Calculation (GameCalculation (Fixed))
 import Arkham.Card.Id (unsafeMakeCardId)
 import Arkham.Classes.Entity (attr, overAttrs)
@@ -50,7 +57,7 @@ import Entity.Arkham.Game
 import Entity.Arkham.Player
 import Entity.Arkham.Step
 import Entity.User (UserId)
-import Foundation (App)
+import Foundation (App, unsafeHandler)
 import Network.HTTP.Types (Method, statusCode)
 import Postgres.Harness
 import Postgres.Production (authorizationFor, routeRequest)
@@ -95,7 +102,8 @@ data Rows = Rows
   }
   deriving stock (Eq, Show)
 
-notReady, stale, conflict :: Outcome
+notReady, stale, conflict, floored :: Outcome
+floored = Refused 400 (Just "Can't undo past the act advance")
 notReady = Refused 409 (Just "main-street-not-ready")
 stale = Refused 409 (Just "main-street-stale")
 conflict = Refused 409 (Just "main-street-conflict")
@@ -140,6 +148,98 @@ spec harness app seedUser = describe "Main Street swap" do
         game <- gameData connection side.gameId
         Map.keys (Game.gameQuestion game) `shouldBe` [other.player]
         (isPlayerWindow <$> Map.lookup other.player (Game.gameQuestion game)) `shouldBe` Just True
+
+  it "refuses an undo below the re-asked step in either game" $
+    withConnection harness \connection -> do
+      f <- seedFixture connection seedUser "swap-reask-undo"
+      for_ [f.side0, f.side1] \side -> askStale connection side
+      requestSwap app f.organizer f.eventId 0 1 `shouldReturn` Succeeded
+      -- Each player now sits in the other game, at its re-asked step (3).
+      undo app f.side1.user f.side0.gameId `shouldReturn` floored
+      undo app f.side0.user f.side1.gameId `shouldReturn` floored
+      assertSwapped connection f
+
+  it "raises the re-ask's undo floor in the transaction that writes its step" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      f <- seedFixture observer seedUser "swap-reask-atomic"
+      let gameId = f.side0.gameId
+      transaction observer $ P.insert_ $ ArkhamGameUndoFloor gameId 1
+      held <- newBarrier
+      holderPid <- backendPid holding
+      withAsync (transaction holding (lockFloorRow gameId >> liftIO (pauseAt held))) \holder -> do
+        link holder
+        awaitBarrier held
+        withAsync (reaskGame app gameId) \reasking -> do
+          awaitBlockedSessions observer holderPid 1
+          -- The re-ask has written its step and now waits on the floor row:
+          -- neither is visible until both commit together.
+          stepAndFloor observer gameId `shouldReturn` (Just 1, Just 1)
+          releaseBarrier held
+          within "floor holder commit" $ wait holder
+          within "re-ask" (wait reasking) `shouldReturn` Just 2
+      stepAndFloor observer gameId `shouldReturn` (Just 2, Just 2)
+
+  it "keeps a higher floor a settlement committed while the re-ask waited" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      f <- seedFixture observer seedUser "swap-reask-monotonic"
+      let gameId = f.side0.gameId
+      held <- newBarrier
+      holderPid <- backendPid holding
+      -- An organizer settlement's floor write (the game's first): it takes
+      -- KEY SHARE on the game row, then the floor row, and holds both.
+      withAsync
+        (transaction holding (upsertUndoFloorMonotonic gameId 10 >> liftIO (pauseAt held)))
+        \holder -> do
+          link holder
+          awaitBarrier held
+          withAsync (reaskGame app gameId) \reasking -> do
+            -- The re-ask waits on the game row, then commits after the
+            -- settlement's higher floor and keeps it.
+            awaitBlockedSessions observer holderPid 1
+            releaseBarrier held
+            within "settlement commit" $ wait holder
+            within "re-ask" (wait reasking) `shouldReturn` Just 2
+      stepAndFloor observer gameId `shouldReturn` (Just 2, Just 10)
+      -- A stale settlement write arriving after a higher floor keeps it too.
+      unsafeHandler app $ setGameUndoFloor gameId 4
+      stepAndFloor observer gameId `shouldReturn` (Just 2, Just 10)
+
+  it "orders a settlement's first floor insert after a game-locked floor write" $
+    withConnection harness \holding -> withConnection harness \observer -> do
+      f <- seedFixture observer seedUser "swap-floor-lock-order"
+      let gameId = f.side0.gameId
+      stepAndFloor observer gameId `shouldReturn` (Just 1, Nothing)
+      held <- newBarrier
+      holderPid <- backendPid holding
+      -- An act advance (or re-ask): the game row FOR UPDATE, then the floor.
+      withAsync
+        ( transaction holding do
+            lockGameRow gameId
+            liftIO $ pauseAt held
+            upsertUndoFloorMonotonic gameId 5
+        )
+        \holder -> do
+          link holder
+          awaitBarrier held
+          -- The settlement's first floor insert for this game. It must wait on
+          -- the game row before it locks the new floor row, or the holder's
+          -- upsert would wait on that row in turn: a deadlock.
+          withAsync (unsafeHandler app $ setGameUndoFloor gameId 3) \settling -> do
+            awaitBlockedSessions observer holderPid 1
+            releaseBarrier held
+            within "game-locked floor write" $ wait holder
+            within "settlement floor" $ wait settling
+      stepAndFloor observer gameId `shouldReturn` (Just 1, Just 5)
+
+  it "never lowers a higher undo floor through the swap or its re-ask" $
+    withConnection harness \connection -> do
+      f <- seedFixture connection seedUser "swap-floor-monotonic"
+      transaction connection $ for_ [f.side0, f.side1] \side ->
+        P.insert_ $ ArkhamGameUndoFloor side.gameId 10
+      requestSwap app f.organizer f.eventId 0 1 `shouldReturn` Succeeded
+      r <- rows connection f
+      map (fmap fst) r.games `shouldBe` [Just 3, Just 3]
+      r.floors `shouldBe` sort [(f.side0.gameId, 10), (f.side1.gameId, 10)]
 
   it "refuses a group whose game left its investigation phase with 409 and changes no row" $
     withConnection harness \connection -> do
@@ -394,6 +494,28 @@ lockGameRow gameId =
         :: ReaderT SqlBackend IO [Single Int64]
     )
 
+lockFloorRow :: ArkhamGameId -> ReaderT SqlBackend IO ()
+lockFloorRow gameId =
+  void
+    ( rawSql
+        "SELECT 1::bigint FROM arkham_game_undo_floors WHERE arkham_game_id = ? FOR UPDATE"
+        [toPersistValue gameId]
+        :: ReaderT SqlBackend IO [Single Int64]
+    )
+
+-- The swap's re-ask of one game, run directly: the new step it committed.
+reaskGame :: App -> ArkhamGameId -> IO (Maybe Int)
+reaskGame app gameId =
+  fmap arkhamGameStep
+    <$> unsafeHandler app (runMessagesInGroupCoreWith RaiseUndoFloorToNewStep (const True) [] gameId)
+
+-- The game's committed step and undo floor.
+stepAndFloor :: SqlBackend -> ArkhamGameId -> IO (Maybe Int, Maybe Int)
+stepAndFloor connection gameId = transaction connection do
+  step <- fmap arkhamGameStep <$> P.get gameId
+  floorStep <- fmap (arkhamGameUndoFloorFloorStep . entityVal) <$> P.getBy (UniqueGameUndoFloor gameId)
+  pure (step, floorStep)
+
 lockEventRow :: ArkhamEpicEventId -> ReaderT SqlBackend IO ()
 lockEventRow eventId =
   void
@@ -576,6 +698,10 @@ requestSwap app uid eventId first second =
   route app uid "POST" (eventPath eventId "/swap-main-street")
     $ encode
     $ object ["firstGroupOrdinal" .= first, "secondGroupOrdinal" .= second]
+
+undo :: App -> UserId -> ArkhamGameId -> IO Outcome
+undo app uid gameId =
+  route app uid "PUT" (encodeUtf8 $ "/api/v1/arkham/games/" <> toPathPiece gameId <> "/undo") ""
 
 deleteEvent :: App -> UserId -> ArkhamEpicEventId -> IO Outcome
 deleteEvent app uid eventId = route app uid "DELETE" (eventPath eventId "") ""

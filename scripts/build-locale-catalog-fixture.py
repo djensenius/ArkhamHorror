@@ -172,11 +172,12 @@ def has_path_identity(value: object, fields: set[str]) -> bool:
 def runtime_identity() -> dict[str, object]:
     """The *committed* toolchain pin, never a measurement of this host.
 
-    Only the values recorded in `RUNTIME_PROFILE` reach fixture provenance;
-    nothing the sealed runtime attests at execution time (the resolved
-    interpreter path, the toolchain root, the hashes it recomputes) is mixed
-    in, so the derived revision is identical on every machine that carries the
-    same committed lock.
+    Read only by the self-tests, which require `RUNTIME_PROFILE` to be complete
+    and to pin the exact bytes of the trusted computing base. The profile's own
+    bytes are pinned by the non-governed TOOLING_LOCK. Neither it nor anything
+    the sealed runtime attests at execution time (the resolved interpreter
+    path, the toolchain root, the hashes it recomputes) reaches fixture
+    provenance, so the derived revision is identical on every machine.
     """
     profile = strict_json.strict_json_load_path(ROOT / RUNTIME_PROFILE)
     require(
@@ -557,7 +558,7 @@ def scan_generator_sources(read_source=locale_catalog_python_boundary.read_sourc
     """Every repository-local module this generator actually executes.
 
     Hashing only the entry module would leave behavior-bearing source out of
-    the provenance: the derivation runs `strict_json`'s readers and parsers too,
+    the tooling lock: the derivation runs `strict_json`'s readers and parsers too,
     and a future helper would join them silently. So the set is the import
     closure of the entry module, resolved statically against the repository and
     confined to a closed implementation boundary -- the `scripts/` tree, plain
@@ -586,8 +587,11 @@ def generator_sources() -> tuple[str, ...]:
 
 
 def read_repository_files(relative_paths: tuple[str, ...]) -> list[tuple[str, bytes]]:
-    """Read real repository files as provenance inputs, by their repo-relative
-    path, so a rename counts as a change just as much as an edit does.
+    """Read real repository files by their repo-relative path, so a rename
+    counts as a change just as much as an edit does.
+
+    Callers pass either the generator sources, whose bytes feed the tooling
+    lock, or the v1 schemas, whose bytes feed provenance `schemasSha256`.
     """
     entries: list[tuple[str, bytes]] = []
     for relative_path in relative_paths:
