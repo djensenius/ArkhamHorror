@@ -91,12 +91,18 @@ constructor.
   `discarding` become `null`, and the found and drawn cards of a search in
   progress are cleared. Log entries addressed to a single player are dropped.
   The top card of `deck` stays when a modifier reveals it, and `deckSize` is
-  unchanged. This redaction is not complete yet. WebSocket `GameUpdate` frames
-  on the same route are not redacted (TASK-2.22.2). The REST redaction does not
-  yet cover `cards`, `question`/`questionPresentation`,
-  `foundCards`/`focusedCards`, modifier card payloads, investigator
-  `meta`/`formMeta` or the encounter deck order (TASK-2.22.5). Until those
-  tasks land, spectators can still see hidden information through them.
+  unchanged. Except where they are public, the ids of those cards are also
+  removed from `cards`, `foundCards`/`focusedCards`/`highlightedCards`,
+  modifier card payloads, investigator `meta`/`formMeta` and the other
+  collections listed under
+  [Redacted game views](#redacted-game-views-and-handcount-revision-0165).
+  This redaction is not complete yet. WebSocket `GameUpdate` frames on the
+  same route are not redacted (TASK-2.22.2). The REST redaction does not yet
+  cover `question`/`questionPresentation`, the encounter deck order, shared
+  scenario decks or the other known channels listed there as not yet
+  filtered, and it does not check fields it does not name for hidden ids.
+  Until it covers them, spectators can still see hidden information through
+  those channels.
 - The `PublicGame` schema governs all 58 top-level snapshot fields shared by
   REST game reads and WebSocket `GameUpdate`. Deep entity, question, target,
   source, and campaign unions remain intentionally broad until their dedicated
@@ -1775,6 +1781,148 @@ value (Apple checks only the provenance block's shape; Linux vendors no
 locale-catalog files), so no client needs to repin.
 `nativeClientMinimumRevision` stays `0.1.57`; clients pinned to `0.1.57`
 through `0.1.63` are unaffected and need not repin.
+
+#### Redacted game views and `handCount` (revision 0.1.65)
+
+Revision `0.1.65` documents per-viewer redaction of game snapshots
+(TASK-2.22) and teaches the closed investigator schema its one new field
+before the server emits it. No route, capability or existing field changes.
+
+- `investigator.schema.json` gains an optional `handCount` (integer,
+  minimum 0) in `properties` only, not in `required`. A redacted snapshot can
+  carry it on every investigator, controlled or not, so a client can show how
+  many cards another player holds after their `hand` was emptied. Clients use
+  `handCount` when it is present and otherwise the length of `hand`.
+- The schema descriptions (investigator, public-game, get-game,
+  server-message), the OpenAPI create, import, `getGame`, pending `GET`/`PUT
+  /join` and spectate operations, and the AsyncAPI game and spectator channels
+  now say in general terms that a snapshot may be redacted for the caller's
+  seat(s), that other seats' hidden zones may be empty, and that `handCount`
+  may be absent. The OpenAPI import description no longer promises the
+  complete `PublicGame`. OpenAPI `info.version` moves to `0.1.10` and AsyncAPI
+  to `0.1.11`.
+- The new fixture `fixtures/investigator-redacted.json` is the real
+  `PublicGame` investigator for Roland holding three cards in hand, run
+  through `Api.Arkham.Redact.redactWith RedactOptions {includeHandCount =
+  True}` for a viewer holding a different seat: the hidden zones are empty and
+  `handCount` is `3`. `JsonContractsSpec` binds it to both the `toJSON` and the
+  wire-encoding paths, and the manifest's negative fixtures reject a negative
+  or string `handCount`. `fixtures/get-game.json` stays the unredacted
+  (full-view) shape.
+
+The exact redaction today, from `backend/arkham-api/library/Api/Arkham/Redact.hs`
+(not governed: later slices may hide more without a revision bump, because
+the schemas say only that a snapshot may be redacted for the caller's
+seat(s)). For every investigator in `investigators`, `otherInvestigators`,
+`killedInvestigators` and `retiredInvestigators` that the viewer does not
+control (control is the investigator's `playerId` matching one of the
+viewer's seats; the nil player id is nobody's seat):
+
+- `hand`, `sideDeck`, `decks`, `drawnCards`, `cardsUnderneath` and
+  `excludeFromMulligan` are emptied in place (an array becomes `[]`, an
+  object `{}`, `null` stays `null`);
+- `deck` is emptied, except that only its top card is kept when the
+  investigator's `modifiers` include `TopCardOfDeckIsRevealed`; `deckSize`
+  keeps the full count;
+- `drawing` and `discarding` become `null`;
+- `search.searchFoundCards` and `search.searchDrawnCards` are emptied; the
+  rest of `search` stays.
+
+The card ids in those zones (of these investigators and of the campaign's
+`meta.otherCampaignPlayers` entries the viewer does not control), and the
+found and drawn cards of a scenario-level `search` run by an investigator
+the viewer does not control, are hidden ids, less the public ones listed
+below. The server also removes hidden ids from the rest of the snapshot, so
+these collections are not complete in a redacted snapshot either:
+
+- the top-level `cards` registry (a hidden card's entry is dropped);
+- top-level `focusedCards`, `highlightedCards` and each zone list of
+  `foundCards` (zone keys stay), and the found and drawn cards of another
+  seat's scenario-level `search`;
+- every `modifiers` list: the top-level `modifiers` (a pair whose target
+  names a hidden id is dropped) and those of each investigator, in-play
+  entity (location, enemy, asset, act, agenda, treachery, event, story,
+  skill), the skill test and the focused and skill-test chaos tokens. A
+  modifier whose `card` is hidden gets `card: null`; one that still names a
+  hidden id is dropped;
+- `meta` and `formMeta` of every investigator the viewer does not control
+  (a hidden id is removed from an array, becomes `null` as an object value,
+  and is dropped as an object key);
+- `playProhibitions`, `commitProhibitions`, `cannotDiscoverClues` and
+  `cannotSpendClues` of every investigator, the viewer's own included (an
+  entry naming a hidden id is dropped; any other value naming one becomes
+  `null`);
+- the campaign's `meta.otherCampaignPlayers` (the other half of a split
+  campaign): an entry the viewer does not control gets the same zone
+  emptying and hidden-id scrub as an investigator above, and no
+  `handCount`.
+
+An id is never hidden when it is public or the viewer's own: the `cardId`
+of anything in play, a card in any investigator's `discard` or
+`meta.revealedCards`, the `activeCard`, the skill test's `committedCards`
+(not the rest of the skill test), a revealed deck top, the found and drawn
+cards of a `Revealing` search (`Searching` and `Looking` stay private), any
+card held by an investigator the viewer controls (outside its `modifiers`,
+`meta` and `formMeta`) or by the viewer's own scenario-level search, and
+any string in the viewer's own `question` entries. The campaign's `decks`
+and the scenario's `playerDecks` stay complete: they are the deck lists
+chosen at setup, which show composition (public at the table), not the
+order of the live `deck`.
+
+The snapshot's `log` tail drops structured rows (and child entries) whose
+`audience` is `OnlyPlayer` for a seat the viewer does not hold, and
+structured entries with no readable audience; spectators see only
+`Everyone` entries there. Legacy rows carry no audience and are kept. So is
+a stored row whose payload no longer decodes as a structured entry (for
+example because its `audience` is missing or malformed): the server serves
+it as a legacy row, its flat `body`, whatever its audience. The log routes
+below apply the same rule but are stricter about such rows: they drop one
+unless its payload is an object whose `audience` is missing, `Everyone` or
+`OnlyPlayer` for one of the caller's seats.
+
+Current status:
+
+- REST game responses have been redacted per viewer since TASK-2.22.1:
+  `getGame`, the replay step route (`GET /arkham/games/{gameId}/replay/{step}`),
+  spectate (as a spectator), the pending `GET`/`PUT /join`, create and
+  import. A caller holding every seat of the game (Solo, or one account
+  playing all seats) gets the full view, which is never redacted and never
+  carries `handCount`. An administrator who holds no seat in the game gets
+  the spectator view from the replay route.
+- The log routes `GET /arkham/games/{gameId}/log/before/{seq}`
+  (scrollback), `/log/sections` and `/log/export` check game membership and
+  filter for the caller's seats by the `log` tail's rule: rows in the query
+  (so a scrollback page is not cut short), child entries afterwards.
+  `/log/before` returns a page of `LogRow`s, `/log/export` a step range of
+  them (JSON by default, plain text with `format=trace`), and
+  `/log/sections` the scenario sections found in the rows the caller may
+  read. A caller who gets the full view gets every row, unfiltered. Which
+  callers get the full view may narrow later (for example to Solo games
+  only); clients should not rely on it.
+- Not redacted: the game export routes under `/arkham/games/{gameId}`
+  (`/export`, `/scenario-export` and `/full-export`), which return the stored
+  game rather than a `PublicGame` snapshot (`/export` and `/scenario-export`
+  also serve administrators for any game; `/full-export` is admin-only).
+  The `/admin` routes return game summaries and room data, not game
+  snapshots.
+- Known channels not yet filtered for hidden ids: `question` and
+  `questionPresentation`, the encounter deck order, shared scenario decks,
+  `usedAbilities` sources, entity and scenario `meta`,
+  `searchFoundStrategy`, the campaign's `otherCampaignAttrs` and the
+  viewer's own `meta`. The list is not exhaustive: a field not named above
+  as emptied or filtered (for example `removedFromPlay`, `concealed`,
+  `enemyAttackTargets`, `skillTestResults`, `scenarioSteps` or the
+  `phaseHistory`/`roundHistory`/`turnHistory` maps) is not checked for
+  hidden ids.
+- WebSocket `GameUpdate` frames remain unredacted until TASK-2.22.2.
+- The server does not emit `handCount` yet (`defaultRedactOptions` keeps
+  `includeHandCount = False`); a follow-up of TASK-2.22.3 turns it on for
+  redacted views without another revision bump.
+
+`nativeClientMinimumRevision` stays `0.1.57`; `handCount` is optional and no
+existing field changes, so clients pinned to `0.1.57` through `0.1.64` keep
+decoding today's payloads. A client with a closed investigator decoder must
+repin to `0.1.65` before the server starts emitting `handCount`.
 
 ### Locale catalog discovery
 

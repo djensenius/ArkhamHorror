@@ -1,0 +1,221 @@
+{
+  "actionsPerformed": [],
+  "actionsTaken": [],
+  "additionalActions": [],
+  "agility": 2,
+  "art": "c01001",
+  "assets": [],
+  "assignedHealthDamage": 0,
+  "assignedHealthHeal": [],
+  "assignedSanityDamage": 0,
+  "assignedSanityHeal": [],
+  "beganRoundAt": "782de537-8f5d-4eda-b849-2362e28402e5",
+  "bondedCards": [],
+  "cannotDiscoverClues": null,
+  "cannotSpendClues": null,
+  "cardCode": "c01001",
+  "cardsUnderneath": [],
+  "class": "Guardian",
+  "combat": 4,
+  "commitProhibitions": [],
+  "connectedLocations": [],
+  "deck": [],
+  "deckBuildingAdjustments": [],
+  "deckSize": 0,
+  "deckUrl": null,
+  "decks": [],
+  "defeated": false,
+  "discard": [],
+  "discarding": null,
+  "discover": null,
+  "drawing": null,
+  "drawnCards": [],
+  "drivenInsane": false,
+  "eliminated": false,
+  "endedTurn": false,
+  "engagedEnemies": [],
+  "events": [],
+  "excludeFromMulligan": [],
+  "form": {
+    "tag": "RegularForm"
+  },
+  "formMeta": null,
+  "hand": [],
+  "handCount": 3,
+  "handSize": 8,
+  "health": 9,
+  "horrorHealed": 0,
+  "id": "c01001",
+  "ignoredPerformedActions": [],
+  "intellect": 3,
+  "keys": [],
+  "killed": false,
+  "log": {
+    "crossedOut": [],
+    "options": [],
+    "orderedKeys": [],
+    "partners": {},
+    "recorded": [],
+    "recordedCounts": [],
+    "recordedSets": []
+  },
+  "mentalTrauma": 0,
+  "meta": null,
+  "modifiers": [],
+  "movement": null,
+  "mulligansTaken": 0,
+  "mutated": null,
+  "name": {
+    "subtitle": "The Fed",
+    "title": "Roland Banks"
+  },
+  "physicalTrauma": 0,
+  "placement": {
+    "contents": "782de537-8f5d-4eda-b849-2362e28402e5",
+    "tag": "AtLocation"
+  },
+  "playProhibitions": [],
+  "playerId": "00000000-0000-0000-0000-000000000001",
+  "previousLocation": null,
+  "remainingActions": 3,
+  "resigned": false,
+  "sanity": 5,
+  "scarletKeys": [],
+  "sealedChaosTokens": [],
+  "seals": [],
+  "search": null,
+  "settings": {
+    "globalSettings": {
+      "ignoreUnrelatedSkillTestTriggers": true
+    },
+    "perCardSettings": {}
+  },
+  "sideDeck": null,
+  "skills": [],
+  "skippedWindow": false,
+  "slots": [
+    [
+      "HandSlot",
+      [
+        {
+          "assets": [],
+          "source": {
+            "contents": "c01001",
+            "tag": "InvestigatorSource"
+          },
+          "tag": "Slot"
+        },
+        {
+          "assets": [],
+          "source": {
+            "contents": "c01001",
+            "tag": "InvestigatorSource"
+          },
+          "tag": "Slot"
+        }
+      ]
+    ],
+    [
+      "BodySlot",
+      [
+        {
+          "assets": [],
+          "source": {
+            "contents": "c01001",
+            "tag": "InvestigatorSource"
+          },
+          "tag": "Slot"
+        }
+      ]
+    ],
+    [
+      "AllySlot",
+      [
+        {
+          "assets": [],
+          "source": {
+            "contents": "c01001",
+            "tag": "InvestigatorSource"
+          },
+          "tag": "Slot"
+        }
+      ]
+    ],
+    [
+      "AccessorySlot",
+      [
+        {
+          "assets": [],
+          "source": {
+            "contents": "c01001",
+            "tag": "InvestigatorSource"
+          },
+          "tag": "Slot"
+        }
+      ]
+    ],
+    [
+      "ArcaneSlot",
+      [
+        {
+          "assets": [],
+          "source": {
+            "contents": "c01001",
+            "tag": "InvestigatorSource"
+          },
+          "tag": "Slot"
+        },
+        {
+          "assets": [],
+          "source": {
+            "contents": "c01001",
+            "tag": "InvestigatorSource"
+          },
+          "tag": "Slot"
+        }
+      ]
+    ],
+    [
+      "TarotSlot",
+      [
+        {
+          "assets": [],
+          "source": {
+            "contents": "c01001",
+            "tag": "InvestigatorSource"
+          },
+          "tag": "Slot"
+        }
+      ]
+    ],
+    [
+      "HeadSlot",
+      [
+        {
+          "assets": [],
+          "source": {
+            "contents": "c01001",
+            "tag": "InvestigatorSource"
+          },
+          "tag": "Slot"
+        }
+      ]
+    ]
+  ],
+  "spentXp": 0,
+  "startsWith": [],
+  "startsWithInHand": [],
+  "supplies": [],
+  "taboo": null,
+  "tokens": [],
+  "traits": [
+    "Agency",
+    "Detective"
+  ],
+  "treacheries": [],
+  "unhealedHorrorThisRound": 0,
+  "usedAbilities": [],
+  "usedAdditionalActions": [],
+  "willpower": 3,
+  "xp": 0
+}

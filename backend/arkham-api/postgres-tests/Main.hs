@@ -43,6 +43,7 @@ import Network.Wai.Handler.Warp qualified as Warp
 import Postgres.ArchiveSpec qualified as ArchiveSQL
 import Postgres.Harness
 import Postgres.HarnessSpec qualified as Harness
+import Postgres.LogAudienceSpec qualified as LogAudienceSQL
 import Postgres.ClaimSeatSpec qualified as ClaimSeatSQL
 import Postgres.CustomCardArtSpec qualified as CustomCardArtSQL
 import Postgres.DispatchSpec qualified as DispatchSQL
@@ -95,6 +96,7 @@ main = withHarness \harness -> withProductionApp harness \app ->
     EventReplicateSQL.spec harness app seedUser
     CustomCardArtSQL.spec harness app
     RedactRestSQL.spec harness app seedUser
+    LogAudienceSQL.spec harness app seedUser
 
 writeBackSeed :: App -> WriteBackSQL.Seed
 writeBackSeed app connection label = do

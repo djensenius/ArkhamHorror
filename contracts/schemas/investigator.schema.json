@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/investigator.schema.json",
   "title": "Investigator",
-  "description": "An investigator entity as published in PublicGame.investigators/otherInvestigators/killedInvestigators (Arkham.Investigator.Types.InvestigatorAttrs, merged with per-connection HasGame data such as connectedLocations). Deck/hand/discard card-union payloads, ability/action bookkeeping, campaign log, and slot layout remain intentionally broad in this contract slice; only the top-level field set, ids, and scalar stats are asserted exactly.",
+  "description": "An investigator entity as published in PublicGame.investigators/otherInvestigators/killedInvestigators (Arkham.Investigator.Types.InvestigatorAttrs, merged with per-connection HasGame data such as connectedLocations). Deck/hand/discard card-union payloads, ability/action bookkeeping, campaign log, and slot layout remain intentionally broad in this contract slice; only the top-level field set, ids, and scalar stats are asserted exactly. A game snapshot may be redacted for the caller's seat(s): for investigators the caller does not control, hidden zones (such as hand and deck contents) may be empty, and handCount may carry the number of cards in hand. handCount is optional: it may be absent from any snapshot, and a client then uses the length of hand.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -154,7 +154,7 @@
       "pattern": "^c[0-9a-z:._-]+$"
     },
     "cardsUnderneath": {
-      "description": "Cards physically stacked underneath this investigator. Broad card union, out of scope for this contract slice.",
+      "description": "Cards physically stacked underneath this investigator. Broad card union, out of scope for this contract slice. In a snapshot redacted for the caller's seat(s), this may be empty for an investigator the caller does not control.",
       "type": "array"
     },
     "class": {
@@ -180,7 +180,7 @@
       }
     },
     "deck": {
-      "description": "Remaining deck cards. Broad card union, out of scope for this contract slice.",
+      "description": "Remaining deck cards. Broad card union, out of scope for this contract slice. In a snapshot redacted for the caller's seat(s), this may be empty, or hold only publicly revealed cards, for an investigator the caller does not control; deckSize keeps the full count.",
       "type": "array"
     },
     "deckBuildingAdjustments": {
@@ -198,7 +198,7 @@
       ]
     },
     "decks": {
-      "description": "Named side decks (e.g. bonded/spectral decks). Broad, out of scope for this contract slice.",
+      "description": "Named side decks (e.g. bonded/spectral decks). Broad, out of scope for this contract slice. In a snapshot redacted for the caller's seat(s), this may be empty for an investigator the caller does not control.",
       "type": "array"
     },
     "defeated": {
@@ -209,7 +209,7 @@
       "type": "array"
     },
     "discarding": {
-      "description": "In-progress discard state, if any. Broad, out of scope for this contract slice.",
+      "description": "In-progress discard state, if any. Broad, out of scope for this contract slice. In a snapshot redacted for the caller's seat(s), this may be null for an investigator the caller does not control.",
       "type": [
         "object",
         "null"
@@ -223,14 +223,14 @@
       ]
     },
     "drawing": {
-      "description": "In-progress card-draw state, if any. Broad, out of scope for this contract slice.",
+      "description": "In-progress card-draw state, if any. Broad, out of scope for this contract slice. In a snapshot redacted for the caller's seat(s), this may be null for an investigator the caller does not control.",
       "type": [
         "object",
         "null"
       ]
     },
     "drawnCards": {
-      "description": "Cards drawn so far this draw step. Broad card union, out of scope for this contract slice.",
+      "description": "Cards drawn so far this draw step. Broad card union, out of scope for this contract slice. In a snapshot redacted for the caller's seat(s), this may be empty for an investigator the caller does not control.",
       "type": "array"
     },
     "drivenInsane": {
@@ -259,7 +259,7 @@
       }
     },
     "excludeFromMulligan": {
-      "description": "Cards excluded from the opening mulligan. Broad card union, out of scope for this contract slice.",
+      "description": "Cards excluded from the opening mulligan. Broad card union, out of scope for this contract slice. In a snapshot redacted for the caller's seat(s), this may be empty for an investigator the caller does not control.",
       "type": "array"
     },
     "form": {
@@ -278,8 +278,13 @@
       "description": "Free-form alternate-form metadata."
     },
     "hand": {
-      "description": "Cards currently in hand. Broad card union, out of scope for this contract slice.",
+      "description": "Cards currently in hand. Broad card union, out of scope for this contract slice. In a snapshot redacted for the caller's seat(s), this may be empty for an investigator the caller does not control. Use handCount, when present, for the number of cards in hand.",
       "type": "array"
+    },
+    "handCount": {
+      "description": "Number of cards in this investigator's hand. Optional: present only in some redacted snapshots, where hand may be empty for an investigator the caller does not control. When absent, use the length of hand.",
+      "type": "integer",
+      "minimum": 0
     },
     "handSize": {
       "type": "integer",
@@ -391,7 +396,7 @@
       "type": "array"
     },
     "search": {
-      "description": "In-progress search state, if any. Broad, out of scope for this contract slice.",
+      "description": "In-progress search state, if any. Broad, out of scope for this contract slice. In a snapshot redacted for the caller's seat(s), the found and drawn card lists may be empty for an investigator the caller does not control.",
       "type": [
         "object",
         "null"
@@ -402,7 +407,7 @@
       "type": "object"
     },
     "sideDeck": {
-      "description": "A named side deck reference, if any. Broad, out of scope for this contract slice."
+      "description": "A named side deck reference, if any. Broad, out of scope for this contract slice. In a snapshot redacted for the caller's seat(s), this may be empty for an investigator the caller does not control."
     },
     "skills": {
       "description": "SkillId (UUID) values granted to this investigator.",

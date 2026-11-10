@@ -470,9 +470,17 @@ spec = describe "selectUploadedExportFile" do
         importAndRest = snd $ T.breakOn "/arkham/games/import:" normalized
         importContract =
           fst $ T.breakOn "/arkham/games/{gameId}:" importAndRest
+    -- TASK-2.22.3: the body is the PublicGame redacted for the caller's
+    -- seat(s) (TASK-2.22.1), so the contract must not promise the complete one.
     importContract
       `shouldSatisfy` T.isInfixOf
-        "body is the complete `PublicGame` snapshot"
+        "body is a `PublicGame` snapshot, including its top-level `id`"
+    importContract
+      `shouldSatisfy` T.isInfixOf
+        "The snapshot is redacted for the caller's seat(s)"
+    importContract
+      `shouldNotSatisfy` T.isInfixOf
+        "complete `PublicGame`"
     importContract
       `shouldSatisfy` T.isInfixOf
         "$ref: \"#/components/schemas/PublicGame\""
