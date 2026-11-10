@@ -826,11 +826,95 @@ def scope_alternatives(node, source: bytes, parameters: set[str], depth: int = 0
         if name in parameters:
             return None
         binding = local_binding(node, name, source)
+        if binding is UNDECIDED_BINDING:
+            return None
         if binding is not None:
             return scope_alternatives(binding, source, parameters, depth + 1, context, site)
         return parameter_alternatives(node, name, source, parameters, depth, context)
 
+    # `key <- narrativeKey "resolution1" narrative.theMiskatonicMuseumResolution1`
+    # binds the guide's own key unless a narrative variant overrides it, so
+    # the base is the key the guide's locale must carry. Only a do-bind counts:
+    # `let key = narrativeKey ...` is still the action, not the key.
+    base = narrative_key_base(node, source)
+    if base is not None and _is_do_bind_body(node):
+        return scope_alternatives(base, source, parameters, depth + 1, context, site)
+
     return None
+
+
+def narrative_key_base(node, source: bytes):
+    """The base-key argument of `narrativeKey base override`, else None.
+
+    `narrativeKey base = fromMaybe (pure base)` (Arkham/Helpers/Narrative.hs):
+    without a variant the action yields `base` unchanged.
+    """
+    while node is not None and node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
+        node = significant_children(node)[0]
+    application = flatten_application(node, source) if node is not None else None
+    if application is None:
+        return None
+    name, args = application
+    if name != "narrativeKey" or len(args) != 2:
+        return None
+    return args[0]
+
+
+def _is_do_bind_body(node) -> bool:
+    """True when `node` is the action of a `name <- action` do statement.
+
+    `key <- (narrativeKey "resolution1" override)` binds the same action, so
+    walk outward through `exp`/`parens` wrappers that hold only this node;
+    a wrapper around anything more (`(narrativeKey a b <&> f)`) is not it.
+    """
+    while (
+        node.parent is not None
+        and node.parent.type in {"exp", "parens"}
+        and len(significant_children(node.parent)) == 1
+    ):
+        node = node.parent
+    parent = node.parent
+    return (
+        parent is not None
+        and parent.type == "bind"
+        and any(child.type == "<-" for child in parent.children)
+        and significant_children(parent)[-1].id == node.id
+    )
+
+
+def _emitter_bound_to_narrative_key(node, source: bytes):
+    """(name, emitter, base) for `emitter =<< narrativeKey base override`.
+
+    `story . i18n =<< narrativeKey "rightfulKeeper" narrative.x` hands the
+    bound key straight to `i18n`. The parser reads every operator as right
+    associative, so the emitter may sit alone on the left of `=<<`
+    (`story . (i18n =<< ...)`) or at the end of a `.` chain
+    (`(story . i18n) =<< ...`); both are the same program. Only an emitter whose
+    key is its first argument is applied to the bound key.
+    """
+    parts = infix_parts(node, source)
+    if parts is None or parts[1] != "=<<":
+        return None
+    left, _, right = parts
+    base = narrative_key_base(right, source)
+    if base is None:
+        return None
+    while left.type in {"exp", "parens"} and len(significant_children(left)) == 1:
+        left = significant_children(left)[0]
+    while left.type == "infix":
+        left_parts = infix_parts(left, source)
+        if left_parts is None or left_parts[1] != ".":
+            return None
+        left = left_parts[2]
+        while left.type in {"exp", "parens"} and len(significant_children(left)) == 1:
+            left = significant_children(left)[0]
+    if left.type not in {"variable", "projection"}:
+        return None
+    name = text_of(left, source)
+    emitter = emitter_for(name)
+    if emitter is None or "literal" in emitter or emitter.get("arg") != 0:
+        return None
+    return name, emitter, base
 
 
 class ParameterContext:
@@ -1059,19 +1143,99 @@ def _case_bindings(node, source: bytes):
         ancestor = ancestor.parent
 
 
+# `local_binding`'s answer when `name` is bound in scope but the binding that
+# reaches the use cannot be told apart, so the site must stay dynamic rather
+# than resolve to some other binding of the same name.
+UNDECIDED_BINDING = object()
+
+
 def local_binding(node, name: str, source: bytes):
-    """The body of the nearest enclosing `let`/`where` binding of `name`."""
+    """The body of the binding of `name` in scope at `node`, else None.
+
+    `let ... in` and `where` groups are recursive, so any binding in them is
+    in scope. A `do` block is sequential: only a statement before the use can
+    bind it, and the nearest such statement shadows the earlier ones. Returns
+    UNDECIDED_BINDING when the binding that reaches the use is not knowable.
+    """
+    child = node
     ancestor = node.parent
     while ancestor is not None:
-        for candidate in _descendant_binds(ancestor, name, source):
-            children = significant_children(candidate)
-            body = children[-1] if children else None
-            if body is not None and body.type == "match":
-                inner = significant_children(body)
-                body = inner[-1] if inner else None
-            return body
+        if ancestor.type == "do":
+            found = _do_block_binding(ancestor, child, name, source)
+            if found is not None:
+                return found
+        else:
+            for candidate in _descendant_binds(ancestor, name, source):
+                return _binding_body(candidate)
+        child = ancestor
         ancestor = ancestor.parent
     return None
+
+
+def _binding_body(candidate):
+    children = significant_children(candidate)
+    body = children[-1] if children else None
+    if body is not None and body.type == "match":
+        inner = significant_children(body)
+        body = inner[-1] if inner else None
+    return body
+
+
+def _do_block_binding(block, statement, name: str, source: bytes):
+    """The body binding `name` for a use inside `statement` of do `block`.
+
+    `key <- narrativeKey "first" a; p key; key <- narrativeKey "second" b;
+    p key` gives each `p key` the nearest bind before it. A `let` statement
+    is recursive within itself, so it also covers uses in its own bodies; a
+    `<-` statement's own action still sees the outer `key`. Returns None when
+    no statement before the use binds `name`, and UNDECIDED_BINDING when one
+    binds it through a pattern this reader does not follow.
+    """
+    statements = significant_children(block)
+    index = next((i for i, item in enumerate(statements) if item.id == statement.id), None)
+    if index is None:
+        return UNDECIDED_BINDING
+    if statements[index].type == "let":
+        found = _let_statement_binding(statements[index], name, source)
+        if found is not None:
+            return found
+    for item in reversed(statements[:index]):
+        if item.type == "bind" and any(part.type == "<-" for part in item.children):
+            parts = significant_children(item)
+            pattern = parts[0] if parts else None
+            if pattern is not None and pattern.type == "variable":
+                if text_of(pattern, source) == name:
+                    return parts[-1]
+            elif pattern is None or _mentions_variable(pattern, name, source):
+                return UNDECIDED_BINDING
+        elif item.type == "let":
+            found = _let_statement_binding(item, name, source)
+            if found is not None:
+                return found
+        elif item.type != "exp" and _mentions_variable(item, name, source):
+            return UNDECIDED_BINDING
+    return None
+
+
+def _let_statement_binding(statement, name: str, source: bytes):
+    for candidate in _descendant_binds(statement, name, source):
+        return _binding_body(candidate)
+    for group in statement.children:
+        if group.type != "local_binds":
+            continue
+        for candidate in group.children:
+            if candidate.type != "bind":
+                continue
+            parts = significant_children(candidate)
+            if parts and parts[0].type != "variable" and _mentions_variable(parts[0], name, source):
+                return UNDECIDED_BINDING
+    return None
+
+
+def _mentions_variable(node, name: str, source: bytes) -> bool:
+    if node.type == "variable":
+        return text_of(node, source) == name
+    return any(_mentions_variable(child, name, source) for child in node.children)
 
 
 def _descendant_binds(node, name: str, source: bytes, depth: int = 0):
@@ -2288,6 +2452,11 @@ def extract_module(
                     record_dynamic(node, "partial key (runtime remainder)", "$literal")
                 else:
                     record_literal(node, key)
+        elif node.type == "infix":
+            bound = _emitter_bound_to_narrative_key(node, source)
+            if bound is not None:
+                name, emitter, base = bound
+                handle(node, name, emitter, [base])
         elif node.type in {"variable", "projection"} and emitter_for(text_of(node, source)):
             name = text_of(node, source)
             emitter = emitter_for(name)
